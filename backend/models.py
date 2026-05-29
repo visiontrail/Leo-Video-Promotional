@@ -30,6 +30,7 @@ class TaskConfig(BaseModel):
     include_character: bool = False
     ai_endpoint: Optional[str] = None
     ai_model: Optional[str] = None
+    provider_id: Optional[int] = None
 
 
 class TaskCreate(BaseModel):
@@ -57,6 +58,36 @@ class TaskResponse(BaseModel):
 
 class TaskListResponse(BaseModel):
     tasks: list[TaskResponse]
+
+
+class ProviderCreate(BaseModel):
+    name: str
+    endpoint: str
+    api_key: Optional[str] = None
+    model: str
+    is_default: bool = False
+
+
+class ProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    endpoint: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+class ProviderResponse(BaseModel):
+    id: int
+    name: str
+    endpoint: str
+    api_key_masked: str
+    model: str
+    is_default: bool
+    created_at: str
+
+
+class ProviderListResponse(BaseModel):
+    providers: list[ProviderResponse]
 
 
 class SettingsResponse(BaseModel):

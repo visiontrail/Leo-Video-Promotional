@@ -8,6 +8,25 @@ export interface TaskConfig {
   include_character: boolean;
   ai_endpoint?: string;
   ai_model?: string;
+  provider_id?: number | null;
+}
+
+export interface Provider {
+  id: number;
+  name: string;
+  endpoint: string;
+  api_key_masked: string;
+  model: string;
+  is_default: boolean;
+  created_at: string;
+}
+
+export interface ProviderInput {
+  name: string;
+  endpoint: string;
+  api_key?: string;
+  model: string;
+  is_default?: boolean;
 }
 
 export interface Task {
@@ -72,6 +91,36 @@ export async function deleteTask(id: string): Promise<void> {
 export async function fetchSettings(): Promise<Settings> {
   const res = await fetch(`${BASE}/api/settings`);
   return res.json();
+}
+
+export async function fetchProviders(): Promise<Provider[]> {
+  const res = await fetch(`${BASE}/api/providers`);
+  const data = await res.json();
+  return data.providers;
+}
+
+export async function createProvider(input: ProviderInput): Promise<Provider> {
+  const res = await fetch(`${BASE}/api/providers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function updateProvider(id: number, input: Partial<ProviderInput>): Promise<Provider> {
+  const res = await fetch(`${BASE}/api/providers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function deleteProvider(id: number): Promise<void> {
+  await fetch(`${BASE}/api/providers/${id}`, { method: 'DELETE' });
 }
 
 export function videoUrl(taskId: string): string {

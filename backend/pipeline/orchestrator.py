@@ -28,6 +28,7 @@ async def run_pipeline(task: TaskResponse):
 
     ai_endpoint = task.config.ai_endpoint
     ai_model = task.config.ai_model
+    provider_id = task.config.provider_id
 
     # Stage 1: Extract
     logger.info(f"[{task.id}] Stage 1: Extracting from {task.source_type}")
@@ -48,10 +49,10 @@ async def run_pipeline(task: TaskResponse):
     logger.info(f"[{task.id}] Stage 2: Digesting content")
     await update_task(task.id, status=TaskStatus.DIGESTING.value)
 
-    summary = await summarize(content, ai_endpoint, ai_model)
+    summary = await summarize(content, ai_endpoint, ai_model, provider_id)
     (task_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
-    script = await generate_script(summary, task.config.target_duration_minutes, ai_endpoint, ai_model)
+    script = await generate_script(summary, task.config.target_duration_minutes, ai_endpoint, ai_model, provider_id)
     script_path = str(task_dir / "script.txt")
     Path(script_path).write_text(script)
     await update_task(task.id, script_path=script_path)

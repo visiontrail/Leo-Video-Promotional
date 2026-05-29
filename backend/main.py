@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.database import init_db
 from backend.worker import start_worker
-from backend.routers import tasks, settings
+from backend.routers import tasks, settings, providers
 from backend.config import OUTPUTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
@@ -29,6 +29,7 @@ app.add_middleware(
 
 app.include_router(tasks.router)
 app.include_router(settings.router)
+app.include_router(providers.router)
 
 app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 

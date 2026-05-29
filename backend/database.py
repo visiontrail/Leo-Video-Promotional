@@ -1,8 +1,9 @@
 import json
 import aiosqlite
 from datetime import datetime, timezone
+from backend import config
 from backend.config import DB_PATH
-from backend.models import TaskConfig, TaskResponse, TaskStatus, new_task_id
+from backend.models import TaskConfig, TaskResponse, TaskStatus, ProviderResponse, new_task_id
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -21,7 +22,25 @@ CREATE TABLE IF NOT EXISTS tasks (
     video_path TEXT,
     duration_seconds REAL
 );
+
+CREATE TABLE IF NOT EXISTS providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    api_key TEXT,
+    model TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 """
+
+
+def _mask_key(api_key: str | None) -> str:
+    if not api_key:
+        return ""
+    if len(api_key) <= 8:
+        return "****"
+    return f"{api_key[:4]}...{api_key[-4:]}"
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -34,6 +53,99 @@ async def get_db() -> aiosqlite.Connection:
 async def init_db():
     db = await get_db()
     await db.executescript(SCHEMA)
+    await db.commit()
+    # Seed the default provider from .env if no providers exist yet.
+    rows = await db.execute_fetchall("SELECT COUNT(*) AS c FROM providers")
+    if rows[0]["c"] == 0 and config.AI_ENDPOINT:
+        now = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            """INSERT INTO providers (name, endpoint, api_key, model, is_default, created_at)
+               VALUES (?, ?, ?, ?, 1, ?)""",
+            ("Default (.env)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
+        )
+        await db.commit()
+    await db.close()
+
+
+def _row_to_provider(row: aiosqlite.Row) -> ProviderResponse:
+    return ProviderResponse(
+        id=row["id"],
+        name=row["name"],
+        endpoint=row["endpoint"],
+        api_key_masked=_mask_key(row["api_key"]),
+        model=row["model"],
+        is_default=bool(row["is_default"]),
+        created_at=row["created_at"],
+    )
+
+
+async def list_providers() -> list[ProviderResponse]:
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT * FROM providers ORDER BY created_at ASC")
+    await db.close()
+    return [_row_to_provider(r) for r in rows]
+
+
+async def get_provider(provider_id: int) -> ProviderResponse | None:
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT * FROM providers WHERE id = ?", (provider_id,))
+    await db.close()
+    return _row_to_provider(rows[0]) if rows else None
+
+
+async def get_provider_raw(provider_id: int | None) -> aiosqlite.Row | None:
+    """Return the raw provider row (including unmasked api_key) by id, or the
+    default provider when provider_id is None. Used by the pipeline."""
+    db = await get_db()
+    if provider_id is not None:
+        rows = await db.execute_fetchall("SELECT * FROM providers WHERE id = ?", (provider_id,))
+    else:
+        rows = await db.execute_fetchall("SELECT * FROM providers WHERE is_default = 1 LIMIT 1")
+    await db.close()
+    return rows[0] if rows else None
+
+
+async def create_provider(name: str, endpoint: str, api_key: str | None, model: str, is_default: bool) -> ProviderResponse:
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    if is_default:
+        await db.execute("UPDATE providers SET is_default = 0")
+    cursor = await db.execute(
+        """INSERT INTO providers (name, endpoint, api_key, model, is_default, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (name, endpoint, api_key, model, 1 if is_default else 0, now),
+    )
+    await db.commit()
+    rows = await db.execute_fetchall("SELECT * FROM providers WHERE id = ?", (cursor.lastrowid,))
+    await db.close()
+    return _row_to_provider(rows[0])
+
+
+async def update_provider(provider_id: int, **kwargs) -> ProviderResponse | None:
+    fields = {k: v for k, v in kwargs.items() if v is not None}
+    db = await get_db()
+    if fields.get("is_default"):
+        await db.execute("UPDATE providers SET is_default = 0")
+    if fields:
+        sets = []
+        vals = []
+        for k, v in fields.items():
+            if k == "is_default":
+                v = 1 if v else 0
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        vals.append(provider_id)
+        await db.execute(f"UPDATE providers SET {', '.join(sets)} WHERE id = ?", vals)
+        await db.commit()
+    rows = await db.execute_fetchall("SELECT * FROM providers WHERE id = ?", (provider_id,))
+    await db.close()
+    return _row_to_provider(rows[0]) if rows else None
+
+
+async def delete_provider(provider_id: int):
+    db = await get_db()
+    await db.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
+    await db.commit()
     await db.close()
 
 

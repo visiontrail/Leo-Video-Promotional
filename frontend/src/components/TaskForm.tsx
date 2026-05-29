@@ -1,8 +1,8 @@
 import { useState, useRef } from 'react'
 import type { DragEvent } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { createTask } from '../api'
+import { createTask, fetchProviders } from '../api'
 import type { TaskConfig } from '../api'
 
 type SourceType = 'youtube' | 'epub' | 'pdf'
@@ -27,8 +27,11 @@ export default function TaskForm() {
   const [voice1, setVoice1] = useState('Carter')
   const [voice2, setVoice2] = useState('Alice')
   const [character, setCharacter] = useState(false)
+  const [providerId, setProviderId] = useState<number | null>(null)
   const [dragover, setDragover] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: fetchProviders })
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -38,6 +41,7 @@ export default function TaskForm() {
         voice_1: voice1,
         voice_2: voice2,
         include_character: character,
+        provider_id: providerId,
       }
       return createTask(
         sourceType,
@@ -149,6 +153,21 @@ export default function TaskForm() {
           </select>
         </div>
       </div>
+
+      {providers.length > 0 && (
+        <div className="form-group">
+          <label>AI Provider</label>
+          <select
+            value={providerId ?? ''}
+            onChange={(e) => setProviderId(e.target.value === '' ? null : Number(e.target.value))}
+          >
+            <option value="">Default {providers.find((p) => p.is_default) ? `(${providers.find((p) => p.is_default)!.name})` : ''}</option>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>{p.name} — {p.model}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div style={{ marginTop: 8 }}>
         <button
