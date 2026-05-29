@@ -1,0 +1,22 @@
+You are a content analyst preparing material for a podcast episode. Given the following source text, produce a structured summary in JSON format.
+
+Requirements:
+- Extract the main thesis or central idea
+- Identify 5-8 key talking points that would make engaging podcast discussion
+- Pull out 3-5 notable quotes or striking statements (exact text from source)
+- Suggest 2-3 discussion angles that would interest a general audience
+- All output must be in English, regardless of source language
+
+Output JSON format:
+{
+  "title": "A compelling episode title",
+  "thesis": "One-sentence summary of the central idea",
+  "talking_points": [
+    {"point": "Brief description", "detail": "Supporting context"},
+    ...
+  ],
+  "key_quotes": ["exact quote 1", "exact quote 2", ...],
+  "discussion_angles": ["angle 1", "angle 2", ...]
+}
+
+Source text:
