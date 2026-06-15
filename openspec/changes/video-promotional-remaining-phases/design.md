@@ -4,7 +4,7 @@ Phase 1 MVP is complete with the following architecture:
 - **Backend**: FastAPI (Python 3.11) at `backend/` with SQLite task queue, single-worker processing
 - **Frontend**: React + Vite at `frontend/` with TaskForm, TaskList, TaskDetail components
 - **Pipeline**: YouTube/EPUB/PDF extractors → AI digester (2-pass) → VibeVoice TTS subprocess → HyperFrame HTML composition + render
-- **TTS**: VibeVoice 1.5B at `/Volumes/TP-1TB/AIWork`, invoked as subprocess with `env_vibevoice_1.5b.sh`
+- **TTS**: VibeVoice at `/Volumes/TP-1TB/AIWork`, invoked as subprocess. Two installed models — 1.5B (`env_vibevoice_1.5b.sh` + `VibeVoice-1.5B/demo/inference_from_file.py`, `--speaker_names`) and 0.5B Realtime (`env_vibevoice.sh` + `VibeVoice/demo/realtime_model_inference_from_file.py`, `--speaker_name`). Currently hard-coded to 1.5B; made selectable in this change.
 - **Video**: HyperFrame at `hyperframe/`, single `podcast.html` Jinja2 template with basic dark theme
 - **AI**: OpenAI-compatible API via `oneapi.yhroot.com` endpoint, configurable in `.env`
 
@@ -50,13 +50,17 @@ The system is structurally complete but untested with real data. Remaining work 
 **Choice**: Use `sse-starlette` package. Add `GET /api/tasks/{id}/logs/stream` endpoint that yields pipeline log lines as SSE events. The worker writes logs to both file and an asyncio Queue that SSE consumers read from.
 **Why over WebSocket**: SSE is simpler (one-way, auto-reconnect), sufficient for log streaming, and doesn't require a WebSocket library.
 
+### 7. TTS model selection: config-driven model registry
+**Choice**: Define a registry in `backend/config.py` mapping a stable model key (`vibevoice-1.5b`, `vibevoice-0.5b`) to its env script, project dir, inference script, and speaker-argument flag. `tts.py` resolves invocation parameters from the key passed on the task (default `vibevoice-1.5b`). The TaskForm exposes a dropdown.
+**Why over a boolean or single hard-coded path**: The two models differ not just in weights but in their invocation contract — different venvs, different inference scripts, and a different speaker flag (`--speaker_names` plural for 1.5B vs `--speaker_name` singular for 0.5B). A registry keeps these per-model differences in one place and makes adding future models a data change rather than a code change.
+
 ### 6. Isla-Reader integration: subprocess to Swift CLI
 **Choice**: Call `generate-promotion.sh --epub <path> --style none` as subprocess to get `selected.stage2.json` with curated highlights. Parse the JSON and feed it to the digester as pre-curated talking points.
 **Why over reimplementing in Python**: The Swift pipeline is production-tested with sophisticated AI curation. Reusing it avoids duplicating complex logic.
 
 ## Risks / Trade-offs
 
-- **[TTS generation time on MPS]** → VibeVoice 1.5B on Apple Silicon MPS may take 5-15 min for a 10-min podcast. Mitigation: show clear progress in UI, allow shorter durations, consider the 0.5B realtime model as a "draft" option.
+- **[TTS generation time on MPS]** → VibeVoice 1.5B on Apple Silicon MPS may take 5-15 min for a 10-min podcast. Mitigation: show clear progress in UI, allow shorter durations, and let the user pick the 0.5B realtime model as a faster "draft" option (see Decision 7 / `tts-model-selection`).
 - **[AI prompt quality]** → Generated podcast scripts may sound unnatural initially. Mitigation: iterate on prompts with real content, store prompts as external files for easy tuning.
 - **[HyperFrame Lottie rendering]** → Lottie animations need seek-driven registration (`window.__hfLottie`) which differs from autoplay. Mitigation: follow HyperFrame's documented Lottie adapter pattern, test with simple animations first.
 - **[Isla-Reader Swift CLI dependency]** → Requires Xcode/Swift toolchain installed. Mitigation: make it optional — fallback to Python ebooklib extraction if Swift CLI is unavailable.

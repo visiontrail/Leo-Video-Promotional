@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: "Arial Black", Impact, sans-serif;
+      background: #08090b;
+    }
+
+    .stage {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, rgba(255, 72, 64, 0.16) 0 1px, transparent 1px 120px),
+        linear-gradient(0deg, rgba(92, 216, 255, 0.10) 0 1px, transparent 1px 120px),
+        radial-gradient(circle at 80% 20%, rgba(255, 214, 64, 0.28), transparent 360px),
+        #08090b;
+    }
+
+    .slash {
+      position: absolute;
+      width: 520px;
+      height: 1400px;
+      top: -160px;
+      transform: rotate(18deg);
+      background: #ffd640;
+      opacity: 0.92;
+    }
+
+    .slash.one { left: 1200px; }
+    .slash.two { left: 1510px; background: #ff4840; opacity: 0.76; }
+
+    .title-card,
+    .outro-card {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 120px 160px;
+      color: #f8f8ee;
+      z-index: 10;
+    }
+
+    .title-card {
+      animation: cardInOut 5s cubic-bezier(0.19, 1, 0.22, 1) both;
+    }
+
+    .outro-card {
+      align-items: center;
+      text-align: center;
+      animation: cardInOut {{ outro_duration }}s cubic-bezier(0.19, 1, 0.22, 1) both;
+    }
+
+    .kicker {
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: 0;
+      color: #5cd8ff;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+
+    h1, h2 {
+      max-width: 1320px;
+      font-size: 112px;
+      line-height: 0.94;
+      text-transform: uppercase;
+      color: #f8f8ee;
+      text-shadow: 8px 8px 0 #ff4840;
+    }
+
+    .outro-card h2 {
+      font-size: 104px;
+      text-shadow: 8px 8px 0 #5cd8ff;
+    }
+
+    .outro-card p {
+      margin-top: 28px;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 30px;
+      font-weight: 700;
+      color: #ffd640;
+    }
+
+    .segment {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      padding: 118px 150px 140px;
+      z-index: 5;
+      opacity: 0;
+      animation:
+        segmentIn {{ transition_duration }}s ease-out both,
+        segmentOut {{ transition_duration }}s ease-in both;
+    }
+
+    .speaker-pill {
+      position: absolute;
+      top: 112px;
+      left: 150px;
+      padding: 12px 20px;
+      border: 4px solid #f8f8ee;
+      background: #08090b;
+      color: #ffd640;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 26px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .quote {
+      max-width: 1260px;
+      color: #f8f8ee;
+      font-size: 82px;
+      line-height: 1.02;
+      text-transform: uppercase;
+      text-wrap: balance;
+    }
+
+    .quote strong {
+      color: #ffd640;
+    }
+
+    .meter {
+      position: absolute;
+      left: 150px;
+      right: 150px;
+      bottom: 72px;
+      height: 16px;
+      background: rgba(248, 248, 238, 0.18);
+      z-index: 6;
+    }
+
+    .meter-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #5cd8ff, #ffd640, #ff4840);
+      animation: progress {{ audio_duration }}s linear forwards;
+    }
+
+    .character-frame {
+      position: absolute;
+      right: 78px;
+      bottom: 94px;
+      width: 220px;
+      height: 220px;
+      z-index: 8;
+      filter: drop-shadow(10px 10px 0 rgba(255, 72, 64, 0.55));
+    }
+
+    @keyframes cardInOut {
+      0% { opacity: 0; transform: translateX(-70px) skewX(-5deg); }
+      14% { opacity: 1; transform: translateX(0) skewX(0); }
+      84% { opacity: 1; transform: translateX(0) skewX(0); }
+      100% { opacity: 0; transform: translateX(70px) skewX(-5deg); }
+    }
+
+    @keyframes segmentIn {
+      from { opacity: 0; transform: translateY(34px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes segmentOut {
+      from { opacity: 1; transform: translateY(0) scale(1); }
+      to { opacity: 0; transform: translateY(-28px) scale(1.01); }
+    }
+
+    @keyframes progress {
+      from { width: 0%; }
+      to { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage"
+       data-composition-id="podcast"
+       data-width="1920"
+       data-height="1080"
+       data-duration="{{ total_duration }}">
+    <div class="slash one"></div>
+    <div class="slash two"></div>
+
+    <div data-start="0" data-duration="5" data-track-index="1">
+      <div class="title-card">
+        <div class="kicker">A Podcast Discussion</div>
+        <h1>{{ title }}</h1>
+      </div>
+    </div>
+
+    {% for seg in segments %}
+    <div data-start="{{ seg.start }}" data-duration="{{ seg.duration }}" data-track-index="2">
+      <div class="segment" style="animation-delay: 0s, calc({{ seg.duration }}s - {{ transition_duration }}s);">
+        {% if not is_monologue %}<div class="speaker-pill">Speaker {{ seg.speaker }}</div>{% endif %}
+        <div class="quote">{{ seg.text }}</div>
+      </div>
+    </div>
+    {% endfor %}
+
+    <div data-start="{{ content_start }}" data-duration="{{ audio_duration }}" data-track-index="3">
+      <div class="meter"><div class="meter-bar"></div></div>
+    </div>
+
+    {% if include_character %}
+    <div data-start="{{ content_start }}" data-duration="{{ audio_duration }}" data-track-index="4">
+      <div class="character-frame">
+        <div id="hf-character" style="width: 100%; height: 100%;"></div>
+      </div>
+    </div>
+    {% endif %}
+
+    <div data-start="{{ outro_start }}" data-duration="{{ outro_duration }}" data-track-index="5">
+      <div class="outro-card">
+        <h2>Thanks for listening</h2>
+        <p>Generated by Video Promotional</p>
+      </div>
+    </div>
+
+    <audio id="podcast-audio" src="{{ audio_path }}" data-start="{{ content_start }}"></audio>
+  </div>
+
+  {% if include_character %}
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
+  <script>
+    const __hfCharacter = lottie.loadAnimation({
+      container: document.getElementById("hf-character"),
+      renderer: "svg",
+      loop: true,
+      autoplay: false,
+      path: "{{ character_path }}",
+    });
+    window.__hfLottie = window.__hfLottie || [];
+    window.__hfLottie.push(__hfCharacter);
+  </script>
+  {% endif %}
+</body>
+</html>

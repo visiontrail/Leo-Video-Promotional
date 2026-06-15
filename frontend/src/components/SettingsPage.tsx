@@ -5,8 +5,9 @@ import {
   createProvider,
   updateProvider,
   deleteProvider,
+  testProvider,
 } from '../api'
-import type { Provider, ProviderInput } from '../api'
+import type { Provider, ProviderInput, ProviderTestRequest, ProviderTestResult } from '../api'
 
 const EMPTY_FORM: ProviderInput = {
   name: '',
@@ -27,7 +28,27 @@ export default function SettingsPage() {
   const [form, setForm] = useState<ProviderInput>(EMPTY_FORM)
   const [showForm, setShowForm] = useState(false)
 
+  const [testing, setTesting] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({})
+
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['providers'] })
+
+  async function runTest(key: string, input: ProviderTestRequest) {
+    setTesting(key)
+    setTestResults((r) => {
+      const next = { ...r }
+      delete next[key]
+      return next
+    })
+    try {
+      const result = await testProvider(input)
+      setTestResults((r) => ({ ...r, [key]: result }))
+    } catch (e) {
+      setTestResults((r) => ({ ...r, [key]: { ok: false, message: (e as Error).message } }))
+    } finally {
+      setTesting(null)
+    }
+  }
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -63,6 +84,22 @@ export default function SettingsPage() {
   }
 
   const canSave = form.name.trim() && form.endpoint.trim() && form.model.trim()
+  const canTestForm = form.endpoint.trim() && form.model.trim()
+
+  function renderTestResult(key: string) {
+    if (testing === key) {
+      return <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>Testing…</span>
+    }
+    const r = testResults[key]
+    if (!r) return null
+    return (
+      <span style={{ fontSize: 12, color: r.ok ? 'var(--accent, #4f9)' : '#f66' }}>
+        {r.ok
+          ? `✓ ${r.message}${r.latency_ms != null ? ` (${r.latency_ms} ms)` : ''}`
+          : `✗ ${r.message}`}
+      </span>
+    )
+  }
 
   return (
     <div className="card" style={{ maxWidth: 800, margin: '0 auto' }}>
@@ -88,12 +125,21 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>key: {p.api_key_masked || '(none)'}</div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                {!p.is_default && (
-                  <button onClick={() => defaultMutation.mutate(p.id)}>Set default</button>
-                )}
-                <button onClick={() => startEdit(p)}>Edit</button>
-                <button onClick={() => deleteMutation.mutate(p.id)}>Delete</button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    disabled={testing === `card-${p.id}`}
+                    onClick={() => runTest(`card-${p.id}`, { provider_id: p.id })}
+                  >
+                    Test
+                  </button>
+                  {!p.is_default && (
+                    <button onClick={() => defaultMutation.mutate(p.id)}>Set default</button>
+                  )}
+                  <button onClick={() => startEdit(p)}>Edit</button>
+                  <button onClick={() => deleteMutation.mutate(p.id)}>Delete</button>
+                </div>
+                {renderTestResult(`card-${p.id}`)}
               </div>
             </div>
           ))}
@@ -139,11 +185,25 @@ export default function SettingsPage() {
             />
             Set as default provider
           </label>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button className="btn-primary" disabled={!canSave || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
               {saveMutation.isPending ? 'Saving…' : 'Save'}
             </button>
+            <button
+              disabled={!canTestForm || testing === 'form'}
+              onClick={() =>
+                runTest('form', {
+                  provider_id: editingId,
+                  endpoint: form.endpoint.trim(),
+                  model: form.model.trim(),
+                  api_key: form.api_key?.trim() || undefined,
+                })
+              }
+            >
+              Test
+            </button>
             <button onClick={resetForm}>Cancel</button>
+            <span style={{ marginLeft: 'auto' }}>{renderTestResult('form')}</span>
           </div>
           {saveMutation.isError && (
             <div className="error-box" style={{ marginTop: 12 }}>{(saveMutation.error as Error).message}</div>

@@ -1,17 +1,21 @@
 import json
 import logging
 from pathlib import Path
+from collections.abc import Callable
 from backend import config
 from backend.database import update_task
-from backend.models import TaskResponse, TaskStatus
+from backend.models import TaskResponse, TaskStatus, ScriptFormat
 from backend.pipeline.extractors.youtube import extract_youtube
 from backend.pipeline.extractors.epub import extract_epub
+from backend.pipeline.extractors.epub_curated import extract_epub_curated
 from backend.pipeline.extractors.pdf import extract_pdf
 from backend.pipeline.digester import summarize, generate_script
 from backend.pipeline.tts import generate_tts
 from backend.pipeline.composer import compose_video
 
 logger = logging.getLogger(__name__)
+
+LogCallback = Callable[[str], None]
 
 EXTRACTORS = {
     "youtube": extract_youtube,
@@ -20,9 +24,29 @@ EXTRACTORS = {
 }
 
 
-async def run_pipeline(task: TaskResponse):
+def pipeline_log_path(task_dir: Path) -> Path:
+    return task_dir / "logs" / "pipeline.log"
+
+
+def append_pipeline_log(task_dir: Path, message: str):
+    log_path = pipeline_log_path(task_dir)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(message.rstrip() + "\n")
+
+
+def emit_pipeline_log(task_id: str, task_dir: Path, message: str, log: LogCallback | None = None):
+    formatted = f"[{task_id}] {message}"
+    append_pipeline_log(task_dir, formatted)
+    logger.info(formatted)
+    if log:
+        log(formatted)
+
+
+async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     task_dir = config.OUTPUTS_DIR / task.id
     task_dir.mkdir(parents=True, exist_ok=True)
+    task_log = lambda message: emit_pipeline_log(task.id, task_dir, message, log)
 
     await update_task(task.id, output_dir=str(task_dir))
 
@@ -31,56 +55,123 @@ async def run_pipeline(task: TaskResponse):
     provider_id = task.config.provider_id
 
     # Stage 1: Extract
-    logger.info(f"[{task.id}] Stage 1: Extracting from {task.source_type}")
+    task_log(f"Stage 1: Extracting from {task.source_type}")
     await update_task(task.id, status=TaskStatus.EXTRACTING.value)
 
-    extractor = EXTRACTORS.get(task.source_type)
-    if not extractor:
-        raise ValueError(f"Unsupported source type: {task.source_type}")
-
-    content = await extractor(task.source_url)
+    if task.source_type == "epub" and task.config.processing_mode == "curated_highlights":
+        content = await extract_epub_curated(task.source_url, str(task_dir / "isla_reader"), log=task_log)
+    elif task.source_type == "youtube":
+        content = await extract_youtube(task.source_url, log=task_log)
+    else:
+        extractor = EXTRACTORS.get(task.source_type)
+        if not extractor:
+            raise ValueError(f"Unsupported source type: {task.source_type}")
+        content = await extractor(task.source_url, log=task_log)
     await update_task(task.id, source_title=content.title)
+    task_log(f"Extracted '{content.title}' ({len(content.text.split())} words)")
 
     (task_dir / "extracted.json").write_text(
         json.dumps({"title": content.title, "metadata": content.metadata, "text_length": len(content.text)}, indent=2)
     )
 
     # Stage 2: Digest
-    logger.info(f"[{task.id}] Stage 2: Digesting content")
+    task_log("Stage 2: Digesting content")
     await update_task(task.id, status=TaskStatus.DIGESTING.value)
 
-    summary = await summarize(content, ai_endpoint, ai_model, provider_id)
+    summary = await summarize(content, ai_endpoint, ai_model, provider_id, log=task_log)
     (task_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
-    script = await generate_script(summary, task.config.target_duration_minutes, ai_endpoint, ai_model, provider_id)
+    script = await generate_script(
+        summary,
+        task.config.target_duration_minutes,
+        script_format=task.config.script_format.value,
+        ai_endpoint=ai_endpoint,
+        ai_model=ai_model,
+        provider_id=provider_id,
+        log=task_log,
+    )
     script_path = str(task_dir / "script.txt")
     Path(script_path).write_text(script)
     await update_task(task.id, script_path=script_path)
-    logger.info(f"[{task.id}] Script generated: {len(script.split())} words")
+    task_log(f"Script saved to {script_path}")
 
     # Stage 3: TTS
-    logger.info(f"[{task.id}] Stage 3: Generating TTS audio")
+    task_log(f"Stage 3: Generating TTS audio with {task.config.tts_model}")
     await update_task(task.id, status=TaskStatus.TTS.value)
 
     voices = [task.config.voice_1]
-    if task.config.speaker_count >= 2:
+    if task.config.script_format == ScriptFormat.DIALOGUE:
         voices.append(task.config.voice_2)
 
     audio_dir = str(task_dir / "audio")
-    audio_path = await generate_tts(script_path, audio_dir, voices)
+    audio_path = await generate_tts(script_path, audio_dir, voices, task.config.tts_model, log=task_log)
     await update_task(task.id, audio_path=audio_path)
 
-    # Stage 4: Compose video
-    logger.info(f"[{task.id}] Stage 4: Composing video")
-    await update_task(task.id, status=TaskStatus.COMPOSING.value)
+    # Pause for audio review before the (expensive) video composition. The user
+    # previews the audio and triggers the compose stage via the render endpoint.
+    await update_task(task.id, status=TaskStatus.AWAITING_REVIEW.value)
+    task_log("Audio ready, awaiting review before video render")
+
+
+async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
+    """Re-run only the TTS and compose stages from an existing (possibly
+    edited) script, skipping extraction and digestion."""
+    task_dir = config.OUTPUTS_DIR / task.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    task_log = lambda message: emit_pipeline_log(task.id, task_dir, message, log)
+
+    script_path = task.script_path or str(task_dir / "script.txt")
+    if not Path(script_path).exists():
+        raise FileNotFoundError(f"No script to regenerate from at {script_path}")
+
+    title = task.source_title or task.id
+
+    # Stage 3: TTS
+    task_log(f"Regenerate: Generating TTS audio with {task.config.tts_model}")
+    await update_task(task.id, status=TaskStatus.TTS.value, error_message=None)
+
+    voices = [task.config.voice_1]
+    if task.config.script_format == ScriptFormat.DIALOGUE:
+        voices.append(task.config.voice_2)
+
+    audio_dir = str(task_dir / "audio")
+    audio_path = await generate_tts(script_path, audio_dir, voices, task.config.tts_model, log=task_log)
+    await update_task(task.id, audio_path=audio_path)
+
+    # Pause for audio review, same as the full pipeline.
+    await update_task(task.id, status=TaskStatus.AWAITING_REVIEW.value)
+    task_log("Regenerate: audio ready, awaiting review")
+
+
+async def run_compose(task: TaskResponse, log: LogCallback | None = None):
+    """Resume from the compose stage using an already-generated script and
+    audio. Triggered after the user has reviewed the audio preview."""
+    task_dir = config.OUTPUTS_DIR / task.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    task_log = lambda message: emit_pipeline_log(task.id, task_dir, message, log)
+
+    script_path = task.script_path or str(task_dir / "script.txt")
+    audio_path = task.audio_path
+    if not audio_path or not Path(audio_path).exists():
+        raise FileNotFoundError(f"No audio to compose from for task {task.id}")
+    if not Path(script_path).exists():
+        raise FileNotFoundError(f"No script to compose from at {script_path}")
+
+    title = task.source_title or task.id
+
+    task_log(f"Render: Composing video with {task.config.video_template} template")
+    await update_task(task.id, status=TaskStatus.COMPOSING.value, error_message=None)
 
     video_path = await compose_video(
         script_path=script_path,
         audio_path=audio_path,
         output_dir=str(task_dir),
-        title=content.title,
+        title=title,
         include_character=task.config.include_character,
+        video_template=task.config.video_template,
+        is_monologue=task.config.script_format == ScriptFormat.MONOLOGUE,
+        log=task_log,
     )
     await update_task(task.id, video_path=video_path, status=TaskStatus.COMPLETE.value)
 
-    logger.info(f"[{task.id}] Pipeline complete: {video_path}")
+    task_log(f"Render complete: {video_path}")

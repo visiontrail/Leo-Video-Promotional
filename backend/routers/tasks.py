@@ -1,10 +1,13 @@
+import asyncio
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from sse_starlette.sse import EventSourceResponse
 from backend import database as db
-from backend.models import TaskCreate, TaskConfig, TaskListResponse, TaskResponse, SourceType
+from backend.models import TaskCreate, TaskConfig, TaskListResponse, TaskResponse, SourceType, TaskStatus, ScriptUpdate
 from backend.config import UPLOADS_DIR, OUTPUTS_DIR
+from backend.worker import is_task_logging_active, pipeline_log_file, subscribe_task_logs, unsubscribe_task_logs
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -83,6 +86,97 @@ async def get_script(task_id: str):
     if not path.exists():
         raise HTTPException(404, "Script file missing")
     return FileResponse(path, media_type="text/plain", filename=f"{task_id}_script.txt")
+
+
+@router.get("/{task_id}/logs/stream")
+async def stream_task_logs(task_id: str):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+
+    async def event_stream():
+        active = is_task_logging_active(task_id)
+        queue = subscribe_task_logs(task_id) if active else None
+        log_path = pipeline_log_file(task_id, task.output_dir)
+
+        if log_path.exists():
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                yield {"event": "log", "data": line}
+
+        if not active:
+            refreshed = await db.get_task(task_id)
+            status = refreshed.status.value if refreshed else task.status.value
+            yield {"event": "status", "data": status}
+            return
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": ""}
+                    continue
+
+                yield event
+                if event.get("event") == "status":
+                    return
+        finally:
+            if queue:
+                unsubscribe_task_logs(task_id, queue)
+
+    return EventSourceResponse(event_stream())
+
+
+@router.put("/{task_id}/script")
+async def update_script(task_id: str, body: ScriptUpdate):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+
+    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = Path(task.script_path) if task.script_path else out_dir / "script.txt"
+    path.write_text(body.content)
+
+    if not task.script_path:
+        await db.update_task(task_id, script_path=str(path))
+    return {"ok": True}
+
+
+@router.post("/{task_id}/regenerate", response_model=TaskResponse)
+async def regenerate_task(task_id: str):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status in (TaskStatus.EXTRACTING, TaskStatus.DIGESTING, TaskStatus.TTS, TaskStatus.COMPOSING):
+        raise HTTPException(409, "Task is currently processing")
+    if not task.script_path or not Path(task.script_path).exists():
+        raise HTTPException(400, "No script available to regenerate from")
+
+    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / ".regenerate").write_text("")
+
+    await db.update_task(task_id, status=TaskStatus.QUEUED.value, error_message=None)
+    return await db.get_task(task_id)
+
+
+@router.post("/{task_id}/render", response_model=TaskResponse)
+async def render_task(task_id: str):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatus.AWAITING_REVIEW:
+        raise HTTPException(409, "Task is not awaiting review")
+    if not task.audio_path or not Path(task.audio_path).exists():
+        raise HTTPException(400, "No audio available to render from")
+
+    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / ".render").write_text("")
+
+    await db.update_task(task_id, status=TaskStatus.QUEUED.value, error_message=None)
+    return await db.get_task(task_id)
 
 
 @router.delete("/{task_id}")

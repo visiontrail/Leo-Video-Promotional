@@ -220,6 +220,36 @@ async def delete_task(task_id: str):
     await db.close()
 
 
+async def reset_orphaned_tasks() -> int:
+    """Mark tasks left mid-flight by a previous process as FAILED, returning the
+    count reset.
+
+    The worker only ever picks up QUEUED tasks, so a task interrupted while
+    running — e.g. a uvicorn ``--reload`` restart (triggered by editing a
+    backend file) that kills the worker and its render subprocess — would
+    otherwise sit forever in COMPOSING/TTS/etc. with nothing driving it. This is
+    exactly the "stuck in composing" symptom. AWAITING_REVIEW is a deliberate,
+    stable pause (no process running) and is left untouched.
+    """
+    in_progress = (
+        TaskStatus.EXTRACTING.value,
+        TaskStatus.DIGESTING.value,
+        TaskStatus.TTS.value,
+        TaskStatus.COMPOSING.value,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    placeholders = ", ".join("?" for _ in in_progress)
+    cursor = await db.execute(
+        f"""UPDATE tasks SET status = ?, error_message = ?, updated_at = ?
+            WHERE status IN ({placeholders})""",
+        (TaskStatus.FAILED.value, "Interrupted by a server restart — please retry.", now, *in_progress),
+    )
+    await db.commit()
+    await db.close()
+    return cursor.rowcount
+
+
 async def get_next_queued_task() -> TaskResponse | None:
     db = await get_db()
     rows = await db.execute_fetchall(

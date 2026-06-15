@@ -2,10 +2,14 @@ const BASE = '';
 
 export interface TaskConfig {
   target_duration_minutes: number;
+  script_format?: 'monologue' | 'dialogue';
   speaker_count: number;
   voice_1: string;
   voice_2: string;
   include_character: boolean;
+  tts_model?: string;
+  video_template?: string;
+  processing_mode?: string;
   ai_endpoint?: string;
   ai_model?: string;
   provider_id?: number | null;
@@ -29,6 +33,19 @@ export interface ProviderInput {
   is_default?: boolean;
 }
 
+export interface ProviderTestRequest {
+  provider_id?: number | null;
+  endpoint?: string;
+  model?: string;
+  api_key?: string;
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  message: string;
+  latency_ms?: number | null;
+}
+
 export interface Task {
   id: string;
   created_at: string;
@@ -36,7 +53,7 @@ export interface Task {
   source_type: 'youtube' | 'epub' | 'pdf';
   source_url: string | null;
   source_title: string | null;
-  status: 'queued' | 'extracting' | 'digesting' | 'tts' | 'composing' | 'complete' | 'failed';
+  status: 'queued' | 'extracting' | 'digesting' | 'tts' | 'awaiting_review' | 'composing' | 'complete' | 'failed';
   error_message: string | null;
   config: TaskConfig;
   output_dir: string | null;
@@ -123,6 +140,43 @@ export async function deleteProvider(id: number): Promise<void> {
   await fetch(`${BASE}/api/providers/${id}`, { method: 'DELETE' });
 }
 
+export async function testProvider(input: ProviderTestRequest): Promise<ProviderTestResult> {
+  const res = await fetch(`${BASE}/api/providers/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchScript(taskId: string): Promise<string> {
+  const res = await fetch(scriptUrl(taskId));
+  if (!res.ok) throw new Error(await res.text());
+  return res.text();
+}
+
+export async function updateScript(taskId: string, content: string): Promise<void> {
+  const res = await fetch(scriptUrl(taskId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function regenerateTask(taskId: string): Promise<Task> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/regenerate`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function renderTask(taskId: string): Promise<Task> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/render`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export function videoUrl(taskId: string): string {
   return `${BASE}/api/tasks/${taskId}/video`;
 }
@@ -133,4 +187,8 @@ export function audioUrl(taskId: string): string {
 
 export function scriptUrl(taskId: string): string {
   return `${BASE}/api/tasks/${taskId}/script`;
+}
+
+export function logsStreamUrl(taskId: string): string {
+  return `${BASE}/api/tasks/${taskId}/logs/stream`;
 }

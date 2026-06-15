@@ -17,17 +17,30 @@ class TaskStatus(str, Enum):
     EXTRACTING = "extracting"
     DIGESTING = "digesting"
     TTS = "tts"
+    AWAITING_REVIEW = "awaiting_review"
     COMPOSING = "composing"
     COMPLETE = "complete"
     FAILED = "failed"
 
 
+class ScriptFormat(str, Enum):
+    MONOLOGUE = "monologue"  # solo talk-show host (the primary, default style)
+    DIALOGUE = "dialogue"    # two-host back-and-forth conversation
+
+
 class TaskConfig(BaseModel):
     target_duration_minutes: int = 10
-    speaker_count: int = 2
+    # Solo talk-show is the primary product direction; dialogue is the secondary
+    # option. speaker_count is derived from script_format and kept in sync for
+    # back-compat (monologue -> 1 voice, dialogue -> 2 voices).
+    script_format: ScriptFormat = ScriptFormat.MONOLOGUE
+    speaker_count: int = 1
     voice_1: str = "Carter"
     voice_2: str = "Alice"
     include_character: bool = False
+    tts_model: str = "vibevoice-1.5b"
+    video_template: str = "podcast"
+    processing_mode: str = "full_text"
     ai_endpoint: Optional[str] = None
     ai_model: Optional[str] = None
     provider_id: Optional[int] = None
@@ -60,6 +73,10 @@ class TaskListResponse(BaseModel):
     tasks: list[TaskResponse]
 
 
+class ScriptUpdate(BaseModel):
+    content: str
+
+
 class ProviderCreate(BaseModel):
     name: str
     endpoint: str
@@ -88,6 +105,19 @@ class ProviderResponse(BaseModel):
 
 class ProviderListResponse(BaseModel):
     providers: list[ProviderResponse]
+
+
+class ProviderTestRequest(BaseModel):
+    provider_id: Optional[int] = None
+    endpoint: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class ProviderTestResponse(BaseModel):
+    ok: bool
+    message: str
+    latency_ms: Optional[int] = None
 
 
 class SettingsResponse(BaseModel):

@@ -20,6 +20,7 @@ Phase 1 MVP of the Video-Promotional podcast agent is complete: project scaffold
 - Git repository initialized
 
 **Remaining work (Phases 2-4):**
+- TTS model selection (VibeVoice 1.5B high-quality vs 0.5B fast draft) from the UI
 - Real-data end-to-end testing (YouTube URL → finished MP4)
 - EPUB/PDF source validation with real files and prompt refinement
 - Multiple video templates with improved visual design
@@ -41,6 +42,7 @@ Phase 1 MVP of the Video-Promotional podcast agent is complete: project scaffold
 - `script-editing`: In-browser script review and editing before TTS generation, with save and re-generate capabilities
 - `audio-preview`: Audio playback in UI after TTS generation, before committing to video render
 - `ai-provider-management`: UI for managing multiple AI providers (add/edit/switch endpoints, models, API keys)
+- `tts-model-selection`: UI and pipeline support for selecting which local VibeVoice TTS model (1.5B high-quality or 0.5B fast draft) to use per task
 - `isla-reader-integration`: Integration with Isla-Reader Promotion-Agent for curated book highlights as podcast source material
 - `log-streaming`: Real-time pipeline log streaming to the frontend via Server-Sent Events (SSE)
 
@@ -53,6 +55,8 @@ Phase 1 MVP of the Video-Promotional podcast agent is complete: project scaffold
 - `backend/pipeline/digester.py` — prompt refinement based on real output quality
 - `backend/routers/tasks.py` — new endpoints for script editing, audio preview, SSE logs
 - `backend/routers/settings.py` — expanded AI provider management
+- `backend/pipeline/tts.py` — model registry to resolve env script, project dir, inference script, and speaker flag per selected TTS model
+- `backend/config.py` — TTS model registry (1.5B and 0.5B paths + speaker-flag differences)
 - `frontend/src/components/` — new UI components for script editor, audio player, provider config
 - `assets/lottie/` — Lottie animation JSON files
 - Dependencies: may need additional packages for SSE (sse-starlette)

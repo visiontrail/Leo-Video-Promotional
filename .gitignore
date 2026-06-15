@@ -9,5 +9,6 @@ dist/
 *.db-wal
 outputs/
 uploads/
+logs/
 hyperframe/node_modules/
 .DS_Store

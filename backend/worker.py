@@ -1,13 +1,70 @@
 import asyncio
 import logging
 import traceback
-from backend.database import get_next_queued_task, update_task
-from backend.models import TaskStatus
-from backend.pipeline.orchestrator import run_pipeline
+from pathlib import Path
+from backend import config
+from backend.database import get_next_queued_task, get_task, update_task
+from backend.models import TaskResponse, TaskStatus
+from backend.pipeline.orchestrator import append_pipeline_log, run_pipeline, run_regenerate, run_compose
+
+# A queued task carrying this marker file in its output dir should re-run only
+# the TTS stage (from an edited script) rather than the full pipeline.
+REGEN_MARKER = ".regenerate"
+# This marker resumes a reviewed task from the compose stage only.
+RENDER_MARKER = ".render"
 
 logger = logging.getLogger("worker")
 
 _worker_task: asyncio.Task | None = None
+LogEvent = dict[str, str]
+_active_log_queues: dict[str, set[asyncio.Queue[LogEvent]]] = {}
+_active_task_ids: set[str] = set()
+
+
+def _task_dir(task_id: str) -> Path:
+    return config.OUTPUTS_DIR / task_id
+
+
+def pipeline_log_file(task_id: str, output_dir: str | None = None) -> Path:
+    task_dir = Path(output_dir) if output_dir else _task_dir(task_id)
+    return task_dir / "logs" / "pipeline.log"
+
+
+def subscribe_task_logs(task_id: str) -> asyncio.Queue[LogEvent]:
+    queue: asyncio.Queue[LogEvent] = asyncio.Queue()
+    _active_log_queues.setdefault(task_id, set()).add(queue)
+    return queue
+
+
+def unsubscribe_task_logs(task_id: str, queue: asyncio.Queue[LogEvent]):
+    queues = _active_log_queues.get(task_id)
+    if not queues:
+        return
+    queues.discard(queue)
+    if not queues and task_id not in _active_task_ids:
+        _active_log_queues.pop(task_id, None)
+
+
+def is_task_logging_active(task_id: str) -> bool:
+    return task_id in _active_task_ids
+
+
+def publish_task_log(task_id: str, message: str):
+    for queue in list(_active_log_queues.get(task_id, ())):
+        queue.put_nowait({"event": "log", "data": message})
+
+
+def finish_task_logs(task_id: str, status: str):
+    for queue in list(_active_log_queues.get(task_id, ())):
+        queue.put_nowait({"event": "status", "data": status})
+    _active_task_ids.discard(task_id)
+    _active_log_queues.pop(task_id, None)
+
+
+def _persist_and_publish(task: TaskResponse, message: str):
+    formatted = f"[{task.id}] {message}"
+    append_pipeline_log(_task_dir(task.id), formatted)
+    publish_task_log(task.id, formatted)
 
 
 async def _worker_loop():
@@ -16,12 +73,33 @@ async def _worker_loop():
         try:
             task = await get_next_queued_task()
             if task:
-                logger.info(f"Processing task {task.id} ({task.source_type})")
+                _active_task_ids.add(task.id)
+                _active_log_queues.setdefault(task.id, set())
+                regen_marker = config.OUTPUTS_DIR / task.id / REGEN_MARKER
+                render_marker = config.OUTPUTS_DIR / task.id / RENDER_MARKER
+                regenerate = regen_marker.exists()
+                render = render_marker.exists()
+                if regenerate:
+                    regen_marker.unlink()
+                if render:
+                    render_marker.unlink()
+                mode = " [regenerate]" if regenerate else " [render]" if render else ""
+                logger.info(f"Processing task {task.id} ({task.source_type}){mode}")
+                _persist_and_publish(task, f"Processing task ({task.source_type}){mode}")
                 try:
-                    await run_pipeline(task)
+                    if regenerate:
+                        await run_regenerate(task, log=lambda message: publish_task_log(task.id, message))
+                    elif render:
+                        await run_compose(task, log=lambda message: publish_task_log(task.id, message))
+                    else:
+                        await run_pipeline(task, log=lambda message: publish_task_log(task.id, message))
+                    refreshed = await get_task(task.id)
+                    finish_task_logs(task.id, refreshed.status.value if refreshed else TaskStatus.COMPLETE.value)
                 except Exception as e:
                     logger.error(f"Task {task.id} failed: {e}\n{traceback.format_exc()}")
+                    _persist_and_publish(task, f"Task failed: {e}")
                     await update_task(task.id, status=TaskStatus.FAILED.value, error_message=str(e))
+                    finish_task_logs(task.id, TaskStatus.FAILED.value)
             else:
                 await asyncio.sleep(3)
         except Exception as e:

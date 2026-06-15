@@ -1,13 +1,16 @@
 import logging
+from collections.abc import Callable
 from pathlib import Path
 import pdfplumber
 from backend.pipeline.extractors.base import ExtractedContent
 
 logger = logging.getLogger(__name__)
+LogCallback = Callable[[str], None]
 
 
-async def extract_pdf(filepath: str) -> ExtractedContent:
-    logger.info(f"Extracting PDF from {filepath}")
+async def extract_pdf(filepath: str, log: LogCallback | None = None) -> ExtractedContent:
+    emit = lambda message: log(message) if log else logger.info(message)
+    emit(f"Extracting PDF from {filepath}")
     path = Path(filepath)
     if not path.exists():
         raise FileNotFoundError(f"PDF file not found: {filepath}")
@@ -25,7 +28,7 @@ async def extract_pdf(filepath: str) -> ExtractedContent:
     full_text = "\n\n".join(pages)
     title = path.stem.replace("_", " ").replace("-", " ").title()
 
-    logger.info(f"Extracted {len(pages)} pages, {len(full_text.split())} words from '{title}'")
+    emit(f"Extracted {len(pages)} pages, {len(full_text.split())} words from '{title}'")
     return ExtractedContent(
         source_type="pdf",
         title=title,
