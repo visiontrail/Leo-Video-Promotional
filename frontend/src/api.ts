@@ -72,6 +72,29 @@ export interface Settings {
   available_voices: Record<string, { gender: string; lang: string }>;
 }
 
+export interface Prompt {
+  key: string;
+  file: string;
+  label: string;
+  stage: string;
+  description: string;
+  variables: string[];
+  has_default: boolean;
+  content: string;
+  is_modified: boolean;
+  missing_variables: string[];
+}
+
+export interface Skill {
+  name: string;
+  slug: string;
+  description: string;
+  path: string;
+  is_symlink: boolean;
+  enabled: boolean;
+  body?: string;
+}
+
 export async function fetchTasks(): Promise<Task[]> {
   const res = await fetch(`${BASE}/api/tasks`);
   const data = await res.json();
@@ -147,6 +170,69 @@ export async function testProvider(input: ProviderTestRequest): Promise<Provider
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ── Prompts ──────────────────────────────────────────────────────────
+export async function fetchPrompts(): Promise<Prompt[]> {
+  const res = await fetch(`${BASE}/api/prompts`);
+  const data = await res.json();
+  return data.prompts;
+}
+
+export async function updatePrompt(key: string, content: string): Promise<Prompt> {
+  const res = await fetch(`${BASE}/api/prompts/${key}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function resetPrompt(key: string): Promise<Prompt> {
+  const res = await fetch(`${BASE}/api/prompts/${key}/reset`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ── Skills ───────────────────────────────────────────────────────────
+export async function fetchSkills(): Promise<Skill[]> {
+  const res = await fetch(`${BASE}/api/skills`);
+  const data = await res.json();
+  return data.skills;
+}
+
+export async function fetchSkill(name: string): Promise<Skill> {
+  const res = await fetch(`${BASE}/api/skills/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function updateSkill(
+  name: string,
+  input: { enabled?: boolean; body?: string },
+): Promise<Skill> {
+  const res = await fetch(`${BASE}/api/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function uploadSkill(file: File): Promise<Skill> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${BASE}/api/skills/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `Skill upload failed (${res.status})`);
+  }
   return res.json();
 }
 

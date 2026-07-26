@@ -42,7 +42,7 @@ export default function App() {
             <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
           </button>
           <Link to="/settings">
-            <button className="btn-ghost">Settings</button>
+            <button className="btn-ghost">Admin</button>
           </Link>
           <Link to="/new">
             <button className="btn-primary">New Task</button>

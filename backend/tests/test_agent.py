@@ -1,0 +1,128 @@
+import sys
+import types
+import unittest
+from unittest.mock import patch
+
+from backend import config
+from backend.pipeline import agent
+
+
+class FakeTextBlock:
+    def __init__(self, text: str):
+        self.text = text
+
+
+class FakeAssistantMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class FakeResultMessage:
+    def __init__(self, result: str = "", *, is_error: bool = False):
+        self.result = result
+        self.is_error = is_error
+        self.errors = []
+        self.usage = {}
+
+
+class FakeClaudeAgentOptions:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        self.stderr = None
+
+
+def fake_sdk(query):
+    return types.SimpleNamespace(
+        AssistantMessage=FakeAssistantMessage,
+        ClaudeAgentOptions=FakeClaudeAgentOptions,
+        ResultMessage=FakeResultMessage,
+        TextBlock=FakeTextBlock,
+        query=query,
+    )
+
+
+class AgentCompleteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_container_safe_permission_mode_and_provider_environment(self):
+        captured = {}
+
+        async def query(*, prompt, options):
+            captured["prompt"] = prompt
+            captured["options"] = options
+            yield FakeAssistantMessage([FakeTextBlock("pong")])
+            yield FakeResultMessage("pong")
+
+        with (
+            patch.dict(sys.modules, {"claude_agent_sdk": fake_sdk(query)}),
+            patch.object(config, "ANTHROPIC_BASE_URL", ""),
+            patch.object(config, "ANTHROPIC_AUTH_TOKEN", ""),
+            patch.object(config, "ANTHROPIC_MODEL", ""),
+            patch.object(config, "ANTHROPIC_DEFAULT_HAIKU_MODEL", ""),
+        ):
+            result = await agent.agent_complete(
+                "Reply pong.",
+                "ping",
+                model="yinhe-thinking",
+                endpoint="http://oneapi.example/v1/chat/completions",
+                api_key="test-key",
+            )
+
+        self.assertEqual(result, "pong")
+        self.assertEqual(captured["prompt"], "ping")
+        self.assertEqual(captured["options"].permission_mode, "default")
+        self.assertEqual(
+            captured["options"].env["ANTHROPIC_BASE_URL"],
+            "http://oneapi.example",
+        )
+        self.assertEqual(captured["options"].env["ANTHROPIC_API_KEY"], "test-key")
+        self.assertEqual(
+            captured["options"].env["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            "yinhe-thinking",
+        )
+
+    async def test_transport_stderr_is_returned_to_the_caller(self):
+        async def query(*, prompt, options):
+            options.stderr("upstream rejected the request")
+            raise Exception("CLI failed")
+            yield  # pragma: no cover - keeps this an async generator
+
+        with (
+            patch.dict(sys.modules, {"claude_agent_sdk": fake_sdk(query)}),
+            patch.object(config, "AI_MAX_RETRIES", 0),
+            patch.object(config, "ANTHROPIC_BASE_URL", ""),
+            patch.object(config, "ANTHROPIC_AUTH_TOKEN", ""),
+            patch.object(config, "ANTHROPIC_MODEL", ""),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "upstream rejected the request",
+            ):
+                await agent.agent_complete(
+                    "Reply pong.",
+                    "ping",
+                    model="yinhe-thinking",
+                    endpoint="http://oneapi.example",
+                    api_key="test-key",
+                )
+
+
+class ConnectionTestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_allows_a_reasoning_model_to_emit_text(self):
+        captured = {}
+
+        async def complete(system_prompt, user_content, **kwargs):
+            captured.update(kwargs)
+            return "pong"
+
+        with patch.object(agent, "agent_complete", complete):
+            latency = await agent.test_connection(
+                "http://oneapi.example",
+                "yinhe-thinking",
+                "test-key",
+            )
+
+        self.assertGreaterEqual(latency, 0)
+        self.assertEqual(captured["max_tokens"], 256)
+
+
+if __name__ == "__main__":
+    unittest.main()

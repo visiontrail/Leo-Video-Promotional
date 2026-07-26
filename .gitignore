@@ -12,3 +12,5 @@ uploads/
 logs/
 hyperframe/node_modules/
 .DS_Store
+data/
+backend/prompts/.defaults/

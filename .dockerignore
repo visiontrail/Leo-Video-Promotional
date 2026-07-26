@@ -1,0 +1,37 @@
+# Keep the build context small and the image clean.
+.git
+.gitignore
+.venv
+**/__pycache__
+*.pyc
+*.pyo
+.env
+.DS_Store
+
+# Local runtime data — recreated on mounted volumes at runtime.
+outputs/
+uploads/
+logs/
+tasks.db
+tasks.db-shm
+tasks.db-wal
+
+# Frontend deps/build are (re)built inside the image.
+frontend/node_modules
+frontend/dist
+
+# HyperFrames node_modules are large; reinstalled/pinned in the image.
+hyperframe/node_modules
+
+# Vendored SDK samples are reference-only and not needed at runtime. Keep the
+# claude-agent-sdk-python source (incl. its README.md, which hatchling needs to
+# build the wheel) so the path requirement installs.
+claude-agent-sdk-demos/
+claude-agent-sdk-python/.git
+claude-agent-sdk-python/tests
+claude-agent-sdk-python/e2e-tests
+
+# Design/spec docs not needed in the runtime image.
+openspec/
+DESIGN-Dark.md
+DESIGN-Light.md

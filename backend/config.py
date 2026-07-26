@@ -12,6 +12,30 @@ AI_MODEL = os.getenv("AI_MODEL", "glm-4.6-chat")
 AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "120"))
 AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "2"))
 
+# Which backend drives digestion/scriptwriting AI calls:
+#   "agent_sdk" (default) — Claude Agent SDK, talking the Anthropic protocol to
+#                           a provider gateway (the bundled/system `claude` CLI
+#                           is spawned in-process by the SDK).
+#   "http"                — the legacy direct OpenAI-compatible HTTP client.
+# The provider registry (endpoint/api_key/model) still drives both; for the
+# Agent SDK the endpoint is mapped to an Anthropic base URL (see ANTHROPIC_*).
+AI_BACKEND = os.getenv("AI_BACKEND", "agent_sdk").strip().lower()
+
+# Anthropic-protocol provider settings for the Claude Agent SDK. When left
+# blank, ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN are derived from the resolved
+# provider (its OpenAI-style endpoint host and api_key). Set them explicitly to
+# point at a gateway whose Anthropic route lives on a non-root path (e.g.
+# DeepSeek's https://api.deepseek.com/anthropic).
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "").strip()
+ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_AUTH_TOKEN", "").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "").strip()
+# Haiku-tier model the CLI uses for cheap background tasks (title/summary);
+# point it at the same gateway model when the provider has no separate haiku.
+ANTHROPIC_DEFAULT_HAIKU_MODEL = os.getenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "").strip()
+# Optional explicit path to the `claude` CLI. Blank = let the SDK locate it
+# (bundled with the wheel, else the first `claude` on PATH).
+CLAUDE_CLI_PATH = os.getenv("CLAUDE_CLI_PATH", "").strip()
+
 AIWORK_ROOT = Path(os.getenv("AIWORK_ROOT", "/Volumes/TP-1TB/AIWork"))
 TTS_DEVICE = os.getenv("TTS_DEVICE", "mps")
 
@@ -68,9 +92,19 @@ RENDER_QUALITY = os.getenv("RENDER_QUALITY", "draft")  # draft | standard | high
 RENDER_WORKERS = os.getenv("RENDER_WORKERS", "2")      # integer or "auto"
 RENDER_RESOLUTION = os.getenv("RENDER_RESOLUTION", "landscape")  # 1920x1080
 
-OUTPUTS_DIR = PROJECT_ROOT / os.getenv("OUTPUTS_DIR", "outputs")
-DB_PATH = PROJECT_ROOT / "tasks.db"
-UPLOADS_DIR = PROJECT_ROOT / "uploads"
+def _resolve_dir(env_name: str, default_rel: str) -> Path:
+    """Resolve a directory from env: absolute paths (e.g. Docker volume mounts)
+    are used as-is; relative paths hang off the project root."""
+    raw = os.getenv(env_name, default_rel)
+    p = Path(raw)
+    return p if p.is_absolute() else PROJECT_ROOT / p
+
+
+OUTPUTS_DIR = _resolve_dir("OUTPUTS_DIR", "outputs")
+UPLOADS_DIR = _resolve_dir("UPLOADS_DIR", "uploads")
+# DB_PATH may point at a mounted volume in Docker; defaults to the repo root.
+_db_env = os.getenv("DB_PATH", "")
+DB_PATH = Path(_db_env) if _db_env else PROJECT_ROOT / "tasks.db"
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 ISLA_READER_PROMOTION_SCRIPT = Path(
@@ -80,5 +114,6 @@ ISLA_READER_PROMOTION_SCRIPT = Path(
     )
 )
 
-OUTPUTS_DIR.mkdir(exist_ok=True)
-UPLOADS_DIR.mkdir(exist_ok=True)
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)

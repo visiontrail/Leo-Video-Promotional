@@ -12,3 +12,8 @@ python-multipart>=0.0.18
 python-dotenv>=1.0.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
+
+# Claude Agent SDK — installed from the vendored submodule so the pinned
+# source is the single source of truth (see .gitmodules). The `claude` CLI it
+# drives is provided separately: on PATH locally, and via npm in the image.
+./claude-agent-sdk-python

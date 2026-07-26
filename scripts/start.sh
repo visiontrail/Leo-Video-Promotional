@@ -4,6 +4,11 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# Single-port production service: the backend serves the API and the built
+# frontend on one port. Override with PORT/HOST if needed.
+PORT="${PORT:-8100}"
+HOST="${HOST:-0.0.0.0}"
+
 LOG_DIR="${LOG_DIR:-$PROJECT_ROOT/logs}"
 RUN_ID="$(date '+%Y%m%d-%H%M%S')"
 LOG_FILE="$LOG_DIR/start-$RUN_ID.log"
@@ -55,22 +60,30 @@ elif [ -n "${YTDLP_COOKIES_FROM_BROWSER:-}" ]; then
     echo "yt-dlp cookies: browser (${YTDLP_COOKIES_FROM_BROWSER%%:*})"
 fi
 
-# Backend
-echo "Starting backend on http://localhost:8000 ..."
+# Build the frontend so the backend serves the current UI. Set
+# SKIP_FRONTEND_BUILD=1 to reuse the existing frontend/dist (faster restarts).
+if [ "${SKIP_FRONTEND_BUILD:-0}" = "1" ]; then
+    echo "Skipping frontend build (SKIP_FRONTEND_BUILD=1); reusing frontend/dist"
+else
+    echo "Building frontend (npm run build) ..."
+    (
+        cd frontend
+        if [ ! -d node_modules ]; then
+            echo "Installing frontend dependencies (npm install) ..."
+            npm install
+        fi
+        npm run build
+    )
+    echo "Frontend build complete -> frontend/dist"
+fi
+
+# Single process on purpose: the app runs an in-process background worker and
+# keeps in-memory log subscriptions, so it must NOT be scaled with --workers,
+# and --reload is a dev-only feature we don't want in a production service.
+echo "Starting server on http://localhost:$PORT (API + frontend) ..."
 (
     source .venv/bin/activate
-    # Watch only source code for reload. Without --reload-dir, uvicorn watches the
-    # whole project root and reloads (and logs "1 change detected") every time the
-    # worker writes to outputs/ or tasks.db — restarting the server mid-task.
-    uvicorn backend.main:app --reload --reload-dir backend --host 0.0.0.0 --port 8000
-) &
-pids+=("$!")
-
-# Frontend
-echo "Starting frontend on http://localhost:5173 ..."
-(
-    cd frontend
-    npm run dev
+    uvicorn backend.main:app --host "$HOST" --port "$PORT"
 ) &
 pids+=("$!")
 

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 import httpx
 from collections.abc import Callable
@@ -10,6 +11,10 @@ logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
 
 MAX_CHUNK_WORDS = 6000
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+MAX_SCRIPT_OUTPUT_TOKENS = 8192
+NON_ENGLISH_SCRIPT_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*(\d+)\s*[:：\-—–]\s*(.+)$", re.IGNORECASE)
 
 
 def _dlog(log: LogCallback | None, message: str):
@@ -64,6 +69,48 @@ async def _chat(
     api_key: str | None = None,
     log: LogCallback | None = None,
     label: str = "AI call",
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+) -> str:
+    """Single completion for a (system prompt, user content) pair.
+
+    Dispatches to the Claude Agent SDK (default) or the legacy OpenAI-compatible
+    HTTP client based on ``config.AI_BACKEND``. Both honour the same resolved
+    provider config."""
+    if config.AI_BACKEND == "agent_sdk":
+        from backend.pipeline import agent
+
+        return await agent.agent_complete(
+            system_prompt,
+            user_content,
+            model=model or config.AI_MODEL,
+            endpoint=endpoint or config.AI_ENDPOINT,
+            api_key=api_key if api_key is not None else config.AI_API_KEY,
+            max_tokens=max_tokens,
+            log=log,
+            label=label,
+        )
+
+    return await _chat_http(
+        system_prompt,
+        user_content,
+        endpoint=endpoint,
+        model=model,
+        api_key=api_key,
+        log=log,
+        label=label,
+        max_tokens=max_tokens,
+    )
+
+
+async def _chat_http(
+    system_prompt: str,
+    user_content: str,
+    endpoint: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    log: LogCallback | None = None,
+    label: str = "AI call",
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> str:
     endpoint = endpoint or config.AI_ENDPOINT
     model = model or config.AI_MODEL
@@ -72,35 +119,59 @@ async def _chat(
     _dlog(log, f"{label}: POST {endpoint} (model={model}, ~{len(user_content.split())} words in)")
 
     async with httpx.AsyncClient(timeout=config.AI_TIMEOUT) as client:
+        current_max_tokens = max_tokens
         for attempt in range(config.AI_MAX_RETRIES + 1):
             start = time.perf_counter()
             try:
+                prompt = system_prompt
+                if attempt > 0:
+                    prompt = (
+                        f"{system_prompt}\n\n"
+                        "Important retry instruction: output the final answer directly in the message content. "
+                        "Do not spend tokens on hidden reasoning, analysis, markdown fences, or explanations. "
+                        "Start immediately with the requested output."
+                    )
                 resp = await client.post(
                     endpoint,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": prompt},
                             {"role": "user", "content": user_content},
                         ],
                         "temperature": 0.3,
-                        "max_tokens": 4096,
+                        "max_tokens": current_max_tokens,
                     },
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                message = choice.get("message") or {}
+                content = message.get("content") or ""
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 usage = data.get("usage") or {}
+                finish_reason = choice.get("finish_reason")
                 usage_str = (
                     f", tokens={usage.get('prompt_tokens', '?')}+{usage.get('completion_tokens', '?')}"
                     f"={usage.get('total_tokens', '?')}"
                     if usage
                     else ""
                 )
-                _dlog(log, f"{label}: {model} responded in {elapsed_ms:.0f}ms ({len(content)} chars{usage_str})")
-                return content
+                finish_str = f", finish={finish_reason}" if finish_reason else ""
+                _dlog(log, f"{label}: {model} responded in {elapsed_ms:.0f}ms ({len(content)} chars{usage_str}{finish_str})")
+                if content.strip():
+                    return content
+
+                reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+                detail = (
+                    f"empty message content from {model}"
+                    f" (finish={finish_reason or 'unknown'}, max_tokens={current_max_tokens}, "
+                    f"reasoning_chars={len(reasoning)})"
+                )
+                _dwarn(log, f"{label} attempt {attempt + 1} failed: {detail}")
+                if attempt == config.AI_MAX_RETRIES:
+                    raise RuntimeError(f"AI request returned {detail}")
             except httpx.HTTPStatusError as e:
                 # raise_for_status()'s message omits the response body, which is
                 # where the API's real error detail lives (bad path, unknown
@@ -112,6 +183,16 @@ async def _chat(
                     f"response body: {body or '<empty>'}"
                 )
                 _dwarn(log, f"{label} attempt {attempt + 1} failed: {detail}")
+                if (
+                    attempt < config.AI_MAX_RETRIES
+                    and current_max_tokens > DEFAULT_MAX_OUTPUT_TOKENS
+                    and e.response is not None
+                    and e.response.status_code in (400, 422)
+                    and "max_tokens" in body.lower()
+                ):
+                    current_max_tokens = DEFAULT_MAX_OUTPUT_TOKENS
+                    _dwarn(log, f"{label}: retrying with max_tokens={current_max_tokens}")
+                    continue
                 if attempt == config.AI_MAX_RETRIES:
                     raise RuntimeError(f"AI request failed: {detail}") from e
             except httpx.RequestError as e:
@@ -127,9 +208,14 @@ async def _chat(
 
 
 async def test_connection(endpoint: str, model: str, api_key: str) -> int:
-    """Send a minimal chat request to verify the provider is reachable and the
-    model responds in the expected OpenAI-compatible shape. Returns the round-trip
-    latency in milliseconds, or raises on any failure."""
+    """Send a minimal request to verify the provider is reachable and the model
+    responds. Returns the round-trip latency in milliseconds, or raises on any
+    failure. Routes through whichever backend ``config.AI_BACKEND`` selects."""
+    if config.AI_BACKEND == "agent_sdk":
+        from backend.pipeline import agent
+
+        return await agent.test_connection(endpoint, model, api_key)
+
     start = time.perf_counter()
     async with httpx.AsyncClient(timeout=config.AI_TIMEOUT) as client:
         resp = await client.post(
@@ -156,6 +242,38 @@ def _chunk_text(text: str, max_words: int = MAX_CHUNK_WORDS) -> list[str]:
     for i in range(0, len(words), max_words):
         chunks.append(" ".join(words[i:i + max_words]))
     return chunks
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(NON_ENGLISH_SCRIPT_RE.search(text))
+
+
+def _script_max_tokens(word_count: int) -> int:
+    return max(DEFAULT_MAX_OUTPUT_TOKENS, min(MAX_SCRIPT_OUTPUT_TOKENS, word_count * 4))
+
+
+def _normalize_script_lines(script: str, script_format: str, log: LogCallback | None = None) -> list[str]:
+    clean = script.strip()
+    if clean.startswith("```"):
+        clean = clean.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    lines = []
+    for raw_line in clean.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        match = SPEAKER_LINE_RE.match(raw_line)
+        if match:
+            text = match.group(2).strip()
+            if text:
+                lines.append(text)
+            continue
+        lines.append(raw_line)
+
+    if lines and any(SPEAKER_LINE_RE.match(line) for line in clean.splitlines()):
+        _dlog(log, "Removed speaker labels from generated script for TTS-safe output")
+
+    return lines
 
 
 def _summary_from_curated_highlights(content: ExtractedContent) -> dict:
@@ -231,7 +349,8 @@ async def summarize(
         merge_prompt = (
             "You are a content analyst. Merge these partial summaries into a single coherent summary. "
             "Output the same JSON format as the individual summaries, combining the best talking points "
-            "and key quotes from all parts. Keep only the top 5-8 talking points and 3-5 quotes."
+            "and key quotes from all parts. Keep only the top 5-8 talking points and 3-5 quotes. "
+            "All JSON string values MUST be in English; translate any non-English source material."
         )
         combined = "\n\n---\n\n".join(chunk_summaries)
         result = await _chat(merge_prompt, combined, endpoint, model, api_key, log, "Summarize merge")
@@ -277,21 +396,47 @@ async def generate_script(
     system_prompt = system_prompt.replace("{duration_minutes}", str(target_duration_minutes))
 
     user_content = json.dumps(summary, indent=2, ensure_ascii=False)
-    script = await _chat(system_prompt, user_content, endpoint, model, api_key, log, "Scriptwrite")
+    script_tokens = _script_max_tokens(word_count)
+    script = await _chat(
+        system_prompt,
+        user_content,
+        endpoint,
+        model,
+        api_key,
+        log,
+        "Scriptwrite",
+        max_tokens=script_tokens,
+    )
 
-    clean = script.strip()
-    if clean.startswith("```"):
-        clean = clean.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-    lines = [l for l in clean.splitlines() if l.strip().startswith("Speaker")]
-    if not lines and script_format == "monologue":
-        # Monologue prompts occasionally return plain prose without the
-        # "Speaker 1:" prefix; wrap each beat so captions and TTS still work.
-        lines = [f"Speaker 1: {l.strip()}" for l in clean.splitlines() if l.strip()]
-        if lines:
-            _dlog(log, f"Monologue had no speaker labels; wrapped {len(lines)} beats as Speaker 1")
+    lines = _normalize_script_lines(script, script_format, log)
     if not lines:
-        raise RuntimeError("Generated script contains no valid Speaker lines")
+        raise RuntimeError("Generated script contains no spoken lines")
+
+    joined = "\n".join(lines)
+    if _contains_cjk(joined):
+        _dwarn(log, "Generated script contained non-English/CJK text; requesting English-only repair")
+        repair_prompt = (
+            "You repair podcast scripts for a TTS pipeline. Rewrite the user's script in natural spoken "
+            "English only. Translate all Chinese or other non-English text into English. Preserve the same "
+            "one-turn-per-line structure. Do not include Speaker labels, host names, prefixes, headings, "
+            "markdown, or stage directions. Output only the repaired spoken lines."
+        )
+        repaired = await _chat(
+            repair_prompt,
+            joined,
+            endpoint,
+            model,
+            api_key,
+            log,
+            "Scriptwrite repair",
+            max_tokens=script_tokens,
+        )
+        lines = _normalize_script_lines(repaired, script_format, log)
+        joined = "\n".join(lines)
+        if not lines:
+            raise RuntimeError("English repair produced no spoken lines")
+        if _contains_cjk(joined):
+            raise RuntimeError("Generated script still contains non-English/CJK text after repair")
 
     _dlog(log, f"Script generated: {len(lines)} speaker turns, {len(' '.join(lines).split())} words")
-    return "\n".join(lines)
+    return joined

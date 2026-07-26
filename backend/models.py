@@ -135,5 +135,51 @@ class SettingsUpdate(BaseModel):
     ai_model: Optional[str] = None
 
 
+class PromptSummary(BaseModel):
+    key: str
+    file: str
+    label: str
+    stage: str
+    description: str
+    variables: list[str]
+    has_default: bool
+
+
+class PromptDetail(PromptSummary):
+    content: str
+    is_modified: bool
+    missing_variables: list[str]
+
+
+class PromptListResponse(BaseModel):
+    prompts: list[PromptDetail]
+
+
+class PromptUpdate(BaseModel):
+    content: str
+
+
+class SkillSummary(BaseModel):
+    name: str
+    slug: str
+    description: str
+    path: str
+    is_symlink: bool
+    enabled: bool
+
+
+class SkillDetail(SkillSummary):
+    body: str
+
+
+class SkillListResponse(BaseModel):
+    skills: list[SkillSummary]
+
+
+class SkillUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    body: Optional[str] = None
+
+
 def new_task_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]

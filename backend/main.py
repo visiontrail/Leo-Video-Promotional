@@ -7,8 +7,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from backend.database import init_db, reset_orphaned_tasks
 from backend.worker import start_worker
-from backend.routers import tasks, settings, providers
+from backend.routers import tasks, settings, providers, prompts, skills
 from backend.config import OUTPUTS_DIR
+from backend import prompts_registry
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 
@@ -36,6 +37,7 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    prompts_registry.snapshot_defaults()
     await init_db()
     reset = await reset_orphaned_tasks()
     if reset:
@@ -58,6 +60,8 @@ app.add_middleware(
 app.include_router(tasks.router)
 app.include_router(settings.router)
 app.include_router(providers.router)
+app.include_router(prompts.router)
+app.include_router(skills.router)
 
 app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 

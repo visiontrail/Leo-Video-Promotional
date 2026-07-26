@@ -11,18 +11,18 @@ LogCallback = Callable[[str], None]
 # VibeVoice synthesis is the slowest stage; allow up to an hour, but stream its
 # progress live so a hang is visible long before this fires.
 TTS_TIMEOUT = 3600
+SPEAKER_LABEL_RE = re.compile(r"^\s*Speaker\s*\d+\s*[:：\-—–]\s*", re.IGNORECASE)
 
 
 def _strip_speaker_labels(script: str) -> str:
     """Remove leading 'Speaker N:' markers from a script.
 
-    The single-speaker realtime model reads the whole file as raw text and
-    vocalizes it verbatim, so it would otherwise read the labels aloud
-    ("Speaker one, ..."). Stripping them yields a clean monologue. Line breaks
-    between beats are preserved for natural pacing."""
+    VibeVoice can vocalize labels verbatim ("Speaker one, ...") depending on
+    model/script format. Stripping them yields clean spoken input while line
+    breaks preserve turn/beat pacing."""
     lines = []
     for line in script.splitlines():
-        cleaned = re.sub(r"^\s*Speaker\s+\d+:\s*", "", line, flags=re.IGNORECASE).strip()
+        cleaned = SPEAKER_LABEL_RE.sub("", line).strip()
         if cleaned:
             lines.append(cleaned)
     return "\n".join(lines)
@@ -59,16 +59,13 @@ async def generate_tts(
     output_dir_path = Path(output_dir)
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
-    # Single-speaker models read the script as raw text and would vocalize the
-    # "Speaker N:" labels, so feed them a label-stripped copy while leaving the
-    # canonical script.txt (used for captions and editing) untouched.
-    tts_script_path = script_path
-    if model.get("single_speaker"):
-        cleaned = _strip_speaker_labels(Path(script_path).read_text())
-        tts_input = output_dir_path / "tts_input.txt"
-        tts_input.write_text(cleaned)
-        tts_script_path = str(tts_input)
-        emit(f"Single-speaker model: stripped speaker labels for TTS input -> {tts_input}")
+    # TTS models can read speaker labels aloud, so always feed a label-stripped
+    # copy while leaving canonical script.txt available for captions/editing.
+    cleaned = _strip_speaker_labels(Path(script_path).read_text(encoding="utf-8"))
+    tts_input = output_dir_path / "tts_input.txt"
+    tts_input.write_text(cleaned, encoding="utf-8")
+    tts_script_path = str(tts_input)
+    emit(f"TTS input: stripped speaker labels -> {tts_input}")
 
     speaker_args = " ".join(f'"{v}"' for v in voices)
 
@@ -96,8 +93,7 @@ python "{model['inference_script']}" \
         raise RuntimeError(f"TTS generation failed (exit {returncode}): {output[-500:]}")
 
     # The inference scripts name output "<input-stem>_generated.wav" from the
-    # txt they actually read, which is tts_script_path (the cleaned copy for
-    # single-speaker models, else the script itself).
+    # txt they actually read, which is tts_script_path (the cleaned copy).
     script_stem = Path(tts_script_path).stem
     expected = output_dir_path / f"{script_stem}_generated.wav"
     if expected.exists():

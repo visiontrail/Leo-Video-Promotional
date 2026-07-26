@@ -208,25 +208,6 @@ export default function TaskForm() {
         </div>
       </div>
 
-      <div className="grid-2">
-        <div className="form-group">
-          <label>Target Duration (minutes)</label>
-          <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
-            <option value={5}>5 min</option>
-            <option value={10}>10 min</option>
-            <option value={15}>15 min</option>
-            <option value={20}>20 min</option>
-          </select>
-        </div>
-        <div className="form-group">
-          <label style={{ visibility: 'hidden' }}>Character</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14, color: 'var(--text)' }}>
-            <input type="checkbox" checked={character} onChange={(e) => setCharacter(e.target.checked)} style={{ width: 'auto' }} />
-            Include animated character
-          </label>
-        </div>
-      </div>
-
       <div className={isMonologue ? '' : 'grid-2'}>
         <div className="form-group">
           <label>{isMonologue ? 'Host Voice' : 'Host Voice (Speaker 1)'}</label>
@@ -247,6 +228,11 @@ export default function TaskForm() {
           </div>
         )}
       </div>
+      <small style={{ display: 'block', marginTop: 6, marginBottom: 16, color: 'var(--text-dim)' }}>
+        {isMonologue
+          ? 'Solo talk-show uses a single voice.'
+          : 'Two-host dialogue uses two voices — a host and a co-host.'}
+      </small>
 
       <div className="form-group">
         <label>TTS Model</label>
@@ -266,6 +252,25 @@ export default function TaskForm() {
             Two-host dialogue requires the 1.5B model.
           </small>
         )}
+      </div>
+
+      <div className="grid-2">
+        <div className="form-group">
+          <label>Target Duration (minutes)</label>
+          <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+            <option value={5}>5 min</option>
+            <option value={10}>10 min</option>
+            <option value={15}>15 min</option>
+            <option value={20}>20 min</option>
+          </select>
+        </div>
+        <div className="form-group">
+          <label style={{ visibility: 'hidden' }}>Character</label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14, color: 'var(--text)' }}>
+            <input type="checkbox" checked={character} onChange={(e) => setCharacter(e.target.checked)} style={{ width: 'auto' }} />
+            Include animated character
+          </label>
+        </div>
       </div>
 
       <div className="form-group">

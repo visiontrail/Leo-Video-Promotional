@@ -17,8 +17,19 @@ if [ ! -d .venv ]; then
 fi
 source .venv/bin/activate
 pip install --upgrade pip -q
+# requirements.txt installs the vendored Claude Agent SDK (./claude-agent-sdk-python).
 pip install -r requirements.txt -q
-echo "  Python dependencies installed."
+echo "  Python dependencies installed (incl. Claude Agent SDK)."
+
+# The Agent SDK spawns the `claude` CLI. It ships bundled with the PyPI wheel,
+# but the vendored source doesn't bundle it — so ensure one is on PATH.
+if command -v claude >/dev/null 2>&1; then
+    echo "  Claude CLI found: $(claude --version 2>/dev/null | head -1)"
+else
+    echo "  Claude CLI not found. Install it (needed only for AI_BACKEND=agent_sdk):"
+    echo "    npm install -g @anthropic-ai/claude-code"
+    echo "    # or: curl -fsSL https://claude.ai/install.sh | bash"
+fi
 
 # 2. Frontend
 echo "[2/4] Installing frontend dependencies..."
@@ -40,4 +51,4 @@ mkdir -p outputs assets/lottie
 
 echo ""
 echo "=== Setup complete ==="
-echo "Run ./scripts/start.sh to start the servers."
+echo "Run ./scripts/start.sh to start the app, then open http://localhost:8100"

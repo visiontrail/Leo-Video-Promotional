@@ -67,17 +67,30 @@ def _detect_silence_boundaries(wav_path: str, log: LogCallback | None = None) ->
     return boundaries
 
 
-def _parse_script_segments(script_path: str) -> list[dict]:
+SPEAKER_LABEL_RE = re.compile(r"^Speaker\s*(\d+)\s*[:：\-—–]\s*(.+)$", re.IGNORECASE)
+
+
+def _parse_script_segments(script_path: str, is_monologue: bool = False) -> list[dict]:
     segments = []
     with open(script_path, "r") as f:
         for line in f:
             line = line.strip()
-            match = re.match(r"^Speaker\s+(\d+):\s*(.+)$", line, re.IGNORECASE)
+            if not line:
+                continue
+            match = SPEAKER_LABEL_RE.match(line)
             if match:
+                text = match.group(2)
                 segments.append({
                     "speaker": int(match.group(1)),
-                    "text": match.group(2),
-                    "word_count": len(match.group(2).split()),
+                    "text": text,
+                    "word_count": len(text.split()),
+                })
+            else:
+                speaker = 1 if is_monologue else (len(segments) % 2) + 1
+                segments.append({
+                    "speaker": speaker,
+                    "text": line,
+                    "word_count": len(line.split()),
                 })
     return segments
 
@@ -171,7 +184,7 @@ async def compose_video(
     composition_duration = audio_duration + TITLE_DURATION + OUTRO_DURATION
     emit(f"Audio duration: {audio_duration:.1f}s; composition {composition_duration:.1f}s")
 
-    segments = _parse_script_segments(script_path)
+    segments = _parse_script_segments(script_path, is_monologue=is_monologue)
     emit(f"Parsed {len(segments)} script segments")
     boundaries = _detect_silence_boundaries(audio_path, log)
     timing_mode = "silence boundaries" if boundaries and len(boundaries) >= len(segments) - 1 else "proportional (word count)"
