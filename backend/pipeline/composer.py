@@ -43,7 +43,11 @@ def _get_audio_duration(wav_path: str) -> float:
 def _detect_silence_boundaries(wav_path: str, log: LogCallback | None = None) -> list[float]:
     command = [
         "ffmpeg", "-i", wav_path,
-        "-af", "silencedetect=noise=-30dB:d=0.4",
+        # VibeVoice inserts sub-second pauses inside sentences and longer pauses
+        # between script paragraphs/turns. Treat only the latter as caption
+        # boundaries; otherwise early sentence pauses consume segment slots and
+        # leave the final caption on-screen for most of the episode.
+        "-af", "silencedetect=noise=-30dB:d=1.2",
         "-f", "null", "-",
     ]
     # NB: do NOT pass the task `log` callback here. silencedetect emits hundreds
