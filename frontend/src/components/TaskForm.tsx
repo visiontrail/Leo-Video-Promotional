@@ -45,6 +45,9 @@ export default function TaskForm() {
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
   const [processingMode, setProcessingMode] = useState<'full_text' | 'curated_highlights'>('full_text')
   const [character, setCharacter] = useState(false)
+  const [footageEnabled, setFootageEnabled] = useState(true)
+  const [footageClipCount, setFootageClipCount] = useState(3)
+  const [footageOrientation, setFootageOrientation] = useState<'landscape' | 'portrait'>('landscape')
   const [providerId, setProviderId] = useState<number | null>(null)
   const [dragover, setDragover] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -79,6 +82,11 @@ export default function TaskForm() {
         processing_mode: sourceType === 'epub' ? processingMode : 'full_text',
         include_character: character,
         provider_id: providerId,
+        footage_enabled: footageEnabled,
+        footage_provider: 'wikimedia',
+        footage_license_policy: 'open_only',
+        footage_clip_count: footageClipCount,
+        footage_orientation: footageOrientation,
       }
       return createTask(
         sourceType,
@@ -296,6 +304,71 @@ export default function TaskForm() {
           ))}
         </div>
       </div>
+
+      <section className={`footage-config ${footageEnabled ? 'is-enabled' : ''}`}>
+        <div className="footage-config-head">
+          <div>
+            <span className="eyebrow">Agent media scout</span>
+            <h3>Public Footage</h3>
+            <p>Plan visual searches, download eligible B-roll, and keep a license audit trail.</p>
+          </div>
+          <label className="footage-toggle">
+            <input
+              type="checkbox"
+              checked={footageEnabled}
+              onChange={(event) => setFootageEnabled(event.target.checked)}
+            />
+            <span aria-hidden="true" />
+            <b>{footageEnabled ? 'On' : 'Off'}</b>
+          </label>
+        </div>
+
+        <div className="source-readiness">
+          <span className="source-monogram">WC</span>
+          <span>
+            <strong>Wikimedia Commons</strong>
+            <small>No API key required</small>
+          </span>
+          <em>Ready</em>
+        </div>
+
+        {footageEnabled && (
+          <>
+            <div className="grid-2 footage-options">
+              <div>
+                <label>Target clips</label>
+                <select
+                  value={footageClipCount}
+                  onChange={(event) => setFootageClipCount(Number(event.target.value))}
+                >
+                  <option value={2}>2 clips</option>
+                  <option value={3}>3 clips</option>
+                  <option value={4}>4 clips</option>
+                  <option value={5}>5 clips</option>
+                  <option value={6}>6 clips</option>
+                </select>
+              </div>
+              <div>
+                <label>Frame orientation</label>
+                <select
+                  value={footageOrientation}
+                  onChange={(event) => setFootageOrientation(event.target.value as 'landscape' | 'portrait')}
+                >
+                  <option value="landscape">Landscape</option>
+                  <option value="portrait">Portrait</option>
+                </select>
+              </div>
+            </div>
+            <div className="license-gate">
+              <span className="license-gate-icon">✓</span>
+              <span>
+                <strong>Open-license gate</strong>
+                <small>Public Domain · CC0 · CC BY · CC BY-SA</small>
+              </span>
+            </div>
+          </>
+        )}
+      </section>
 
       {providers.length > 0 && (
         <div className="form-group">

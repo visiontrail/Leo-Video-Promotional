@@ -70,6 +70,17 @@ PROMPT_REGISTRY: list[PromptSpec] = [
         description="Turns the summary brief into a two-host back-and-forth conversation script.",
         variables=["word_count", "duration_minutes"],
     ),
+    PromptSpec(
+        key="footage_plan",
+        file="footage_plan.txt",
+        label="Public Footage Plan",
+        stage="Footage",
+        description=(
+            "Turns the title and narration into concrete Wikimedia Commons "
+            "B-roll search queries for the media-scouting agent."
+        ),
+        variables=[],
+    ),
 ]
 
 _BY_KEY = {spec.key: spec for spec in PROMPT_REGISTRY}

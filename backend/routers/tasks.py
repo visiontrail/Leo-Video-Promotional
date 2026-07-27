@@ -1,12 +1,23 @@
 import asyncio
+import json
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 from backend import database as db
-from backend.models import TaskCreate, TaskConfig, TaskListResponse, TaskResponse, SourceType, TaskStatus, ScriptUpdate
+from backend.models import (
+    TaskCreate,
+    TaskConfig,
+    TaskListResponse,
+    TaskResponse,
+    SourceType,
+    TaskStatus,
+    ScriptUpdate,
+    FootageAcquireRequest,
+)
 from backend.config import UPLOADS_DIR, OUTPUTS_DIR
+from backend.pipeline.footage import read_manifest
 from backend.worker import is_task_logging_active, pipeline_log_file, subscribe_task_logs, unsubscribe_task_logs
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -53,6 +64,77 @@ async def get_task(task_id: str):
     if not task:
         raise HTTPException(404, "Task not found")
     return task
+
+
+@router.get("/{task_id}/footage")
+async def get_task_footage(task_id: str):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    manifest = read_manifest(out_dir)
+    if manifest is not None:
+        return manifest
+    return {
+        "task_id": task_id,
+        "status": "not_started",
+        "provider": "Wikimedia Commons",
+        "provider_id": "wikimedia",
+        "license_policy": "open_only",
+        "license_allowlist": ["Public Domain", "CC0", "CC BY", "CC BY-SA"],
+        "requested_clip_count": task.config.footage_clip_count,
+        "planner": "",
+        "queries": [],
+        "clips": [],
+        "errors": [],
+    }
+
+
+@router.get("/{task_id}/footage/{clip_id}/file")
+async def get_task_footage_file(task_id: str, clip_id: str):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    manifest = read_manifest(out_dir)
+    if manifest is None:
+        raise HTTPException(404, "Footage manifest not available")
+    clip = next((item for item in manifest.get("clips", []) if item.get("id") == clip_id), None)
+    if clip is None:
+        raise HTTPException(404, "Footage clip not found")
+
+    path = (out_dir / str(clip.get("local_path") or "")).resolve()
+    out_dir_resolved = out_dir.resolve()
+    if path != out_dir_resolved and out_dir_resolved not in path.parents:
+        raise HTTPException(400, "Invalid footage path")
+    if not path.is_file():
+        raise HTTPException(404, "Footage file missing")
+    return FileResponse(
+        path,
+        media_type=str(clip.get("mime_type") or "video/webm"),
+        filename=path.name,
+    )
+
+
+@router.post("/{task_id}/footage/acquire", response_model=TaskResponse)
+async def acquire_task_footage(task_id: str, body: FootageAcquireRequest):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.COMPLETE, TaskStatus.FAILED):
+        raise HTTPException(409, "Task must be paused, complete, or failed before footage can be retried")
+    if not task.script_path or not Path(task.script_path).exists():
+        raise HTTPException(400, "No script available for footage planning")
+
+    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    marker = {
+        "resume_status": task.status.value,
+        "queries": body.queries,
+    }
+    (out_dir / ".footage").write_text(json.dumps(marker), encoding="utf-8")
+    await db.update_task(task_id, status=TaskStatus.QUEUED.value, error_message=None)
+    return await db.get_task(task_id)
 
 
 @router.get("/{task_id}/video")

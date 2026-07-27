@@ -4,7 +4,7 @@ A local agent that turns a **YouTube video, EPUB, or PDF** into a short **podcas
 The primary output is a **solo talk-show monologue** (a single host talking to the audience);
 a two-host dialogue format is also available.
 
-Pipeline: **source extract → AI digest → script → VibeVoice TTS → HyperFrames video render**.
+Pipeline: **source extract → AI digest → script → public-footage scout → VibeVoice TTS → HyperFrames video render**.
 
 ## Architecture
 
@@ -132,3 +132,16 @@ On the New Task form, **Format** is the first choice:
 - **Two-Host Dialogue** — host + co-host, two voices. Requires the **1.5B** model.
 
 The number of voice pickers follows the format automatically.
+
+## Public-footage scout
+
+New tasks can enable **Public Footage** from the task form. After scriptwriting,
+the configured AI provider produces concrete B-roll search queries and the
+worker searches Wikimedia Commons, downloads eligible clips, and saves an
+auditable `footage/manifest.json` beside the task outputs.
+
+The scout requires no stock-media API key and only accepts files with explicit
+Public Domain, CC0, CC BY, or CC BY-SA metadata. Each manifest entry records the
+creator, license, Commons source page, dimensions, duration, byte size, SHA-256,
+and local path. The task detail page previews downloaded files and supports
+retrying the footage stage without re-running extraction, scriptwriting, or TTS.

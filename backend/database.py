@@ -234,6 +234,7 @@ async def reset_orphaned_tasks() -> int:
     in_progress = (
         TaskStatus.EXTRACTING.value,
         TaskStatus.DIGESTING.value,
+        TaskStatus.SOURCING.value,
         TaskStatus.TTS.value,
         TaskStatus.COMPOSING.value,
     )

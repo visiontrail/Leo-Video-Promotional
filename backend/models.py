@@ -16,6 +16,7 @@ class TaskStatus(str, Enum):
     QUEUED = "queued"
     EXTRACTING = "extracting"
     DIGESTING = "digesting"
+    SOURCING = "sourcing"
     TTS = "tts"
     AWAITING_REVIEW = "awaiting_review"
     COMPOSING = "composing"
@@ -44,6 +45,14 @@ class TaskConfig(BaseModel):
     ai_endpoint: Optional[str] = None
     ai_model: Optional[str] = None
     provider_id: Optional[int] = None
+    # Optional B-roll scout. New tasks enable this from the UI; the model
+    # default remains off so tasks created by older clients keep their original
+    # network and storage behavior.
+    footage_enabled: bool = False
+    footage_provider: str = "wikimedia"
+    footage_license_policy: str = "open_only"
+    footage_clip_count: int = Field(default=3, ge=1, le=6)
+    footage_orientation: str = "landscape"
 
 
 class TaskCreate(BaseModel):
@@ -75,6 +84,10 @@ class TaskListResponse(BaseModel):
 
 class ScriptUpdate(BaseModel):
     content: str
+
+
+class FootageAcquireRequest(BaseModel):
+    queries: list[str] = Field(default_factory=list, max_length=6)
 
 
 class ProviderCreate(BaseModel):

@@ -13,6 +13,11 @@ export interface TaskConfig {
   ai_endpoint?: string;
   ai_model?: string;
   provider_id?: number | null;
+  footage_enabled?: boolean;
+  footage_provider?: 'wikimedia';
+  footage_license_policy?: 'open_only';
+  footage_clip_count?: number;
+  footage_orientation?: 'landscape' | 'portrait';
 }
 
 export interface Provider {
@@ -53,7 +58,7 @@ export interface Task {
   source_type: 'youtube' | 'epub' | 'pdf';
   source_url: string | null;
   source_title: string | null;
-  status: 'queued' | 'extracting' | 'digesting' | 'tts' | 'awaiting_review' | 'composing' | 'complete' | 'failed';
+  status: 'queued' | 'extracting' | 'digesting' | 'sourcing' | 'tts' | 'awaiting_review' | 'composing' | 'complete' | 'failed';
   error_message: string | null;
   config: TaskConfig;
   output_dir: string | null;
@@ -61,6 +66,48 @@ export interface Task {
   audio_path: string | null;
   video_path: string | null;
   duration_seconds: number | null;
+}
+
+export interface FootageQuery {
+  query: string;
+  purpose: string;
+}
+
+export interface FootageClip {
+  id: string;
+  query: string;
+  purpose: string;
+  provider: string;
+  provider_id: string;
+  title: string;
+  source_page_url: string;
+  creator: string;
+  license: string;
+  license_url?: string;
+  attribution_required: boolean;
+  duration_seconds: number;
+  width: number;
+  height: number;
+  bytes: number;
+  mime_type: string;
+  description?: string;
+  sha256: string;
+  local_path: string;
+  status: string;
+}
+
+export interface FootageManifest {
+  task_id: string;
+  status: 'not_started' | 'planning' | 'searching' | 'ready' | 'partial' | 'no_results';
+  provider: string;
+  provider_id: string;
+  license_policy: string;
+  license_allowlist: string[];
+  requested_clip_count: number;
+  planner: string;
+  queries: FootageQuery[];
+  clips: FootageClip[];
+  errors: Array<{ query?: string; stage?: string; message: string }>;
 }
 
 export interface Settings {
@@ -261,6 +308,26 @@ export async function renderTask(taskId: string): Promise<Task> {
   const res = await fetch(`${BASE}/api/tasks/${taskId}/render`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function fetchFootage(taskId: string): Promise<FootageManifest> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/footage`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function acquireFootage(taskId: string, queries: string[] = []): Promise<Task> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/footage/acquire`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ queries }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export function footageFileUrl(taskId: string, clipId: string): string {
+  return `${BASE}/api/tasks/${taskId}/footage/${clipId}/file`;
 }
 
 export function videoUrl(taskId: string): string {

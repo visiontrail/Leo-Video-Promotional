@@ -12,6 +12,7 @@ from backend.pipeline.extractors.pdf import extract_pdf
 from backend.pipeline.digester import summarize, generate_script
 from backend.pipeline.tts import generate_tts
 from backend.pipeline.composer import compose_video
+from backend.pipeline.footage import acquire_public_footage
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,31 @@ def emit_pipeline_log(task_id: str, task_dir: Path, message: str, log: LogCallba
     logger.info(formatted)
     if log:
         log(formatted)
+
+
+async def _acquire_task_footage(
+    task: TaskResponse,
+    task_dir: Path,
+    task_log: LogCallback,
+    *,
+    title: str | None = None,
+    supplied_queries: list[str] | None = None,
+):
+    script_path = Path(task.script_path or task_dir / "script.txt")
+    return await acquire_public_footage(
+        task_id=task.id,
+        task_dir=task_dir,
+        title=title or task.source_title or task.id,
+        script_path=script_path,
+        clip_count=task.config.footage_clip_count,
+        orientation=task.config.footage_orientation,
+        license_policy=task.config.footage_license_policy,
+        provider_id=task.config.provider_id,
+        ai_endpoint=task.config.ai_endpoint,
+        ai_model=task.config.ai_model,
+        supplied_queries=supplied_queries,
+        log=task_log,
+    )
 
 
 async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
@@ -95,6 +121,22 @@ async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     await update_task(task.id, script_path=script_path)
     task_log(f"Script saved to {script_path}")
 
+    # Stage 2.5: AI-planned public B-roll. Footage is a production enhancement,
+    # not a reason to lose an otherwise valid narration, so provider/network
+    # failures are logged and the audio pipeline continues.
+    if task.config.footage_enabled:
+        task_log("Stage 2.5: Scouting open-license public footage")
+        await update_task(task.id, status=TaskStatus.SOURCING.value)
+        try:
+            await _acquire_task_footage(
+                task,
+                task_dir,
+                task_log,
+                title=content.title,
+            )
+        except Exception as exc:
+            task_log(f"Public footage scout could not complete; continuing without B-roll: {exc}")
+
     # Stage 3: TTS
     task_log(f"Stage 3: Generating TTS audio with {task.config.tts_model}")
     await update_task(task.id, status=TaskStatus.TTS.value)
@@ -141,6 +183,35 @@ async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
     # Pause for audio review, same as the full pipeline.
     await update_task(task.id, status=TaskStatus.AWAITING_REVIEW.value)
     task_log("Regenerate: audio ready, awaiting review")
+
+
+async def run_footage_acquisition(
+    task: TaskResponse,
+    *,
+    resume_status: str,
+    supplied_queries: list[str] | None = None,
+    log: LogCallback | None = None,
+):
+    """Run or retry only the public-footage scout from an existing script."""
+    task_dir = config.OUTPUTS_DIR / task.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    task_log = lambda message: emit_pipeline_log(task.id, task_dir, message, log)
+
+    script_path = Path(task.script_path or task_dir / "script.txt")
+    if not script_path.exists():
+        raise FileNotFoundError(f"No script to scout from at {script_path}")
+
+    task_log("Footage retry: planning and acquiring open-license B-roll")
+    await update_task(task.id, status=TaskStatus.SOURCING.value, error_message=None)
+    try:
+        await _acquire_task_footage(
+            task,
+            task_dir,
+            task_log,
+            supplied_queries=supplied_queries,
+        )
+    finally:
+        await update_task(task.id, status=resume_status)
 
 
 async def run_compose(task: TaskResponse, log: LogCallback | None = None):

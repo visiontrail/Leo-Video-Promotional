@@ -12,6 +12,16 @@ AI_MODEL = os.getenv("AI_MODEL", "glm-4.6-chat")
 AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "120"))
 AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "2"))
 
+# Public-footage scouting. Wikimedia Commons needs no key, but asks API clients
+# to identify themselves. The byte ceiling prevents an autonomous scout from
+# pulling down unexpectedly large archival masters.
+FOOTAGE_USER_AGENT = os.getenv(
+    "FOOTAGE_USER_AGENT",
+    "VideoPromotional/1.0 (local AI media scout)",
+)
+FOOTAGE_TIMEOUT = int(os.getenv("FOOTAGE_TIMEOUT", "45"))
+FOOTAGE_MAX_BYTES = int(os.getenv("FOOTAGE_MAX_BYTES", str(50 * 1024 * 1024)))
+
 # Which backend drives digestion/scriptwriting AI calls:
 #   "agent_sdk" (default) — Claude Agent SDK, talking the Anthropic protocol to
 #                           a provider gateway (the bundled/system `claude` CLI

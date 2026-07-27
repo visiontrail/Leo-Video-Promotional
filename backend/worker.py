@@ -1,17 +1,27 @@
 import asyncio
+import json
 import logging
 import traceback
 from pathlib import Path
 from backend import config
 from backend.database import get_next_queued_task, get_task, update_task
 from backend.models import TaskResponse, TaskStatus
-from backend.pipeline.orchestrator import append_pipeline_log, run_pipeline, run_regenerate, run_compose
+from backend.pipeline.orchestrator import (
+    append_pipeline_log,
+    run_pipeline,
+    run_regenerate,
+    run_compose,
+    run_footage_acquisition,
+)
 
 # A queued task carrying this marker file in its output dir should re-run only
 # the TTS stage (from an edited script) rather than the full pipeline.
 REGEN_MARKER = ".regenerate"
 # This marker resumes a reviewed task from the compose stage only.
 RENDER_MARKER = ".render"
+# Retry only the footage scout. The marker stores the stable status to restore
+# after the worker briefly moves the task through QUEUED/SOURCING.
+FOOTAGE_MARKER = ".footage"
 
 logger = logging.getLogger("worker")
 
@@ -77,13 +87,26 @@ async def _worker_loop():
                 _active_log_queues.setdefault(task.id, set())
                 regen_marker = config.OUTPUTS_DIR / task.id / REGEN_MARKER
                 render_marker = config.OUTPUTS_DIR / task.id / RENDER_MARKER
+                footage_marker = config.OUTPUTS_DIR / task.id / FOOTAGE_MARKER
                 regenerate = regen_marker.exists()
                 render = render_marker.exists()
+                footage = footage_marker.exists()
+                footage_options = {}
                 if regenerate:
                     regen_marker.unlink()
                 if render:
                     render_marker.unlink()
-                mode = " [regenerate]" if regenerate else " [render]" if render else ""
+                if footage:
+                    try:
+                        footage_options = json.loads(footage_marker.read_text(encoding="utf-8") or "{}")
+                    finally:
+                        footage_marker.unlink()
+                mode = (
+                    " [regenerate]" if regenerate
+                    else " [render]" if render
+                    else " [footage]" if footage
+                    else ""
+                )
                 logger.info(f"Processing task {task.id} ({task.source_type}){mode}")
                 _persist_and_publish(task, f"Processing task ({task.source_type}){mode}")
                 try:
@@ -91,6 +114,13 @@ async def _worker_loop():
                         await run_regenerate(task, log=lambda message: publish_task_log(task.id, message))
                     elif render:
                         await run_compose(task, log=lambda message: publish_task_log(task.id, message))
+                    elif footage:
+                        await run_footage_acquisition(
+                            task,
+                            resume_status=footage_options.get("resume_status", TaskStatus.AWAITING_REVIEW.value),
+                            supplied_queries=footage_options.get("queries") or None,
+                            log=lambda message: publish_task_log(task.id, message),
+                        )
                     else:
                         await run_pipeline(task, log=lambda message: publish_task_log(task.id, message))
                     refreshed = await get_task(task.id)

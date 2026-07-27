@@ -13,11 +13,13 @@ import {
   scriptUrl,
 } from '../api'
 import LogPanel from './LogPanel'
+import FootagePanel from './FootagePanel'
 
-const STAGES = ['extracting', 'digesting', 'tts', 'awaiting_review', 'composing', 'complete'] as const
+const STAGES = ['extracting', 'digesting', 'sourcing', 'tts', 'awaiting_review', 'composing', 'complete'] as const
 const STAGE_LABELS: Record<string, string> = {
   extracting: 'Extract',
   digesting: 'Digest',
+  sourcing: 'Footage',
   tts: 'TTS',
   awaiting_review: 'Review',
   composing: 'Compose',
@@ -216,6 +218,10 @@ export default function TaskDetail() {
               </div>
             )}
           </div>
+        )}
+
+        {task.config.footage_enabled && (
+          <FootagePanel task={task} />
         )}
 
         <LogPanel taskId={task.id} taskStatus={task.status} />
