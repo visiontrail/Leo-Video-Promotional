@@ -118,9 +118,9 @@ GROUPS: tuple[SettingGroup, ...] = (
     ),
     SettingGroup(
         "footage",
-        "Public Footage",
-        "The Wikimedia Commons B-roll scout. No API key is needed, but the "
-        "client must identify itself and keep downloads bounded.",
+        "Footage Sources",
+        "Wikimedia Commons plus the project-local OpenCLI/yt-dlp web scout. "
+        "Web-platform clips retain a source ledger and require rights review.",
     ),
     SettingGroup(
         "paths",
@@ -333,6 +333,40 @@ SPECS: tuple[SettingSpec, ...] = (
         minimum=1024 * 1024, maximum=2 * 1024 * 1024 * 1024,
         description="Ceiling per download, so an autonomous scout cannot pull "
                     "an archival master. 52428800 = 50 MB.",
+    ),
+    SettingSpec(
+        "OPENCLI_BIN", "footage", "OpenCLI wrapper", "path",
+        placeholder="scripts/opencli.sh",
+        description="Project-local wrapper. Do not point this at a global skill install.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "OPENCLI_PROFILE", "footage", "OpenCLI Chrome profile", "string",
+        description="Optional Browser Bridge profile alias. Blank auto-selects the only connected profile.",
+    ),
+    SettingSpec(
+        "OPENCLI_TIMEOUT", "footage", "OpenCLI command timeout", "int", unit="seconds",
+        minimum=10, maximum=1800,
+    ),
+    SettingSpec(
+        "WEB_FOOTAGE_ENABLED", "footage", "Web footage", "bool",
+        description="Allow Bilibili and YouTube discovery in hybrid footage mode.",
+    ),
+    SettingSpec(
+        "WEB_FOOTAGE_GEMINI_ENABLED", "footage", "Gemini web analysis", "bool",
+        description="Send public candidate links and matching script excerpts to the logged-in Gemini web app for trim selection.",
+    ),
+    SettingSpec(
+        "WEB_FOOTAGE_GEMINI_TIMEOUT", "footage", "Gemini analysis timeout", "int", unit="seconds",
+        minimum=15, maximum=600,
+    ),
+    SettingSpec(
+        "WEB_FOOTAGE_CLIP_SECONDS", "footage", "Web clip length", "int", unit="seconds",
+        minimum=2, maximum=30,
+    ),
+    SettingSpec(
+        "WEB_FOOTAGE_DOWNLOAD_TIMEOUT", "footage", "Web download timeout", "int", unit="seconds",
+        minimum=30, maximum=3600,
     ),
     # ── Paths ────────────────────────────────────────────────────────────
     SettingSpec(

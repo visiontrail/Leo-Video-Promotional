@@ -49,10 +49,11 @@ class TaskConfig(BaseModel):
     # default remains off so tasks created by older clients keep their original
     # network and storage behavior.
     footage_enabled: bool = False
-    footage_provider: str = "wikimedia"
+    footage_provider: str = "wikimedia"  # wikimedia | hybrid | opencli_web
     footage_license_policy: str = "open_only"
     footage_clip_count: int = Field(default=3, ge=1, le=6)
     footage_orientation: str = "landscape"
+    footage_multimodal_analyzer: str = "gemini_web"
     # Skip the audio review pause and go straight from TTS into compose. The
     # default keeps the review step so existing clients are unaffected.
     auto_render: bool = False

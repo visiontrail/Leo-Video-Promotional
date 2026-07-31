@@ -58,10 +58,10 @@ export default function FootagePanel({ task }: { task: Task }) {
     <section className="footage-workbench">
       <div className="workbench-head">
         <div>
-          <span className="eyebrow">License-audited assets</span>
+          <span className="eyebrow">Rights-ledgered assets</span>
           <h3>Public Footage Workbench</h3>
           <p>
-            {acquired}/{requested} clips downloaded from Wikimedia Commons
+            {acquired}/{requested} clips prepared from {manifest.provider}
             {manifest.planner && <> · planned by {manifest.planner.replace('ai:', 'AI / ')}</>}
           </p>
         </div>
@@ -81,10 +81,14 @@ export default function FootagePanel({ task }: { task: Task }) {
       </div>
 
       <div className="audit-strip">
-        <span><b>Source</b> Wikimedia Commons</span>
-        <span><b>Policy</b> Open licenses only</span>
-        <span><b>Allowlist</b> {manifest.license_allowlist.join(' · ')}</span>
+        <span><b>Source</b> {manifest.provider}</span>
+        <span><b>Policy</b> {manifest.rights_review_required ? 'Human rights review required' : 'Open licenses only'}</span>
+        <span><b>Allowlist</b> {manifest.license_allowlist.length ? manifest.license_allowlist.join(' · ') : 'No automatic rights claim'}</span>
       </div>
+
+      {!!manifest.publication_blockers?.length && (
+        <div className="error-box">Publication gate: {manifest.publication_blockers.join(' · ')}</div>
+      )}
 
       {manifest.queries.length > 0 && (
         <div className="query-ledger">
@@ -112,6 +116,13 @@ export default function FootagePanel({ task }: { task: Task }) {
                 <span className="clip-query">{clip.query}</span>
                 <h4>{clip.title}</h4>
                 <p>{clip.purpose || clip.description || 'Public B-roll candidate'}</p>
+                {clip.analysis && (
+                  <p className="clip-analysis">
+                    <b>{clip.analysis.start_seconds.toFixed(1)}–{clip.analysis.end_seconds.toFixed(1)}s</b>
+                    {' · '}{clip.analysis.analyzer.replace('gemini-web-via-opencli', 'Gemini Web')}
+                    {' · '}{clip.analysis.reason}
+                  </p>
+                )}
                 <div className="clip-metadata">
                   <span>{clip.width}×{clip.height}</span>
                   <span>{clip.duration_seconds.toFixed(1)}s</span>
@@ -133,10 +144,14 @@ export default function FootagePanel({ task }: { task: Task }) {
           <span>PUBLIC / B-ROLL</span>
           <h4>
             {task.status === 'sourcing'
-              ? 'The agent is searching and checking licenses.'
+              ? 'The agent is searching and recording source rights.'
               : 'No public footage has been downloaded yet.'}
           </h4>
-          <p>The scout will only retain files with explicit open-license metadata.</p>
+          <p>
+            {manifest.rights_review_required
+              ? 'Web candidates remain blocked from publication until a human reviews reuse rights.'
+              : 'The scout will only retain files with explicit open-license metadata.'}
+          </p>
         </div>
       )}
 

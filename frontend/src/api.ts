@@ -14,10 +14,11 @@ export interface TaskConfig {
   ai_model?: string;
   provider_id?: number | null;
   footage_enabled?: boolean;
-  footage_provider?: 'wikimedia';
-  footage_license_policy?: 'open_only';
+  footage_provider?: 'wikimedia' | 'hybrid' | 'opencli_web';
+  footage_license_policy?: 'open_only' | 'review_required';
   footage_clip_count?: number;
   footage_orientation?: 'landscape' | 'portrait';
+  footage_multimodal_analyzer?: 'gemini_web';
   auto_render?: boolean;
 }
 
@@ -97,6 +98,20 @@ export interface FootageClip {
   sha256: string;
   local_path: string;
   status: string;
+  platform?: 'bilibili' | 'youtube';
+  review_required?: boolean;
+  rights_status?: string;
+  source_duration_seconds?: number;
+  script_excerpt?: string;
+  evidence_frames?: string[];
+  analysis?: {
+    start_seconds: number;
+    end_seconds: number;
+    confidence: number;
+    reason: string;
+    analyzer: string;
+    status: string;
+  };
 }
 
 export interface FootageManifest {
@@ -111,6 +126,8 @@ export interface FootageManifest {
   queries: FootageQuery[];
   clips: FootageClip[];
   errors: Array<{ query?: string; stage?: string; message: string }>;
+  rights_review_required?: boolean;
+  publication_blockers?: string[];
 }
 
 export interface Settings {

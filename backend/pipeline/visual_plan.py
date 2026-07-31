@@ -345,7 +345,11 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
         plan["archetype"] = "footage"
         plan["footage_src"] = rel
         plan["footage_kind"] = "video" if path.suffix.lower() in {".webm", ".mp4", ".ogv"} else "image"
-        credit = clip.get("attribution") or clip.get("license_short_name") or "Wikimedia Commons"
+        credit = clip.get("attribution") or clip.get("license_short_name")
+        if not credit:
+            creator = str(clip.get("creator") or "Unknown creator")
+            provider = str(clip.get("provider") or "Footage source")
+            credit = f"{creator} · {provider}"
         plan["footage_credit"] = str(credit)[:90]
         used.add(best_id)
         attached += 1

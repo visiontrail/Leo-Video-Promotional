@@ -679,8 +679,9 @@ def _render_footage(plan: ScenePlan) -> str:
     accent = accent_hex(plan.accent)
     if plan.footage_kind == "video":
         media = (
-            f'      <video id="{plan.id}-media" class="media" src="{_esc(plan.footage_src)}" '
-            f'muted playsinline crossorigin="anonymous"></video>\n'
+            f'      <video id="{plan.id}-media" class="clip media" src="{_esc(plan.footage_src)}" '
+            f'data-start="0" data-duration="{plan.duration:.2f}" data-track-index="0" '
+            f'muted playsinline loop crossorigin="anonymous"></video>\n'
         )
     else:
         media = f'      <img id="{plan.id}-media" class="media" src="{_esc(plan.footage_src)}" alt="">\n'

@@ -44,6 +44,18 @@ FOOTAGE_USER_AGENT = os.getenv(
 FOOTAGE_TIMEOUT = int(os.getenv("FOOTAGE_TIMEOUT", "45"))
 FOOTAGE_MAX_BYTES = int(os.getenv("FOOTAGE_MAX_BYTES", str(50 * 1024 * 1024)))
 
+# Project-local OpenCLI + web-footage expansion.  The binary is deliberately a
+# repository wrapper rather than a global npm command, so installing or
+# upgrading this feature never changes the operator's global Claude Code setup.
+OPENCLI_BIN = resolve_project_path(os.getenv("OPENCLI_BIN", "scripts/opencli.sh"))
+OPENCLI_PROFILE = os.getenv("OPENCLI_PROFILE", "").strip()
+OPENCLI_TIMEOUT = int(os.getenv("OPENCLI_TIMEOUT", "180"))
+WEB_FOOTAGE_ENABLED = _env_bool("WEB_FOOTAGE_ENABLED", "1")
+WEB_FOOTAGE_GEMINI_ENABLED = _env_bool("WEB_FOOTAGE_GEMINI_ENABLED", "1")
+WEB_FOOTAGE_GEMINI_TIMEOUT = int(os.getenv("WEB_FOOTAGE_GEMINI_TIMEOUT", "120"))
+WEB_FOOTAGE_CLIP_SECONDS = int(os.getenv("WEB_FOOTAGE_CLIP_SECONDS", "8"))
+WEB_FOOTAGE_DOWNLOAD_TIMEOUT = int(os.getenv("WEB_FOOTAGE_DOWNLOAD_TIMEOUT", "600"))
+
 # Which backend drives digestion/scriptwriting AI calls:
 #   "agent_sdk" (default) — Claude Agent SDK, talking the Anthropic protocol to
 #                           a provider gateway (the bundled/system `claude` CLI

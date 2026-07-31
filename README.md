@@ -4,7 +4,7 @@ A local agent that turns a **YouTube video, EPUB, or PDF** into a short **podcas
 The primary output is a **solo talk-show monologue** (a single host talking to the audience);
 a two-host dialogue format is also available.
 
-Pipeline: **source extract → AI digest → script → public-footage scout → VibeVoice TTS →
+Pipeline: **source extract → AI digest → script → rights-ledgered footage scout → VibeVoice TTS →
 storyboard → art direction → agent-authored scenes → HyperFrames video render**.
 
 ## Architecture
@@ -167,15 +167,47 @@ On the New Task form, **Format** is the first choice:
 
 The number of voice pickers follows the format automatically.
 
-## Public-footage scout
+## Footage scout: Commons + Bilibili + YouTube
 
-New tasks can enable **Public Footage** from the task form. After scriptwriting,
-the configured AI provider produces concrete B-roll search queries and the
-worker searches Wikimedia Commons, downloads eligible clips, and saves an
-auditable `footage/manifest.json` beside the task outputs.
+New tasks can enable **Public Footage** and choose a source strategy:
 
-The scout requires no stock-media API key and only accepts files with explicit
-Public Domain, CC0, CC BY, or CC BY-SA metadata. Each manifest entry records the
-creator, license, Commons source page, dimensions, duration, byte size, SHA-256,
-and local path. The task detail page previews downloaded files and supports
-retrying the footage stage without re-running extraction, scriptwriting, or TTS.
+- **Hybrid** (default) fills from Wikimedia Commons first, then uses Bilibili and YouTube.
+- **Wikimedia only** keeps the original explicit-open-license path.
+- **Web platforms** uses Bilibili through OpenCLI and YouTube through the project `yt-dlp`.
+
+After scriptwriting, the configured AI provider produces concrete B-roll queries. For YouTube
+candidates the scout asks the signed-in Gemini web app, through OpenCLI, to select a coherent
+interval for the matching narration excerpt. Gemini failures, unsupported Bilibili links, and
+timeouts are recorded in the manifest and fall back to a deterministic non-intro interval.
+FFmpeg then trims, crops, removes source audio, normalizes to H.264/YUV420p, and writes three
+evidence frames. The resulting `footage/manifest.json` records the source URL, creator, exact
+trim, analyzer result, script excerpt, dimensions, duration, byte size, SHA-256, and local path.
+
+The scout requires no stock-media API key. Its Wikimedia branch only accepts files with explicit
+Public Domain, CC0, CC BY, or CC BY-SA metadata. The task detail page previews downloaded files
+and supports retrying the footage stage without re-running extraction, scriptwriting, or TTS.
+
+Platform downloadability is **not** treated as permission to republish. Every Bilibili/YouTube
+entry is marked `review_required`, and the manifest/UI includes a publication blocker until a
+human verifies the creator's reuse terms. Prefer creator-provided downloads, Creative Commons
+uploads, and short transformative excerpts; comply with platform terms and local law.
+
+### Project-local OpenCLI setup
+
+`./scripts/setup.sh` installs the pinned OpenCLI runtime under `tools/opencli/`. It does not run a
+global npm install and does not write to `~/.claude`. The six upstream OpenCLI skills plus this
+project's `video-web-footage` workflow live only under `.claude/skills/`, which is the project
+skill path used by the Claude Agent SDK.
+
+Install or enable the official **OpenCLI Browser Bridge** Chrome extension once, keep Chrome
+open with the desired Bilibili/Gemini sessions signed in, then verify the project wrapper:
+
+```bash
+./scripts/opencli.sh doctor
+./scripts/opencli.sh bilibili search "Singapore skyline" --limit 3 -f json
+./scripts/opencli.sh gemini status -f json
+```
+
+No command in the pipeline invokes a global `opencli`; the SDK process prepends this repository's
+wrapper/runtime paths to `PATH`. See `docs/OPENCLI_MEDIA_LOOP.md` for the architecture, operating
+limits, validation recipe, and product roadmap.

@@ -16,6 +16,7 @@ retry-on-empty and CJK repair logic stays in ``digester.py`` unchanged.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
@@ -72,6 +73,15 @@ def build_agent_env(
         # Keep these one-shot text transforms off telemetry/update channels.
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     }
+
+    # Skills under .claude/skills reference `opencli` by command name. Put the
+    # repository wrapper/runtime first while retaining the launching process'
+    # PATH. Nothing is installed into the user's global Claude Code runtime.
+    project_bins = [
+        str(config.PROJECT_ROOT / "scripts"),
+        str(config.PROJECT_ROOT / "tools" / "opencli" / "node_modules" / ".bin"),
+    ]
+    env["PATH"] = os.pathsep.join([*project_bins, os.environ.get("PATH", "")])
 
     token = (config.ANTHROPIC_AUTH_TOKEN or (api_key or "")).strip()
     if token:

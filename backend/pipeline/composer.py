@@ -213,7 +213,7 @@ async def compose_video(
     manifest = footage.read_manifest(output_dir_path)
     attached = visual_plan.attach_footage(plans, board, manifest, output_dir_path)
     if attached:
-        emit(f"Footage: {attached} open-license clip(s) placed as full-bleed scenes")
+        emit(f"Footage: {attached} manifest clip(s) placed as full-bleed scenes")
 
     scene_plans = list(plans)
     plans = (

@@ -10,6 +10,7 @@ import { IconPlay, IconStop } from './Icons'
 type SourceType = 'youtube' | 'epub' | 'pdf'
 type VideoTemplate = 'podcast' | 'kinetic' | 'swiss' | 'minimal'
 type ScriptFormat = 'monologue' | 'dialogue'
+type FootageProvider = 'wikimedia' | 'hybrid' | 'opencli_web'
 
 const SCRIPT_FORMATS: Array<{ key: ScriptFormat; name: string; description: string }> = [
   { key: 'monologue', name: 'Solo Talk-Show', description: 'One host talking straight to the audience' },
@@ -123,6 +124,7 @@ export default function TaskForm() {
   const [character, setCharacter] = useState(false)
   const [autoRender, setAutoRender] = useState(false)
   const [footageEnabled, setFootageEnabled] = useState(true)
+  const [footageProvider, setFootageProvider] = useState<FootageProvider>('hybrid')
   const [footageClipCount, setFootageClipCount] = useState(3)
   const [footageOrientation, setFootageOrientation] = useState<'landscape' | 'portrait'>('landscape')
   const [providerId, setProviderId] = useState<number | null>(null)
@@ -214,10 +216,11 @@ export default function TaskForm() {
         include_character: character,
         provider_id: providerId,
         footage_enabled: footageEnabled,
-        footage_provider: 'wikimedia',
-        footage_license_policy: 'open_only',
+        footage_provider: footageProvider,
+        footage_license_policy: footageProvider === 'wikimedia' ? 'open_only' : 'review_required',
         footage_clip_count: footageClipCount,
         footage_orientation: footageOrientation,
+        footage_multimodal_analyzer: 'gemini_web',
         auto_render: autoRender,
       }
       return createTask(
@@ -254,7 +257,7 @@ export default function TaskForm() {
       : []),
     { label: 'Extract', note: `Pull text from the ${SOURCE_LABEL[sourceType]} source`, on: true },
     { label: 'Digest', note: isMonologue ? 'Write a solo talk-show script' : 'Write a two-host dialogue script', on: true },
-    { label: 'Footage', note: footageEnabled ? `Scout ${footageClipCount} open-license clips` : 'Skipped — media scout is off', on: footageEnabled },
+    { label: 'Footage', note: footageEnabled ? `Scout ${footageClipCount} clips via ${footageProvider === 'wikimedia' ? 'Commons' : footageProvider === 'hybrid' ? 'Commons + web' : 'web platforms'}` : 'Skipped — media scout is off', on: footageEnabled },
     { label: 'Voice', note: `Synthesise with VibeVoice ${is05b ? '0.5B' : '1.5B'}`, on: true },
     {
       label: 'Review',
@@ -273,7 +276,7 @@ export default function TaskForm() {
     ['Voice', isMonologue ? voice1 : `${voice1} · ${voice2}`],
     ['Engine', is05b ? '0.5B' : '1.5B'],
     ['Template', VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!.name],
-    ['B-roll', footageEnabled ? `${footageClipCount} clips` : 'Off'],
+    ['B-roll', footageEnabled ? `${footageClipCount} · ${footageProvider === 'hybrid' ? 'Hybrid' : footageProvider === 'wikimedia' ? 'Commons' : 'Web'}` : 'Off'],
     ['Review', autoRender ? 'Auto-render' : 'Manual'],
   ]
 
@@ -666,17 +669,29 @@ export default function TaskForm() {
                 </label>
               </div>
 
-              <div className="source-readiness">
-                <span className="source-monogram">WC</span>
-                <span>
-                  <strong>Wikimedia Commons</strong>
-                  <small>No API key required</small>
-                </span>
-                <em>Ready</em>
-              </div>
-
               {footageEnabled && (
                 <>
+                  <div className="form-group">
+                    <label>Source strategy</label>
+                    <select
+                      value={footageProvider}
+                      onChange={(event) => setFootageProvider(event.target.value as FootageProvider)}
+                    >
+                      <option value="hybrid">Hybrid — Commons + Bilibili + YouTube</option>
+                      <option value="wikimedia">Wikimedia Commons only</option>
+                      <option value="opencli_web">Bilibili + YouTube only</option>
+                    </select>
+                  </div>
+
+                  <div className="source-readiness">
+                    <span className="source-monogram">OC</span>
+                    <span>
+                      <strong>{footageProvider === 'wikimedia' ? 'Wikimedia Commons' : 'OpenCLI web scout'}</strong>
+                      <small>{footageProvider === 'wikimedia' ? 'Explicit open-license metadata' : 'Gemini trim analysis · FFmpeg edits'}</small>
+                    </span>
+                    <em>Project local</em>
+                  </div>
+
                   <div className="grid-2 footage-options">
                     <div>
                       <label>Target clips</label>
@@ -702,11 +717,11 @@ export default function TaskForm() {
                       </select>
                     </div>
                   </div>
-                  <div className="license-gate">
-                    <span className="license-gate-icon">✓</span>
+                  <div className={`license-gate ${footageProvider === 'wikimedia' ? '' : 'review-required'}`}>
+                    <span className="license-gate-icon">{footageProvider === 'wikimedia' ? '✓' : '!'}</span>
                     <span>
-                      <strong>Open-license gate</strong>
-                      <small>Public Domain · CC0 · CC BY · CC BY-SA</small>
+                      <strong>{footageProvider === 'wikimedia' ? 'Open-license gate' : 'Rights review gate'}</strong>
+                      <small>{footageProvider === 'wikimedia' ? 'Public Domain · CC0 · CC BY · CC BY-SA' : 'Platform downloadability is not reuse permission · review before publishing'}</small>
                     </span>
                   </div>
                 </>

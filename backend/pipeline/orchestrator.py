@@ -12,7 +12,7 @@ from backend.pipeline.extractors.pdf import extract_pdf
 from backend.pipeline.digester import summarize, generate_script
 from backend.pipeline.tts import generate_tts
 from backend.pipeline.composer import compose_video
-from backend.pipeline.footage import acquire_public_footage
+from backend.pipeline.footage import acquire_footage
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,8 @@ async def _acquire_task_footage(
     supplied_queries: list[str] | None = None,
 ):
     script_path = Path(task.script_path or task_dir / "script.txt")
-    return await acquire_public_footage(
+    return await acquire_footage(
+        media_provider=task.config.footage_provider,
         task_id=task.id,
         task_dir=task_dir,
         title=title or task.source_title or task.id,

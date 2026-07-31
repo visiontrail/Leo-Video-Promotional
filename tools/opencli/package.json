@@ -1,0 +1,9 @@
+{
+  "name": "video-promotional-opencli-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Project-local OpenCLI runtime for the Video-Promotional media pipeline.",
+  "dependencies": {
+    "@jackwener/opencli": "1.8.6"
+  }
+}

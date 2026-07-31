@@ -330,7 +330,11 @@ def read_manifest(task_dir: Path) -> dict | None:
 def _write_manifest(task_dir: Path, manifest: dict) -> None:
     path = manifest_path(task_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    temporary.replace(path)
 
 
 async def acquire_public_footage(
@@ -486,3 +490,104 @@ async def acquire_public_footage(
         f"manifest saved to {manifest_path(task_dir)}",
     )
     return manifest
+
+
+async def acquire_footage(
+    *,
+    media_provider: str,
+    task_id: str,
+    task_dir: Path,
+    title: str,
+    script_path: Path,
+    clip_count: int,
+    orientation: str,
+    license_policy: str,
+    provider_id: int | None,
+    ai_endpoint: str | None,
+    ai_model: str | None,
+    supplied_queries: list[str] | None = None,
+    log: LogCallback | None = None,
+) -> dict:
+    """Route one task through Wikimedia-only or the hybrid web scout.
+
+    Hybrid mode intentionally keeps at least one Commons clip when possible,
+    then alternates Bilibili/YouTube candidates for source diversity.
+    """
+    provider = (media_provider or "wikimedia").strip().lower()
+    common = {
+        "task_id": task_id,
+        "task_dir": task_dir,
+        "title": title,
+        "script_path": script_path,
+        "clip_count": clip_count,
+        "orientation": orientation,
+        "license_policy": license_policy,
+        "provider_id": provider_id,
+        "ai_endpoint": ai_endpoint,
+        "ai_model": ai_model,
+        "supplied_queries": supplied_queries,
+        "log": log,
+    }
+    if provider == "wikimedia" or not config.WEB_FOOTAGE_ENABLED:
+        return await acquire_public_footage(**common)
+
+    script = script_path.read_text(encoding="utf-8")
+    query_plan, planner = await plan_footage_queries(
+        title=title,
+        script=script,
+        count=clip_count,
+        provider_id=provider_id,
+        ai_endpoint=ai_endpoint,
+        ai_model=ai_model,
+        supplied_queries=supplied_queries,
+        log=log,
+    )
+
+    if provider == "hybrid":
+        commons_quota = max(1, clip_count // 2)
+        manifest = await acquire_public_footage(
+            **{
+                **common,
+                "clip_count": commons_quota,
+                "supplied_queries": [item["query"] for item in query_plan[:commons_quota]],
+            }
+        )
+    elif provider == "opencli_web":
+        manifest = {
+            "task_id": task_id,
+            "status": "planning",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "provider": "OpenCLI Web",
+            "provider_id": "opencli-web",
+            "license_policy": "review_required",
+            "requested_license_policy": license_policy,
+            "license_allowlist": [],
+            "orientation": orientation,
+            "requested_clip_count": clip_count,
+            "planner": planner,
+            "queries": query_plan,
+            "clips": [],
+            "errors": [],
+        }
+        _write_manifest(task_dir, manifest)
+    else:
+        raise ValueError(f"Unsupported footage provider: {media_provider}")
+
+    manifest["planner"] = planner
+    manifest["queries"] = query_plan
+    _write_manifest(task_dir, manifest)
+
+    # Lazy import avoids a module cycle: web_footage reuses the query/search
+    # helpers above, but footage remains the manifest-facing public API.
+    from backend.pipeline.web_footage import supplement_web_footage
+
+    return await supplement_web_footage(
+        task_dir=task_dir,
+        manifest=manifest,
+        query_plan=query_plan,
+        target_total=clip_count,
+        orientation=orientation,
+        script=script,
+        log=log,
+    )

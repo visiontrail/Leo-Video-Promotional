@@ -104,13 +104,27 @@ async def get_task_footage(task_id: str):
     manifest = read_manifest(out_dir)
     if manifest is not None:
         return manifest
+    provider_id = task.config.footage_provider
+    uses_web = provider_id in {"hybrid", "opencli_web"}
+    provider = {
+        "hybrid": "Hybrid: Wikimedia Commons + OpenCLI Web",
+        "opencli_web": "OpenCLI Web: Bilibili + YouTube",
+    }.get(provider_id, "Wikimedia Commons")
     return {
         "task_id": task_id,
         "status": "not_started",
-        "provider": "Wikimedia Commons",
-        "provider_id": "wikimedia",
-        "license_policy": "open_only",
-        "license_allowlist": ["Public Domain", "CC0", "CC BY", "CC BY-SA"],
+        "provider": provider,
+        "provider_id": provider_id,
+        "license_policy": "review_required" if uses_web else "open_only",
+        "license_allowlist": (
+            [] if provider_id == "opencli_web"
+            else ["Public Domain", "CC0", "CC BY", "CC BY-SA"]
+        ),
+        "rights_review_required": uses_web,
+        "publication_blockers": (
+            ["Review reuse rights for every Bilibili/YouTube clip before publication"]
+            if uses_web else []
+        ),
         "requested_clip_count": task.config.footage_clip_count,
         "planner": "",
         "queries": [],

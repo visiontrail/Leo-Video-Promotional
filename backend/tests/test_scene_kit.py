@@ -99,3 +99,20 @@ def test_footage_scene_references_its_asset_relatively():
     assert validate_scene_html(html, "scene-01") == []
     assert 'src="footage/paris.jpg"' in html
     assert "CC BY" in html
+
+
+def test_video_footage_declares_hyperframes_media_timing():
+    html = sk.render_scene(
+        plan(
+            archetype="footage",
+            footage_src="footage/city.mp4",
+            footage_kind="video",
+            footage_credit="Review",
+        )
+    )
+    assert validate_scene_html(html, "scene-01") == []
+    video = re.search(r"<video[^>]*>", html).group(0)
+    assert 'data-start="0"' in video
+    assert 'data-duration="12.00"' in video
+    assert 'data-track-index="0"' in video
+    assert "muted" in video and "playsinline" in video
