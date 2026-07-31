@@ -67,6 +67,17 @@ class SkillImportTests(unittest.TestCase):
         self.assertEqual(response.json()["name"], "demo-skill")
         self.assertTrue(response.json()["enabled"])
 
+    def test_admin_enabled_state_drives_sdk_runtime_lists(self):
+        skills_admin.import_skill("SKILL.md", SKILL_MD)
+
+        self.assertEqual(skills_admin.runtime_skill_names(), (["demo-skill"], []))
+
+        self.assertTrue(skills_admin.set_enabled("demo-skill", False))
+        self.assertEqual(skills_admin.runtime_skill_names(), ([], ["demo-skill"]))
+
+        self.assertTrue(skills_admin.set_enabled("demo-skill", True))
+        self.assertEqual(skills_admin.runtime_skill_names(), (["demo-skill"], []))
+
     def test_imports_wrapped_zip_with_assets(self):
         bundle = make_zip(
             {

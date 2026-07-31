@@ -2,7 +2,6 @@ import json
 import aiosqlite
 from datetime import datetime, timezone
 from backend import config
-from backend.config import DB_PATH
 from backend.models import TaskConfig, TaskResponse, TaskStatus, ProviderResponse, new_task_id
 
 SCHEMA = """
@@ -16,6 +15,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'queued',
     error_message TEXT,
     config_json TEXT NOT NULL,
+    scheduled_at TEXT,
     output_dir TEXT,
     script_path TEXT,
     audio_path TEXT,
@@ -44,24 +44,40 @@ def _mask_key(api_key: str | None) -> str:
 
 
 async def get_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(str(DB_PATH))
+    # config.DB_PATH is read per connection, not bound at import: the Admin
+    # console can move the database (a restart re-runs init_db against it).
+    db = await aiosqlite.connect(str(config.DB_PATH))
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA journal_mode=WAL")
     return db
+
+
+async def _migrate_tasks(db: aiosqlite.Connection):
+    """Add columns introduced after a database was first created.
+
+    CREATE TABLE IF NOT EXISTS leaves an existing tasks table untouched, so
+    columns added later have to be patched in explicitly.
+    """
+    rows = await db.execute_fetchall("PRAGMA table_info(tasks)")
+    existing = {row["name"] for row in rows}
+    if "scheduled_at" not in existing:
+        await db.execute("ALTER TABLE tasks ADD COLUMN scheduled_at TEXT")
+        await db.commit()
 
 
 async def init_db():
     db = await get_db()
     await db.executescript(SCHEMA)
     await db.commit()
-    # Seed the default provider from .env if no providers exist yet.
+    await _migrate_tasks(db)
+    # Seed the default provider from the AI engine settings if none exist yet.
     rows = await db.execute_fetchall("SELECT COUNT(*) AS c FROM providers")
     if rows[0]["c"] == 0 and config.AI_ENDPOINT:
         now = datetime.now(timezone.utc).isoformat()
         await db.execute(
             """INSERT INTO providers (name, endpoint, api_key, model, is_default, created_at)
                VALUES (?, ?, ?, ?, 1, ?)""",
-            ("Default (.env)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
+            ("Default (settings)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
         )
         await db.commit()
     await db.close()
@@ -160,6 +176,7 @@ def _row_to_response(row: aiosqlite.Row) -> TaskResponse:
         status=row["status"],
         error_message=row["error_message"],
         config=TaskConfig(**json.loads(row["config_json"])),
+        scheduled_at=row["scheduled_at"],
         output_dir=row["output_dir"],
         script_path=row["script_path"],
         audio_path=row["audio_path"],
@@ -168,15 +185,21 @@ def _row_to_response(row: aiosqlite.Row) -> TaskResponse:
     )
 
 
-async def create_task(source_type: str, source_url: str | None, config: TaskConfig, upload_path: str | None = None) -> TaskResponse:
+async def create_task(
+    source_type: str,
+    source_url: str | None,
+    config: TaskConfig,
+    upload_path: str | None = None,
+    scheduled_at: str | None = None,
+) -> TaskResponse:
     task_id = new_task_id()
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     effective_url = source_url or upload_path
     await db.execute(
-        """INSERT INTO tasks (id, created_at, updated_at, source_type, source_url, status, config_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (task_id, now, now, source_type, effective_url, TaskStatus.QUEUED.value, config.model_dump_json()),
+        """INSERT INTO tasks (id, created_at, updated_at, source_type, source_url, status, config_json, scheduled_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (task_id, now, now, source_type, effective_url, TaskStatus.QUEUED.value, config.model_dump_json(), scheduled_at),
     )
     await db.commit()
     row = await db.execute_fetchall("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -252,10 +275,19 @@ async def reset_orphaned_tasks() -> int:
 
 
 async def get_next_queued_task() -> TaskResponse | None:
+    """Return the oldest queued task that is due to start.
+
+    A task with a future ``scheduled_at`` stays invisible to the worker until
+    that moment passes, which is how a run is parked in an idle window. Both
+    columns hold UTC ISO-8601 timestamps, so the text comparison is chronological.
+    """
+    now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     rows = await db.execute_fetchall(
-        "SELECT * FROM tasks WHERE status = ? ORDER BY created_at ASC LIMIT 1",
-        (TaskStatus.QUEUED.value,),
+        """SELECT * FROM tasks
+           WHERE status = ? AND (scheduled_at IS NULL OR scheduled_at <= ?)
+           ORDER BY COALESCE(scheduled_at, created_at) ASC LIMIT 1""",
+        (TaskStatus.QUEUED.value, now),
     )
     await db.close()
     return _row_to_response(rows[0]) if rows else None

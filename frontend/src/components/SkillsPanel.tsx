@@ -63,7 +63,7 @@ export default function SkillsPanel() {
           <h2 className="panel-title">Skills</h2>
           <p className="panel-sub">
             The HyperFrames <code>SKILL.md</code> bundles under <code>.claude/skills</code> that guide
-            composition &amp; rendering. Enable/disable is an advisory flag; editing rewrites the skill body.
+            Claude Agent SDK calls. Disabled skills are blocked at runtime; editing rewrites the skill body.
           </p>
         </div>
         <span className="badge badge-muted">{enabledCount}/{skills.length} enabled</span>

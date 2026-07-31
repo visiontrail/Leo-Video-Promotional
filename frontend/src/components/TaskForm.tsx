@@ -2,8 +2,10 @@ import { useState, useRef } from 'react'
 import type { DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { createTask, fetchProviders } from '../api'
-import type { TaskConfig } from '../api'
+import { createTask, fetchProviders, fetchVoices, voicePreviewUrl } from '../api'
+import type { TaskConfig, VoiceOption } from '../api'
+import { countdown, formatStart, localInputToIso, toLocalInputValue } from '../schedule'
+import { IconPlay, IconStop } from './Icons'
 
 type SourceType = 'youtube' | 'epub' | 'pdf'
 type VideoTemplate = 'podcast' | 'kinetic' | 'swiss' | 'minimal'
@@ -14,20 +16,94 @@ const SCRIPT_FORMATS: Array<{ key: ScriptFormat; name: string; description: stri
   { key: 'dialogue', name: 'Two-Host Dialogue', description: 'Back-and-forth between a host and a guest (needs 1.5B)' },
 ]
 
-const VOICES = [
-  { name: 'Carter', gender: 'Male' },
-  { name: 'Frank', gender: 'Male' },
-  { name: 'Alice', gender: 'Female' },
-  { name: 'Maya', gender: 'Female' },
-  { name: 'Mary', gender: 'Female' },
-  { name: 'Samuel', gender: 'Male' },
+/* Fallback list, used until /api/voices answers (or if it fails). The backend
+   is the source of truth for which voices exist and which can be previewed. */
+const VOICES: VoiceOption[] = [
+  { name: 'Carter', gender: 'male', lang: 'en' },
+  { name: 'Frank', gender: 'male', lang: 'en' },
+  { name: 'Alice', gender: 'female', lang: 'en' },
+  { name: 'Maya', gender: 'female', lang: 'en' },
+  { name: 'Mary', gender: 'female', lang: 'en' },
+  { name: 'Samuel', gender: 'male', lang: 'in' },
+].map((v) => ({ ...v, resolved_name: v.name, preview_available: false }))
+
+const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+type VoiceFieldProps = {
+  label: string
+  value: string
+  onChange: (voice: string) => void
+  voices: VoiceOption[]
+  playing: boolean
+  onPreview: (voice: string) => void
+}
+
+/* A voice select with an inline preview button. The preview plays VibeVoice's
+   own reference sample for the preset — the clip the model clones — so it is
+   what the finished audio will sound like, without running synthesis. */
+function VoiceField({ label, value, onChange, voices, playing, onPreview }: VoiceFieldProps) {
+  const selected = voices.find((v) => v.name === value)
+  const canPreview = selected?.preview_available ?? false
+  const substituted = selected && selected.resolved_name !== selected.name
+
+  return (
+    <div>
+      <label>{label}</label>
+      <div className="voice-row">
+        <select value={value} onChange={(e) => onChange(e.target.value)}>
+          {voices.map((v) => (
+            <option key={v.name} value={v.name}>
+              {v.name} ({titleCase(v.gender)})
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="icon-btn voice-preview"
+          onClick={() => onPreview(value)}
+          disabled={!canPreview}
+          aria-label={playing ? `Stop ${value} preview` : `Preview ${value}`}
+          title={canPreview ? `Preview ${value}` : `No preview sample installed for ${value}`}
+        >
+          {playing ? <IconStop /> : <IconPlay />}
+        </button>
+      </div>
+      {substituted && (
+        <small className="wb-hint">
+          This model substitutes {selected!.name} → {selected!.resolved_name}
+          {canPreview ? '; the preview plays the substitute.' : ', which ships no preview sample.'}
+        </small>
+      )}
+    </div>
+  )
+}
+
+/* The template picks the theme the scene compositions are drawn in. Layout and
+   artwork come from the storyboard and the authoring agents, so these differ by
+   surface colour and contrast, not by structure. */
+const VIDEO_TEMPLATES: Array<{ key: VideoTemplate; name: string; description: string }> = [
+  { key: 'podcast', name: 'Documentary', description: 'Deep navy with warm ink — the default look' },
+  { key: 'kinetic', name: 'Kinetic', description: 'Near-black and high contrast for punchy statement cuts' },
+  { key: 'swiss', name: 'Swiss Grid', description: 'Paper-white editorial with dark type' },
+  { key: 'minimal', name: 'Minimal', description: 'Restrained washes, type does the work' },
 ]
 
-const VIDEO_TEMPLATES: Array<{ key: VideoTemplate; name: string; description: string }> = [
-  { key: 'podcast', name: 'Podcast Studio', description: 'Dark studio with waveform and host focus' },
-  { key: 'kinetic', name: 'Kinetic Text', description: 'Large animated type with punchy speaker turns' },
-  { key: 'swiss', name: 'Swiss Grid', description: 'Precise editorial grid with clean typography' },
-  { key: 'minimal', name: 'Minimal', description: 'Calm centered text with soft motion' },
+const SOURCE_LABEL: Record<SourceType, string> = { youtube: 'YouTube', epub: 'EPUB', pdf: 'PDF' }
+
+/* Quick picks for parking a run in an idle window — TTS and the LLM both want
+   the machine to themselves, so "tonight" is the common case. */
+const START_PRESETS: Array<{ label: string; at: () => Date }> = [
+  { label: 'In 1 hour', at: () => new Date(Date.now() + 60 * 60 * 1000) },
+  { label: 'In 3 hours', at: () => new Date(Date.now() + 3 * 60 * 60 * 1000) },
+  {
+    label: 'Tonight 01:00',
+    at: () => {
+      const d = new Date()
+      d.setHours(1, 0, 0, 0)
+      if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1)
+      return d
+    },
+  },
 ]
 
 export default function TaskForm() {
@@ -45,14 +121,57 @@ export default function TaskForm() {
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
   const [processingMode, setProcessingMode] = useState<'full_text' | 'curated_highlights'>('full_text')
   const [character, setCharacter] = useState(false)
+  const [autoRender, setAutoRender] = useState(false)
   const [footageEnabled, setFootageEnabled] = useState(true)
   const [footageClipCount, setFootageClipCount] = useState(3)
   const [footageOrientation, setFootageOrientation] = useState<'landscape' | 'portrait'>('landscape')
   const [providerId, setProviderId] = useState<number | null>(null)
+  const [startMode, setStartMode] = useState<'now' | 'later'>('now')
+  const [startAt, setStartAt] = useState('')
   const [dragover, setDragover] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // One audio element serves both voice fields — starting a preview replaces
+  // whatever was playing, so two clips can never overlap.
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: fetchProviders })
+  // Preview availability and voice substitution are model-dependent, so refetch
+  // when the engine changes.
+  const { data: voices = VOICES } = useQuery({
+    queryKey: ['voices', ttsModel],
+    queryFn: () => fetchVoices(ttsModel),
+    placeholderData: VOICES,
+  })
+
+  const stopPreview = () => {
+    const audio = audioRef.current
+    if (audio) {
+      audio.pause()
+      audio.currentTime = 0
+    }
+    setPlayingVoice(null)
+  }
+
+  const togglePreview = (voice: string) => {
+    if (playingVoice === voice) {
+      stopPreview()
+      return
+    }
+    const audio = audioRef.current
+    if (!audio) return
+    setPreviewError(null)
+    audio.src = voicePreviewUrl(voice, ttsModel)
+    audio.play().then(
+      () => setPlayingVoice(voice),
+      () => {
+        setPlayingVoice(null)
+        setPreviewError(`Could not play the ${voice} preview.`)
+      },
+    )
+  }
 
   // Solo talk-show (monologue) is the primary style; dialogue is secondary.
   // The 0.5B realtime model is single-speaker, so it can only do monologue —
@@ -66,7 +185,19 @@ export default function TaskForm() {
   }
   const selectModel = (m: string) => {
     if (m === 'vibevoice-0.5b' && scriptFormat === 'dialogue') setScriptFormat('monologue')
+    // The sample a voice maps to can change with the model — drop stale audio.
+    stopPreview()
     setTtsModel(m)
+  }
+
+  // The picker holds local wall-clock; the API takes UTC.
+  const scheduled = startMode === 'later' ? localInputToIso(startAt) : null
+  const scheduleIsPast = !!scheduled && new Date(scheduled).getTime() <= Date.now()
+  const startLabel = scheduled ? formatStart(scheduled) : 'Immediately'
+
+  const pickPreset = (at: Date) => {
+    setStartMode('later')
+    setStartAt(toLocalInputValue(at))
   }
 
   const mutation = useMutation({
@@ -87,12 +218,14 @@ export default function TaskForm() {
         footage_license_policy: 'open_only',
         footage_clip_count: footageClipCount,
         footage_orientation: footageOrientation,
+        auto_render: autoRender,
       }
       return createTask(
         sourceType,
         sourceType === 'youtube' ? url : null,
         config,
         file || undefined,
+        scheduled,
       )
     },
     onSuccess: (task) => {
@@ -101,9 +234,11 @@ export default function TaskForm() {
     },
   })
 
-  const canSubmit =
-    (sourceType === 'youtube' && url.trim()) ||
-    ((sourceType === 'epub' || sourceType === 'pdf') && file)
+  const sourceReady =
+    (sourceType === 'youtube' && !!url.trim()) ||
+    ((sourceType === 'epub' || sourceType === 'pdf') && !!file)
+  const startReady = startMode === 'now' || !!scheduled
+  const canSubmit = sourceReady && startReady
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -112,294 +247,474 @@ export default function TaskForm() {
     if (f) setFile(f)
   }
 
+  // Preview of the pipeline this configuration will actually run.
+  const pipeline: Array<{ label: string; note: string; on: boolean }> = [
+    ...(scheduled && !scheduleIsPast
+      ? [{ label: 'Hold', note: `Wait in the queue until ${startLabel}`, on: true }]
+      : []),
+    { label: 'Extract', note: `Pull text from the ${SOURCE_LABEL[sourceType]} source`, on: true },
+    { label: 'Digest', note: isMonologue ? 'Write a solo talk-show script' : 'Write a two-host dialogue script', on: true },
+    { label: 'Footage', note: footageEnabled ? `Scout ${footageClipCount} open-license clips` : 'Skipped — media scout is off', on: footageEnabled },
+    { label: 'Voice', note: `Synthesise with VibeVoice ${is05b ? '0.5B' : '1.5B'}`, on: true },
+    {
+      label: 'Review',
+      note: autoRender ? 'Skipped — render starts without approval' : 'Pause for your audio approval',
+      on: !autoRender,
+    },
+    { label: 'Compose', note: `Render the ${VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!.name} template`, on: true },
+  ]
+
+  // Live read-out pinned above the launch button — the run at a glance.
+  const summary: Array<[string, string]> = [
+    ['Source', SOURCE_LABEL[sourceType]],
+    ['Start', scheduled && !scheduleIsPast ? startLabel : 'Now'],
+    ['Length', `${duration} min`],
+    ['Style', isMonologue ? 'Solo' : 'Two-host'],
+    ['Voice', isMonologue ? voice1 : `${voice1} · ${voice2}`],
+    ['Engine', is05b ? '0.5B' : '1.5B'],
+    ['Template', VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!.name],
+    ['B-roll', footageEnabled ? `${footageClipCount} clips` : 'Off'],
+    ['Review', autoRender ? 'Auto-render' : 'Manual'],
+  ]
+
   return (
-    <div className="card" style={{ maxWidth: 700, margin: '0 auto' }}>
-      <h2 style={{ marginBottom: 20, fontSize: 18, fontWeight: 600 }}>New Podcast Task</h2>
+    <div className="task-workbench">
+      {/* ── Left: what goes in, and the launch control ─────────────── */}
+      <section className="wb-source" aria-label="Source">
+        <div className="wb-pane-scroll">
+          <header className="wb-head">
+            <span className="wb-index">01</span>
+            <div>
+              <span className="eyebrow">Ingest</span>
+              <h2>Source material</h2>
+            </div>
+          </header>
 
-      <div className="source-tabs">
-        {(['youtube', 'epub', 'pdf'] as SourceType[]).map((t) => (
-          <button
-            key={t}
-            className={`source-tab ${sourceType === t ? 'active' : ''}`}
-            onClick={() => { setSourceType(t); setFile(null); setUrl(''); }}
-          >
-            {t === 'youtube' ? 'YouTube' : t.toUpperCase()}
-          </button>
-        ))}
-      </div>
-
-      {sourceType === 'youtube' && (
-        <div className="form-group">
-          <label>YouTube URL</label>
-          <input
-            type="text"
-            placeholder="https://www.youtube.com/watch?v=..."
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
-        </div>
-      )}
-
-      {(sourceType === 'epub' || sourceType === 'pdf') && (
-        <div className="form-group">
-          <label>{sourceType.toUpperCase()} File</label>
-          <div
-            className={`file-drop ${dragover ? 'dragover' : ''}`}
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setDragover(true); }}
-            onDragLeave={() => setDragover(false)}
-            onDrop={handleDrop}
-          >
-            {file ? file.name : `Drop your ${sourceType.toUpperCase()} file here or click to browse`}
-            <input
-              ref={fileRef}
-              type="file"
-              accept={sourceType === 'epub' ? '.epub' : '.pdf'}
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-          </div>
-        </div>
-      )}
-
-      {sourceType === 'epub' && (
-        <div className="form-group">
-          <label>Processing Mode</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <label className={`choice-tile ${processingMode === 'full_text' ? 'active' : ''}`}>
-              <input
-                type="radio"
-                name="processing_mode"
-                value="full_text"
-                checked={processingMode === 'full_text'}
-                onChange={() => setProcessingMode('full_text')}
-              />
-              <span>
-                <strong>Full Text</strong>
-                <small>Use the standard EPUB extractor</small>
-              </span>
-            </label>
-            <label className={`choice-tile ${processingMode === 'curated_highlights' ? 'active' : ''}`}>
-              <input
-                type="radio"
-                name="processing_mode"
-                value="curated_highlights"
-                checked={processingMode === 'curated_highlights'}
-                onChange={() => setProcessingMode('curated_highlights')}
-              />
-              <span>
-                <strong>Curated Highlights</strong>
-                <small>Use Isla-Reader selected quotes</small>
-              </span>
-            </label>
-          </div>
-        </div>
-      )}
-
-      <div className="form-group">
-        <label>Format</label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {SCRIPT_FORMATS.map((f) => (
-            <label key={f.key} className={`choice-tile ${scriptFormat === f.key ? 'active' : ''}`}>
-              <input
-                type="radio"
-                name="script_format"
-                value={f.key}
-                checked={scriptFormat === f.key}
-                onChange={() => selectFormat(f.key)}
-              />
-              <span>
-                <strong>{f.name}</strong>
-                <small>{f.description}</small>
-              </span>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className={isMonologue ? '' : 'grid-2'}>
-        <div className="form-group">
-          <label>{isMonologue ? 'Host Voice' : 'Host Voice (Speaker 1)'}</label>
-          <select value={voice1} onChange={(e) => setVoice1(e.target.value)}>
-            {VOICES.map((v) => (
-              <option key={v.name} value={v.name}>{v.name} ({v.gender})</option>
+          <div className="source-tabs">
+            {(['youtube', 'epub', 'pdf'] as SourceType[]).map((t) => (
+              <button
+                key={t}
+                className={`source-tab ${sourceType === t ? 'active' : ''}`}
+                onClick={() => { setSourceType(t); setFile(null); setUrl(''); }}
+              >
+                {SOURCE_LABEL[t]}
+              </button>
             ))}
-          </select>
-        </div>
-        {!isMonologue && (
-          <div className="form-group">
-            <label>Co-host Voice (Speaker 2)</label>
-            <select value={voice2} onChange={(e) => setVoice2(e.target.value)}>
-              {VOICES.map((v) => (
-                <option key={v.name} value={v.name}>{v.name} ({v.gender})</option>
-              ))}
-            </select>
           </div>
-        )}
-      </div>
-      <small style={{ display: 'block', marginTop: 6, marginBottom: 16, color: 'var(--text-dim)' }}>
-        {isMonologue
-          ? 'Solo talk-show uses a single voice.'
-          : 'Two-host dialogue uses two voices — a host and a co-host.'}
-      </small>
 
-      <div className="form-group">
-        <label>TTS Model</label>
-        <select value={ttsModel} onChange={(e) => selectModel(e.target.value)}>
-          <option value="vibevoice-1.5b">1.5B (high quality)</option>
-          <option value="vibevoice-0.5b" disabled={scriptFormat === 'dialogue'}>
-            0.5B (fast draft, solo only)
-          </option>
-        </select>
-        {is05b && (
-          <small style={{ display: 'block', marginTop: 6, color: 'var(--text-dim)' }}>
-            The 0.5B model is single-speaker — solo talk-show only.
-          </small>
-        )}
-        {scriptFormat === 'dialogue' && (
-          <small style={{ display: 'block', marginTop: 6, color: 'var(--text-dim)' }}>
-            Two-host dialogue requires the 1.5B model.
-          </small>
-        )}
-      </div>
-
-      <div className="grid-2">
-        <div className="form-group">
-          <label>Target Duration (minutes)</label>
-          <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
-            <option value={5}>5 min</option>
-            <option value={10}>10 min</option>
-            <option value={15}>15 min</option>
-            <option value={20}>20 min</option>
-          </select>
-        </div>
-        <div className="form-group">
-          <label style={{ visibility: 'hidden' }}>Character</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14, color: 'var(--text)' }}>
-            <input type="checkbox" checked={character} onChange={(e) => setCharacter(e.target.checked)} style={{ width: 'auto' }} />
-            Include animated character
-          </label>
-        </div>
-      </div>
-
-      <div className="form-group">
-        <label>Video Template</label>
-        <div className="template-grid">
-          {VIDEO_TEMPLATES.map((template) => (
-            <label
-              key={template.key}
-              className={`choice-tile ${videoTemplate === template.key ? 'active' : ''}`}
-            >
+          {sourceType === 'youtube' && (
+            <div className="form-group">
+              <label>YouTube URL</label>
               <input
-                type="radio"
-                name="video_template"
-                value={template.key}
-                checked={videoTemplate === template.key}
-                onChange={() => setVideoTemplate(template.key)}
+                className="wb-url"
+                type="text"
+                placeholder="https://www.youtube.com/watch?v=..."
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
               />
-              <span>
-                <strong>{template.name}</strong>
-                <small>{template.description}</small>
-              </span>
-            </label>
-          ))}
-        </div>
-      </div>
+              <small className="wb-hint">The transcript is pulled straight from the video.</small>
+            </div>
+          )}
 
-      <section className={`footage-config ${footageEnabled ? 'is-enabled' : ''}`}>
-        <div className="footage-config-head">
-          <div>
-            <span className="eyebrow">Agent media scout</span>
-            <h3>Public Footage</h3>
-            <p>Plan visual searches, download eligible B-roll, and keep a license audit trail.</p>
+          {(sourceType === 'epub' || sourceType === 'pdf') && (
+            <div className="form-group">
+              <label>{SOURCE_LABEL[sourceType]} File</label>
+              <div
+                className={`file-drop ${dragover ? 'dragover' : ''}`}
+                onClick={() => fileRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); setDragover(true); }}
+                onDragLeave={() => setDragover(false)}
+                onDrop={handleDrop}
+              >
+                {file ? file.name : `Drop your ${SOURCE_LABEL[sourceType]} file here or click to browse`}
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept={sourceType === 'epub' ? '.epub' : '.pdf'}
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                />
+              </div>
+            </div>
+          )}
+
+          {sourceType === 'epub' && (
+            <div className="form-group">
+              <label>Processing Mode</label>
+              <div className="tile-row">
+                <label className={`choice-tile ${processingMode === 'full_text' ? 'active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="processing_mode"
+                    value="full_text"
+                    checked={processingMode === 'full_text'}
+                    onChange={() => setProcessingMode('full_text')}
+                  />
+                  <span>
+                    <strong>Full Text</strong>
+                    <small>Use the standard EPUB extractor</small>
+                  </span>
+                </label>
+                <label className={`choice-tile ${processingMode === 'curated_highlights' ? 'active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="processing_mode"
+                    value="curated_highlights"
+                    checked={processingMode === 'curated_highlights'}
+                    onChange={() => setProcessingMode('curated_highlights')}
+                  />
+                  <span>
+                    <strong>Curated Highlights</strong>
+                    <small>Use Isla-Reader selected quotes</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          <div className="wb-flow">
+            <span className="eyebrow">What will run</span>
+            <ol>
+              {pipeline.map((step) => (
+                <li key={step.label} className={step.on ? '' : 'is-off'}>
+                  <strong>{step.label}</strong>
+                  <small>{step.note}</small>
+                </li>
+              ))}
+            </ol>
           </div>
-          <label className="footage-toggle">
-            <input
-              type="checkbox"
-              checked={footageEnabled}
-              onChange={(event) => setFootageEnabled(event.target.checked)}
-            />
-            <span aria-hidden="true" />
-            <b>{footageEnabled ? 'On' : 'Off'}</b>
-          </label>
         </div>
 
-        <div className="source-readiness">
-          <span className="source-monogram">WC</span>
-          <span>
-            <strong>Wikimedia Commons</strong>
-            <small>No API key required</small>
-          </span>
-          <em>Ready</em>
-        </div>
-
-        {footageEnabled && (
-          <>
-            <div className="grid-2 footage-options">
-              <div>
-                <label>Target clips</label>
-                <select
-                  value={footageClipCount}
-                  onChange={(event) => setFootageClipCount(Number(event.target.value))}
-                >
-                  <option value={2}>2 clips</option>
-                  <option value={3}>3 clips</option>
-                  <option value={4}>4 clips</option>
-                  <option value={5}>5 clips</option>
-                  <option value={6}>6 clips</option>
-                </select>
+        <footer className="launch-dock">
+          <dl className="run-summary">
+            {summary.map(([k, v]) => (
+              <div key={k}>
+                <dt>{k}</dt>
+                <dd>{v}</dd>
               </div>
-              <div>
-                <label>Frame orientation</label>
-                <select
-                  value={footageOrientation}
-                  onChange={(event) => setFootageOrientation(event.target.value as 'landscape' | 'portrait')}
-                >
-                  <option value="landscape">Landscape</option>
-                  <option value="portrait">Portrait</option>
-                </select>
-              </div>
-            </div>
-            <div className="license-gate">
-              <span className="license-gate-icon">✓</span>
-              <span>
-                <strong>Open-license gate</strong>
-                <small>Public Domain · CC0 · CC BY · CC BY-SA</small>
-              </span>
-            </div>
-          </>
-        )}
+            ))}
+          </dl>
+          <button
+            className="btn-primary launch-btn"
+            disabled={!canSubmit || mutation.isPending}
+            onClick={() => mutation.mutate()}
+          >
+            {mutation.isPending
+              ? 'Creating…'
+              : scheduled && !scheduleIsPast
+                ? `Schedule for ${startLabel}`
+                : 'Generate Podcast Video'}
+          </button>
+          {!canSubmit && (
+            <small className="wb-hint">
+              {!sourceReady
+                ? sourceType === 'youtube'
+                  ? 'Paste a YouTube URL to continue.'
+                  : `Add a ${SOURCE_LABEL[sourceType]} file to continue.`
+                : 'Pick a start date and time to continue.'}
+            </small>
+          )}
+          {canSubmit && scheduled && scheduleIsPast && (
+            <small className="wb-hint">That time has already passed — the run starts right away.</small>
+          )}
+          {mutation.isError && (
+            <div className="error-box">{(mutation.error as Error).message}</div>
+          )}
+        </footer>
       </section>
 
-      {providers.length > 0 && (
-        <div className="form-group">
-          <label>AI Provider</label>
-          <select
-            value={providerId ?? ''}
-            onChange={(e) => setProviderId(e.target.value === '' ? null : Number(e.target.value))}
-          >
-            <option value="">Default {providers.find((p) => p.is_default) ? `(${providers.find((p) => p.is_default)!.name})` : ''}</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>{p.name} — {p.model}</option>
-            ))}
-          </select>
-        </div>
-      )}
+      {/* ── Right: everything that shapes the render ───────────────── */}
+      <section className="wb-config" aria-label="Production setup">
+        <div className="wb-pane-scroll">
+          <header className="wb-head">
+            <span className="wb-index">02</span>
+            <div>
+              <span className="eyebrow">Direction</span>
+              <h2>Production setup</h2>
+            </div>
+          </header>
 
-      <div style={{ marginTop: 8 }}>
-        <button
-          className="btn-primary"
-          disabled={!canSubmit || mutation.isPending}
-          onClick={() => mutation.mutate()}
-          style={{ width: '100%', padding: '12px 0', fontSize: 15 }}
-        >
-          {mutation.isPending ? 'Creating...' : 'Generate Podcast Video'}
-        </button>
-        {mutation.isError && (
-          <div className="error-box" style={{ marginTop: 12 }}>
-            {(mutation.error as Error).message}
+          <div className="wb-grid">
+            <article className="wb-panel wb-wide">
+              <h3>Hosts &amp; format</h3>
+              <div className="tile-row">
+                {SCRIPT_FORMATS.map((f) => (
+                  <label key={f.key} className={`choice-tile ${scriptFormat === f.key ? 'active' : ''}`}>
+                    <input
+                      type="radio"
+                      name="script_format"
+                      value={f.key}
+                      checked={scriptFormat === f.key}
+                      onChange={() => selectFormat(f.key)}
+                    />
+                    <span>
+                      <strong>{f.name}</strong>
+                      <small>{f.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="grid-2 wb-voices">
+                <VoiceField
+                  label={isMonologue ? 'Host Voice' : 'Host Voice (Speaker 1)'}
+                  value={voice1}
+                  onChange={(v) => {
+                    stopPreview()
+                    setVoice1(v)
+                  }}
+                  voices={voices}
+                  playing={playingVoice === voice1}
+                  onPreview={togglePreview}
+                />
+                {!isMonologue && (
+                  <VoiceField
+                    label="Co-host Voice (Speaker 2)"
+                    value={voice2}
+                    onChange={(v) => {
+                      stopPreview()
+                      setVoice2(v)
+                    }}
+                    voices={voices}
+                    playing={playingVoice === voice2}
+                    onPreview={togglePreview}
+                  />
+                )}
+              </div>
+              <audio ref={audioRef} onEnded={() => setPlayingVoice(null)} hidden />
+              <small className="wb-hint">
+                {previewError
+                  ? previewError
+                  : isMonologue
+                    ? 'Solo talk-show uses a single voice. Hit ▶ to hear a sample.'
+                    : 'Two-host dialogue uses two voices — a host and a co-host. Hit ▶ to hear a sample.'}
+              </small>
+            </article>
+
+            <article className="wb-panel">
+              <h3>Engine &amp; length</h3>
+              <div className="form-group">
+                <label>TTS Model</label>
+                <select value={ttsModel} onChange={(e) => selectModel(e.target.value)}>
+                  <option value="vibevoice-1.5b">1.5B (high quality)</option>
+                  <option value="vibevoice-0.5b" disabled={scriptFormat === 'dialogue'}>
+                    0.5B (fast draft, solo only)
+                  </option>
+                </select>
+                {is05b && (
+                  <small className="wb-hint">The 0.5B model is single-speaker — solo talk-show only.</small>
+                )}
+                {scriptFormat === 'dialogue' && (
+                  <small className="wb-hint">Two-host dialogue requires the 1.5B model.</small>
+                )}
+              </div>
+              <div className="form-group">
+                <label>Target Duration</label>
+                <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+                  <option value={5}>5 min</option>
+                  <option value={10}>10 min</option>
+                  <option value={15}>15 min</option>
+                  <option value={20}>20 min</option>
+                </select>
+              </div>
+              <label className="wb-check">
+                <input type="checkbox" checked={character} onChange={(e) => setCharacter(e.target.checked)} />
+                Include animated character
+              </label>
+            </article>
+
+            <article className="wb-panel">
+              <h3>Start time</h3>
+              <div className="tile-row schedule-modes">
+                <label className={`choice-tile ${startMode === 'now' ? 'active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="start_mode"
+                    value="now"
+                    checked={startMode === 'now'}
+                    onChange={() => setStartMode('now')}
+                  />
+                  <span>
+                    <strong>Start now</strong>
+                    <small>Run as soon as the worker is free</small>
+                  </span>
+                </label>
+                <label className={`choice-tile ${startMode === 'later' ? 'active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="start_mode"
+                    value="later"
+                    checked={startMode === 'later'}
+                    onChange={() => setStartMode('later')}
+                  />
+                  <span>
+                    <strong>Schedule</strong>
+                    <small>Hold the run for an idle window</small>
+                  </span>
+                </label>
+              </div>
+
+              {startMode === 'later' && (
+                <div className="schedule-picker">
+                  <div className="schedule-presets">
+                    {START_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        className="schedule-chip"
+                        onClick={() => pickPreset(preset.at())}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="start-at">Start at (your local time)</label>
+                    <input
+                      id="start-at"
+                      type="datetime-local"
+                      value={startAt}
+                      min={toLocalInputValue(new Date())}
+                      onChange={(e) => setStartAt(e.target.value)}
+                    />
+                  </div>
+                  <small className="wb-hint">
+                    {scheduled
+                      ? scheduleIsPast
+                        ? 'That time has passed — the task will be picked up immediately.'
+                        : `Queued now, starts ${startLabel} · ${countdown(scheduled)}`
+                      : 'The task sits in the queue and the pipeline starts at this time.'}
+                  </small>
+                </div>
+              )}
+            </article>
+
+            <article className="wb-panel">
+              <h3>Audio review</h3>
+              <div className="footage-config-head">
+                <p>
+                  {autoRender
+                    ? 'The video renders as soon as the narration is ready — no stop for approval.'
+                    : 'The task pauses after TTS so you can preview the audio before rendering.'}
+                </p>
+                <label className="footage-toggle">
+                  <input
+                    type="checkbox"
+                    checked={autoRender}
+                    onChange={(event) => setAutoRender(event.target.checked)}
+                  />
+                  <span aria-hidden="true" />
+                  <b>{autoRender ? 'Skip' : 'Review'}</b>
+                </label>
+              </div>
+            </article>
+
+            <article className="wb-panel">
+              <h3>Video template</h3>
+              <div className="template-grid">
+                {VIDEO_TEMPLATES.map((template) => (
+                  <label
+                    key={template.key}
+                    className={`choice-tile ${videoTemplate === template.key ? 'active' : ''}`}
+                  >
+                    <input
+                      type="radio"
+                      name="video_template"
+                      value={template.key}
+                      checked={videoTemplate === template.key}
+                      onChange={() => setVideoTemplate(template.key)}
+                    />
+                    <span>
+                      <strong>{template.name}</strong>
+                      <small>{template.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </article>
+
+            {providers.length > 0 && (
+              <article className="wb-panel">
+                <h3>AI provider</h3>
+                <select
+                  value={providerId ?? ''}
+                  onChange={(e) => setProviderId(e.target.value === '' ? null : Number(e.target.value))}
+                >
+                  <option value="">Default {providers.find((p) => p.is_default) ? `(${providers.find((p) => p.is_default)!.name})` : ''}</option>
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name} — {p.model}</option>
+                  ))}
+                </select>
+                <small className="wb-hint">Drives script digestion and the media scout.</small>
+              </article>
+            )}
+
+            <section className={`footage-config wb-wide ${footageEnabled ? 'is-enabled' : ''}`}>
+              <div className="footage-config-head">
+                <div>
+                  <span className="eyebrow">Agent media scout</span>
+                  <h3>Public Footage</h3>
+                  <p>Plan visual searches, download eligible B-roll, and keep a license audit trail.</p>
+                </div>
+                <label className="footage-toggle">
+                  <input
+                    type="checkbox"
+                    checked={footageEnabled}
+                    onChange={(event) => setFootageEnabled(event.target.checked)}
+                  />
+                  <span aria-hidden="true" />
+                  <b>{footageEnabled ? 'On' : 'Off'}</b>
+                </label>
+              </div>
+
+              <div className="source-readiness">
+                <span className="source-monogram">WC</span>
+                <span>
+                  <strong>Wikimedia Commons</strong>
+                  <small>No API key required</small>
+                </span>
+                <em>Ready</em>
+              </div>
+
+              {footageEnabled && (
+                <>
+                  <div className="grid-2 footage-options">
+                    <div>
+                      <label>Target clips</label>
+                      <select
+                        value={footageClipCount}
+                        onChange={(event) => setFootageClipCount(Number(event.target.value))}
+                      >
+                        <option value={2}>2 clips</option>
+                        <option value={3}>3 clips</option>
+                        <option value={4}>4 clips</option>
+                        <option value={5}>5 clips</option>
+                        <option value={6}>6 clips</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label>Frame orientation</label>
+                      <select
+                        value={footageOrientation}
+                        onChange={(event) => setFootageOrientation(event.target.value as 'landscape' | 'portrait')}
+                      >
+                        <option value="landscape">Landscape</option>
+                        <option value="portrait">Portrait</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="license-gate">
+                    <span className="license-gate-icon">✓</span>
+                    <span>
+                      <strong>Open-license gate</strong>
+                      <small>Public Domain · CC0 · CC BY · CC BY-SA</small>
+                    </span>
+                  </div>
+                </>
+              )}
+            </section>
           </div>
-        )}
-      </div>
+        </div>
+      </section>
     </div>
   )
 }

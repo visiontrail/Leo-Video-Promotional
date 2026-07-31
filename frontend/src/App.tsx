@@ -1,62 +1,216 @@
 import { useEffect, useState } from 'react'
-import { Routes, Route, Link } from 'react-router-dom'
+import { Routes, Route, NavLink, Link, useLocation, useNavigate } from 'react-router-dom'
 import TaskList from './components/TaskList'
 import TaskForm from './components/TaskForm'
 import TaskDetail from './components/TaskDetail'
 import SettingsPage from './components/SettingsPage'
+import {
+  IconTasks,
+  IconNew,
+  IconAdmin,
+  IconSun,
+  IconMoon,
+  IconMenu,
+  IconChevronLeft,
+  IconChevronRight,
+} from './components/Icons'
 
 type Theme = 'light' | 'dark'
 
+const NAV = [
+  { to: '/', label: 'Tasks', hint: 'Pipeline queue', Icon: IconTasks, end: true },
+  { to: '/new', label: 'New Task', hint: 'Start a render', Icon: IconNew, end: false },
+  { to: '/settings', label: 'Admin', hint: 'Models & prompts', Icon: IconAdmin, end: false },
+]
+
+/* `full` drops the centred measure; `chrome: false` lets workspace routes
+   provide their own hierarchy instead of repeating it in a global top bar. */
+type PageMeta = {
+  title: string
+  sub: string
+  back?: boolean
+  action?: 'new'
+  full?: boolean
+  chrome?: boolean
+}
+
+function pageMeta(pathname: string): PageMeta {
+  if (pathname === '/') return { title: 'Tasks', sub: 'Every podcast render in the pipeline', full: true, chrome: false }
+  if (pathname === '/new') return { title: 'New Task', sub: 'Configure a podcast video run', full: true, chrome: false }
+  if (pathname.startsWith('/tasks/')) return {
+    title: 'Task Detail',
+    sub: 'Stages, script review, and output',
+    back: true,
+    full: true,
+    chrome: false,
+  }
+  if (pathname === '/settings') return {
+    title: 'Admin Console',
+    sub: 'Models, prompts, and skills that drive the pipeline',
+    full: true,
+    chrome: false,
+  }
+  return { title: 'Video Promotional', sub: '' }
+}
+
 export default function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('theme')
     if (stored === 'light' || stored === 'dark') return stored
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   })
+  const [rail, setRail] = useState(() => localStorage.getItem('nav-rail') === '1')
+  const [drawer, setDrawer] = useState(false)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('theme', theme)
   }, [theme])
 
+  useEffect(() => {
+    localStorage.setItem('nav-rail', rail ? '1' : '0')
+  }, [rail])
+
+  useEffect(() => {
+    if (!drawer) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setDrawer(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawer])
+
   const nextTheme = theme === 'dark' ? 'light' : 'dark'
+  const meta = pageMeta(location.pathname)
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${rail ? ' is-rail' : ''}${drawer ? ' is-drawer-open' : ''}`}>
       <div className="ambient-field" aria-hidden="true" />
-      <div className="header">
-        <Link to="/" className="brand-lockup">
-          <span className="brand-mark">VP</span>
-          <span>
-            <h1>Video Promotional</h1>
-            <small>AI podcast video pipeline</small>
+
+      <aside className="sidebar" aria-label="Primary">
+        <Link
+          to="/"
+          className="brand-lockup"
+          title="Video Promotional"
+          onClick={() => setDrawer(false)}
+        >
+          <span className="brand-mark" aria-hidden="true">VP</span>
+          <span className="brand-text">
+            <strong>Video Promotional</strong>
+            <small>AI podcast pipeline</small>
           </span>
         </Link>
-        <div className="header-actions">
+
+        {/* The drawer is modal on small screens — navigating always dismisses it. */}
+        <nav className="nav" onClick={() => setDrawer(false)}>
+          <p className="nav-section">Workspace</p>
+          {NAV.map(({ to, label, hint, Icon, end }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={end}
+              title={label}
+              className={({ isActive }) => `nav-item${isActive ? ' is-active' : ''}`}
+            >
+              <span className="nav-icon"><Icon /></span>
+              <span className="nav-text">
+                <strong>{label}</strong>
+                <small>{hint}</small>
+              </span>
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="sidebar-foot">
           <button
-            className="theme-toggle"
             type="button"
+            className="rail-btn"
             aria-label={`Switch to ${nextTheme} theme`}
+            title={`Switch to ${nextTheme} theme`}
             onClick={() => setTheme(nextTheme)}
           >
-            <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
+            <span className="nav-icon">{theme === 'dark' ? <IconSun /> : <IconMoon />}</span>
+            <span className="nav-text"><strong>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</strong></span>
           </button>
-          <Link to="/settings">
-            <button className="btn-ghost">Admin</button>
-          </Link>
-          <Link to="/new">
-            <button className="btn-primary">New Task</button>
-          </Link>
+          <button
+            type="button"
+            className="rail-btn collapse-btn"
+            aria-label={rail ? 'Expand navigation' : 'Collapse navigation'}
+            title={rail ? 'Expand navigation' : 'Collapse navigation'}
+            onClick={() => setRail((v) => !v)}
+          >
+            <span className="nav-icon">{rail ? <IconChevronRight /> : <IconChevronLeft />}</span>
+            <span className="nav-text"><strong>Collapse</strong></span>
+          </button>
         </div>
+      </aside>
+
+      <button
+        type="button"
+        className="scrim"
+        aria-label="Close navigation"
+        tabIndex={drawer ? 0 : -1}
+        onClick={() => setDrawer(false)}
+      />
+
+      <div className={`app-main${meta.full ? ' is-full' : ''}${meta.chrome === false ? ' no-topbar' : ''}`}>
+        {meta.chrome !== false && (
+          <header className="topbar">
+            <div className="topbar-inner">
+              <button
+                type="button"
+                className="icon-btn drawer-btn"
+                aria-label="Open navigation"
+                onClick={() => setDrawer(true)}
+              >
+                <IconMenu />
+              </button>
+              {meta.back && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Back to tasks"
+                  onClick={() => navigate('/')}
+                >
+                  <IconChevronLeft />
+                </button>
+              )}
+              <div className="topbar-heading">
+                <h1>{meta.title}</h1>
+                {meta.sub && <p>{meta.sub}</p>}
+              </div>
+              {meta.action === 'new' && (
+                <Link to="/new" className="topbar-cta">
+                  <button className="btn-primary" type="button">New Task</button>
+                </Link>
+              )}
+            </div>
+          </header>
+        )}
+
+        {meta.chrome === false && (
+          <button
+            type="button"
+            className="icon-btn drawer-btn canvas-drawer-btn"
+            aria-label="Open navigation"
+            onClick={() => setDrawer(true)}
+          >
+            <IconMenu />
+          </button>
+        )}
+
+        <main className="app-canvas">
+          <div className="page" key={location.pathname}>
+            <Routes>
+              <Route path="/" element={<TaskList />} />
+              <Route path="/new" element={<TaskForm />} />
+              <Route path="/tasks/:id" element={<TaskDetail />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </div>
+        </main>
       </div>
-      <main className="app-main">
-        <Routes>
-          <Route path="/" element={<TaskList />} />
-          <Route path="/new" element={<TaskForm />} />
-          <Route path="/tasks/:id" element={<TaskDetail />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </main>
     </div>
   )
 }

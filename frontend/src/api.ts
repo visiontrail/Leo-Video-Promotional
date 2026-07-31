@@ -18,6 +18,7 @@ export interface TaskConfig {
   footage_license_policy?: 'open_only';
   footage_clip_count?: number;
   footage_orientation?: 'landscape' | 'portrait';
+  auto_render?: boolean;
 }
 
 export interface Provider {
@@ -61,6 +62,8 @@ export interface Task {
   status: 'queued' | 'extracting' | 'digesting' | 'sourcing' | 'tts' | 'awaiting_review' | 'composing' | 'complete' | 'failed';
   error_message: string | null;
   config: TaskConfig;
+  /** UTC ISO-8601 start time; the worker holds the task until it passes. */
+  scheduled_at: string | null;
   output_dir: string | null;
   script_path: string | null;
   audio_path: string | null;
@@ -119,6 +122,41 @@ export interface Settings {
   available_voices: Record<string, { gender: string; lang: string }>;
 }
 
+/** One runtime setting (formerly a .env variable), as described by the backend. */
+export type SettingValue = string | number | boolean;
+
+export interface SettingField {
+  key: string;
+  label: string;
+  type: 'string' | 'secret' | 'int' | 'bool' | 'choice' | 'path';
+  description: string;
+  placeholder: string;
+  unit: string;
+  options: string[];
+  value: SettingValue;
+  default: SettingValue;
+  is_overridden: boolean;
+  restart_required: boolean;
+  allow_blank: boolean;
+  /** Secrets only — the value itself is never sent to the client. */
+  masked?: string | null;
+  default_masked?: string | null;
+  is_set?: boolean | null;
+}
+
+export interface SettingGroup {
+  id: string;
+  label: string;
+  description: string;
+  fields: SettingField[];
+}
+
+export interface SettingsSchema {
+  groups: SettingGroup[];
+  /** Keys whose last change needs a restart to fully take effect. */
+  restart_required: string[];
+}
+
 export interface Prompt {
   key: string;
   file: string;
@@ -159,14 +197,27 @@ export async function createTask(
   sourceUrl: string | null,
   config: TaskConfig,
   file?: File,
+  scheduledAt?: string | null,
 ): Promise<Task> {
   const form = new FormData();
   form.append('source_type', sourceType);
   if (sourceUrl) form.append('source_url', sourceUrl);
   form.append('config_json', JSON.stringify(config));
   if (file) form.append('file', file);
+  if (scheduledAt) form.append('scheduled_at', scheduledAt);
 
   const res = await fetch(`${BASE}/api/tasks`, { method: 'POST', body: form });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Move a queued task's start time; pass null to release it immediately. */
+export async function scheduleTask(taskId: string, scheduledAt: string | null): Promise<Task> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/schedule`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scheduled_at: scheduledAt }),
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -178,6 +229,61 @@ export async function deleteTask(id: string): Promise<void> {
 export async function fetchSettings(): Promise<Settings> {
   const res = await fetch(`${BASE}/api/settings`);
   return res.json();
+}
+
+// ── Runtime settings ─────────────────────────────────────────────────
+async function settingsRequest(path: string, init: RequestInit): Promise<SettingsSchema> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  });
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function fetchSettingsSchema(): Promise<SettingsSchema> {
+  return settingsRequest('/api/settings/schema', { method: 'GET' });
+}
+
+/** Persist and apply the given settings. Only the submitted keys change. */
+export async function updateSettingsValues(
+  values: Record<string, SettingValue>,
+): Promise<SettingsSchema> {
+  return settingsRequest('/api/settings/values', {
+    method: 'PUT',
+    body: JSON.stringify({ values }),
+  });
+}
+
+/** Drop saved overrides, restoring the values the process started with. */
+export async function resetSettingsValues(keys: string[]): Promise<SettingsSchema> {
+  return settingsRequest('/api/settings/values/reset', {
+    method: 'POST',
+    body: JSON.stringify({ keys }),
+  });
+}
+
+export interface VoiceOption {
+  name: string;
+  gender: string;
+  lang: string;
+  resolved_name: string;
+  preview_available: boolean;
+}
+
+export async function fetchVoices(ttsModel?: string): Promise<VoiceOption[]> {
+  const qs = ttsModel ? `?tts_model=${encodeURIComponent(ttsModel)}` : '';
+  const res = await fetch(`${BASE}/api/voices${qs}`);
+  if (!res.ok) throw new Error('Failed to load voices');
+  return res.json();
+}
+
+export function voicePreviewUrl(voice: string, ttsModel?: string): string {
+  const qs = ttsModel ? `?tts_model=${encodeURIComponent(ttsModel)}` : '';
+  return `${BASE}/api/voices/${encodeURIComponent(voice)}/preview${qs}`;
 }
 
 export async function fetchProviders(): Promise<Provider[]> {

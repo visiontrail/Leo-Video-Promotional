@@ -1,11 +1,11 @@
 import json
 import logging
-import os
 import re
 import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from backend import config
 from backend.pipeline.extractors.base import ExtractedContent
 from backend.pipeline.process_logging import run_capture_logged
 
@@ -54,7 +54,7 @@ def _pick_subtitle(vtt_files: list[Path]) -> Path:
 
 
 def _find_node_runtime() -> str | None:
-    configured = os.getenv("YTDLP_JS_RUNTIME", "").strip()
+    configured = config.YTDLP_JS_RUNTIME.strip()
     if configured:
         return configured
 
@@ -76,13 +76,13 @@ def _yt_dlp_common_args(*, include_cookies: bool = True) -> list[str]:
     if js_runtime:
         args.extend(["--js-runtimes", js_runtime])
 
-    remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS", "ejs:github").strip()
+    remote_components = config.YTDLP_REMOTE_COMPONENTS.strip()
     if remote_components.lower() not in {"", "0", "false", "none", "off"}:
         args.extend(["--remote-components", remote_components])
 
     if include_cookies:
-        cookies_file = os.getenv("YTDLP_COOKIES", "").strip()
-        cookies_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+        cookies_file = config.YTDLP_COOKIES.strip()
+        cookies_browser = config.YTDLP_COOKIES_FROM_BROWSER.strip()
         if cookies_file:
             args.extend(["--cookies", cookies_file])
         elif cookies_browser:

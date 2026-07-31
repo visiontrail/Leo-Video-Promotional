@@ -1,0 +1,624 @@
+"""Runtime settings registry — the Admin console's source of truth for every
+knob that used to live only in ``.env``.
+
+``.env`` still seeds the process at import (see :mod:`backend.config`), but its
+values are now *defaults*: whatever the Admin console saves into
+``data/settings.json`` is layered on top at startup and re-applied immediately
+on every save. Almost every consumer reads ``config.NAME`` at call time, so a
+saved change reaches the next pipeline stage without a restart; the few that
+cannot (the ``/outputs`` static mount, the SQLite file opened at startup) carry
+``restart_required`` and the UI says so.
+
+Adding a knob is a data change: append a :class:`SettingSpec` whose ``key``
+matches the attribute in ``config``, and both the API schema and the Admin form
+pick it up.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
+
+_STORE_VERSION = 1
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off", ""}
+
+
+class SettingsError(ValueError):
+    """Raised when a submitted setting value is not usable."""
+
+
+@dataclass(frozen=True)
+class SettingGroup:
+    id: str
+    label: str
+    description: str
+
+
+@dataclass(frozen=True)
+class SettingSpec:
+    key: str          # matches the attribute name in backend.config
+    group: str
+    label: str
+    type: str         # string | secret | int | bool | choice | path
+    description: str = ""
+    placeholder: str = ""
+    unit: str = ""
+    options: tuple[str, ...] = ()
+    # Choices that depend on runtime config (installed TTS models, voice presets).
+    dynamic_options: Callable[[], tuple[str, ...]] | None = field(default=None, compare=False)
+    minimum: int | None = None
+    maximum: int | None = None
+    # False = an empty submission means "go back to the default" rather than
+    # storing a blank (used for paths and other values that must not be empty).
+    allow_blank: bool = True
+    restart_required: bool = False
+
+
+def _config():
+    """Import backend.config lazily.
+
+    config imports this module at the end of its own import to apply saved
+    settings, so a module-level import here would be circular.
+    """
+    from backend import config
+
+    return config
+
+
+def _tts_model_options() -> tuple[str, ...]:
+    return tuple(sorted(_config().TTS_MODELS))
+
+
+def _voice_options() -> tuple[str, ...]:
+    return tuple(_config().AVAILABLE_VOICES)
+
+
+GROUPS: tuple[SettingGroup, ...] = (
+    SettingGroup(
+        "ai",
+        "AI Engine",
+        "The gateway that digests sources and writes scripts. A task may pick a "
+        "provider from the Models tab; these are the process-wide fallbacks.",
+    ),
+    SettingGroup(
+        "agent_sdk",
+        "Claude Agent SDK",
+        "Anthropic-protocol routing for the `claude` CLI the SDK spawns. Leave "
+        "blank to derive everything from the AI engine settings above.",
+    ),
+    SettingGroup(
+        "tts",
+        "Voice & TTS",
+        "The local VibeVoice runtime: where it is installed, which device it "
+        "runs on, and the default model and voices for new tasks.",
+    ),
+    SettingGroup(
+        "render",
+        "Render",
+        "HyperFrames capture settings. Frame count is duration x fps, so these "
+        "are the main wall-clock dials for a render.",
+    ),
+    SettingGroup(
+        "director",
+        "Video Direction",
+        "Agent crews that author the per-scene compositions. Everything they "
+        "write is checked against the runtime contract and reverted on failure, "
+        "so turning this off costs visual variety, never a working render.",
+    ),
+    SettingGroup(
+        "source",
+        "Source Extraction",
+        "How yt-dlp fetches YouTube sources. start.sh seeds a node runtime and "
+        "a cookie browser at launch; these override that.",
+    ),
+    SettingGroup(
+        "footage",
+        "Public Footage",
+        "The Wikimedia Commons B-roll scout. No API key is needed, but the "
+        "client must identify itself and keep downloads bounded.",
+    ),
+    SettingGroup(
+        "paths",
+        "Paths & Storage",
+        "Where the app reads and writes. Relative paths resolve under the "
+        "project root.",
+    ),
+)
+
+SPECS: tuple[SettingSpec, ...] = (
+    # ── AI engine ────────────────────────────────────────────────────────
+    SettingSpec(
+        "AI_BACKEND", "ai", "Backend", "choice",
+        options=("agent_sdk", "http"),
+        description="agent_sdk spawns the `claude` CLI and talks the Anthropic "
+                    "protocol; http is the direct OpenAI-compatible client.",
+    ),
+    SettingSpec(
+        "AI_ENDPOINT", "ai", "Endpoint", "string",
+        placeholder="https://gateway.example.com/v1/chat/completions",
+        description="OpenAI-compatible chat-completions URL. Seeds the default "
+                    "provider the first time the database is created.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "AI_API_KEY", "ai", "API key", "secret",
+        placeholder="sk-…",
+        description="Sent as the bearer token, and as the Anthropic auth token "
+                    "when no dedicated one is set below.",
+    ),
+    SettingSpec(
+        "AI_MODEL", "ai", "Model", "string",
+        placeholder="glm-4.6-chat",
+        description="Model id used when a task does not select a provider.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "AI_TIMEOUT", "ai", "Request timeout", "int", unit="seconds",
+        minimum=1, maximum=3600,
+        description="Per-request ceiling for both backends.",
+    ),
+    SettingSpec(
+        "AI_MAX_RETRIES", "ai", "Max retries", "int", unit="attempts",
+        minimum=0, maximum=10,
+        description="Extra attempts after the first failure.",
+    ),
+    # ── Claude Agent SDK ─────────────────────────────────────────────────
+    SettingSpec(
+        "ANTHROPIC_BASE_URL", "agent_sdk", "Anthropic base URL", "string",
+        placeholder="https://api.deepseek.com/anthropic",
+        description="Only needed when the gateway's Anthropic route is not at "
+                    "the host root. Blank derives it from the endpoint.",
+    ),
+    SettingSpec(
+        "ANTHROPIC_AUTH_TOKEN", "agent_sdk", "Anthropic auth token", "secret",
+        description="Blank reuses the resolved provider's API key.",
+    ),
+    SettingSpec(
+        "ANTHROPIC_MODEL", "agent_sdk", "Anthropic model", "string",
+        description="Overrides the task/provider model for SDK calls. Blank "
+                    "uses whichever model the task resolved.",
+    ),
+    SettingSpec(
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL", "agent_sdk", "Background (haiku) model", "string",
+        description="Cheap model the CLI uses for titles and summaries. Blank "
+                    "reuses the main model — set it when the gateway has no haiku tier.",
+    ),
+    SettingSpec(
+        "CLAUDE_CLI_PATH", "agent_sdk", "claude CLI path", "string",
+        placeholder="/usr/local/bin/claude",
+        description="Blank lets the SDK locate the CLI (bundled, else on PATH).",
+    ),
+    # ── TTS ──────────────────────────────────────────────────────────────
+    SettingSpec(
+        "AIWORK_ROOT", "tts", "VibeVoice install root", "path",
+        placeholder="/Volumes/TP-1TB/AIWork",
+        description="Holds env_vibevoice*.sh and the VibeVoice project "
+                    "directories. Moving it relocates every model script and "
+                    "voice sample.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "TTS_DEVICE", "tts", "Device", "choice",
+        options=("mps", "cuda", "cpu"),
+        description="Torch device passed to the inference script.",
+    ),
+    SettingSpec(
+        "TTS_DEFAULT_MODEL", "tts", "Default model", "choice",
+        dynamic_options=_tts_model_options,
+        description="Used when a task does not choose one.",
+    ),
+    SettingSpec(
+        "TTS_DEFAULT_VOICE_1", "tts", "Default voice 1", "choice",
+        dynamic_options=_voice_options,
+        description="Solo host, and the first speaker in a dialogue.",
+    ),
+    SettingSpec(
+        "TTS_DEFAULT_VOICE_2", "tts", "Default voice 2", "choice",
+        dynamic_options=_voice_options,
+        description="Second speaker, used only by dialogue scripts.",
+    ),
+    SettingSpec(
+        "TTS_STALL_TIMEOUT", "tts", "Stall timeout", "int", unit="seconds",
+        minimum=30, maximum=24 * 3600,
+        description="Seconds of total silence that count as a wedged run. "
+                    "VibeVoice prints progress several times a second, so this "
+                    "— not elapsed time — is the real hang detector.",
+    ),
+    SettingSpec(
+        "TTS_TIMEOUT", "tts", "Total timeout", "int", unit="seconds",
+        minimum=60, maximum=48 * 3600,
+        description="Coarse ceiling on one synthesis run. A full-length script "
+                    "legitimately decodes for hours.",
+    ),
+    # ── Render ───────────────────────────────────────────────────────────
+    SettingSpec(
+        "HYPERFRAME_DIR", "render", "HyperFrames project", "path",
+        placeholder="hyperframe",
+        description="Project the render runs in; its node_modules holds the "
+                    "pinned CLI, GSAP and Lottie.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "HYPERFRAMES_VERSION", "render", "CLI version", "string",
+        placeholder="0.6.99",
+        description="Pinned version used for the `npx` fallback when the local "
+                    "CLI is missing. Keep it pinned — `latest` re-installs on "
+                    "every cold run.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "RENDER_RESOLUTION", "render", "Resolution", "choice",
+        options=("landscape", "portrait", "square"),
+        description="landscape is 1920x1080.",
+    ),
+    SettingSpec(
+        "RENDER_FPS", "render", "Frame rate", "int", unit="fps",
+        minimum=1, maximum=60,
+        description="Frames captured per second of video — the single biggest "
+                    "factor in render time.",
+    ),
+    SettingSpec(
+        "RENDER_QUALITY", "render", "Quality", "choice",
+        options=("draft", "standard", "high"),
+        description="Encoder preset passed to the CLI.",
+    ),
+    SettingSpec(
+        "RENDER_WORKERS", "render", "Workers", "string",
+        placeholder="2",
+        description="Parallel capture workers: an integer, or `auto` to let the "
+                    "CLI decide.",
+        allow_blank=False,
+    ),
+    # ── Direction ────────────────────────────────────────────────────────
+    SettingSpec(
+        "DIRECTOR_ENABLED", "director", "Agent direction", "bool",
+        description="Off renders the deterministic scene drafts as-is.",
+    ),
+    SettingSpec(
+        "DIRECTOR_MAX_SCENES", "director", "Max directed scenes", "int", unit="scenes",
+        minimum=0, maximum=200,
+        description="Hand only the first N scenes to agents (0 = all). Each "
+                    "crew is a CLI process and a provider round-trip: this is "
+                    "the cost/latency dial.",
+    ),
+    SettingSpec(
+        "INSPECT_ENABLED", "director", "Layout inspection", "bool",
+        description="Run `hyperframes inspect` before the render and let agents "
+                    "repair the layout failures it reports. Costs a headless "
+                    "Chrome pass over the timeline.",
+    ),
+    # ── Source extraction ────────────────────────────────────────────────
+    SettingSpec(
+        "YTDLP_JS_RUNTIME", "source", "JS runtime", "string",
+        placeholder="node:/usr/local/bin/node",
+        description="Runtime yt-dlp uses to solve YouTube's player challenges. "
+                    "Blank auto-detects node on PATH.",
+    ),
+    SettingSpec(
+        "YTDLP_REMOTE_COMPONENTS", "source", "Remote components", "string",
+        placeholder="ejs:github",
+        description="Passed to --remote-components. `off` (or blank) disables "
+                    "fetching player components entirely.",
+    ),
+    SettingSpec(
+        "YTDLP_COOKIES", "source", "Cookies file", "string",
+        placeholder="/path/to/cookies.txt",
+        description="Netscape cookie file for age- or bot-gated videos. Takes "
+                    "precedence over the browser below.",
+    ),
+    SettingSpec(
+        "YTDLP_COOKIES_FROM_BROWSER", "source", "Cookies from browser", "string",
+        placeholder="chrome",
+        description="Borrow cookies from a local browser profile (chrome, "
+                    "safari, firefox…) when no cookie file is set.",
+    ),
+    # ── Footage ──────────────────────────────────────────────────────────
+    SettingSpec(
+        "FOOTAGE_USER_AGENT", "footage", "User agent", "string",
+        placeholder="VideoPromotional/1.0 (local AI media scout)",
+        description="Wikimedia asks API clients to identify themselves.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "FOOTAGE_TIMEOUT", "footage", "Request timeout", "int", unit="seconds",
+        minimum=5, maximum=600,
+    ),
+    SettingSpec(
+        "FOOTAGE_MAX_BYTES", "footage", "Max clip size", "int", unit="bytes",
+        minimum=1024 * 1024, maximum=2 * 1024 * 1024 * 1024,
+        description="Ceiling per download, so an autonomous scout cannot pull "
+                    "an archival master. 52428800 = 50 MB.",
+    ),
+    # ── Paths ────────────────────────────────────────────────────────────
+    SettingSpec(
+        "OUTPUTS_DIR", "paths", "Outputs directory", "path",
+        placeholder="outputs",
+        description="Per-task working directory: script, audio, scenes, video.",
+        allow_blank=False,
+        restart_required=True,
+    ),
+    SettingSpec(
+        "UPLOADS_DIR", "paths", "Uploads directory", "path",
+        placeholder="uploads",
+        description="Where uploaded EPUB/PDF sources are stored.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "DB_PATH", "paths", "Task database", "path",
+        placeholder="tasks.db",
+        description="SQLite file holding tasks and providers.",
+        allow_blank=False,
+        restart_required=True,
+    ),
+    SettingSpec(
+        "ISLA_READER_PROMOTION_SCRIPT", "paths", "Isla Reader script", "path",
+        description="External generator used by the EPUB curated-highlights mode.",
+        allow_blank=False,
+    ),
+)
+
+_SPEC_BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SPECS}
+
+# Defaults captured from config before any override is applied — i.e. what
+# .env (or the built-in fallback) produced. Filled in by apply_saved().
+_DEFAULTS: dict[str, Any] = {}
+
+
+def store_path() -> Path:
+    return _config().PROJECT_ROOT / "data" / "settings.json"
+
+
+def _read_store() -> dict[str, Any]:
+    path = store_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        return {}
+    return {k: v for k, v in values.items() if k in _SPEC_BY_KEY}
+
+
+def _write_store(values: Mapping[str, Any]) -> None:
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {"version": _STORE_VERSION, "values": dict(sorted(values.items()))},
+        indent=2,
+        ensure_ascii=False,
+    )
+    # Write-then-rename so a crash mid-write cannot leave a truncated store that
+    # would silently drop every saved setting on the next start.
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=path.name, suffix=".tmp", delete=False
+    ) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    os.replace(temp_path, path)
+
+
+def spec_options(spec: SettingSpec) -> tuple[str, ...]:
+    return spec.dynamic_options() if spec.dynamic_options else spec.options
+
+
+def coerce(spec: SettingSpec, raw: Any) -> Any:
+    """Turn a submitted value into the type ``config`` expects.
+
+    Raises :class:`SettingsError` with a message meant for the Admin UI.
+    """
+    if spec.type == "bool":
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in _TRUE:
+            return True
+        if text in _FALSE:
+            return False
+        raise SettingsError(f"{spec.label}: expected true or false, got {raw!r}")
+
+    if spec.type == "int":
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            raise SettingsError(f"{spec.label}: expected a whole number, got {raw!r}") from None
+        if spec.minimum is not None and value < spec.minimum:
+            raise SettingsError(f"{spec.label}: must be at least {spec.minimum}")
+        if spec.maximum is not None and value > spec.maximum:
+            raise SettingsError(f"{spec.label}: must be at most {spec.maximum}")
+        return value
+
+    text = "" if raw is None else str(raw).strip()
+
+    if spec.type == "choice":
+        options = spec_options(spec)
+        if text not in options:
+            raise SettingsError(f"{spec.label}: must be one of {', '.join(options)}")
+        return text
+
+    if spec.type == "path":
+        if not text:
+            raise SettingsError(f"{spec.label}: a path is required")
+        return _config().resolve_project_path(text)
+
+    return text
+
+
+def _store_value(spec: SettingSpec, value: Any) -> Any:
+    """Serialize a coerced value for the JSON store."""
+    if spec.type in ("bool", "int"):
+        return value
+    return str(value)
+
+
+def _is_blank(spec: SettingSpec, raw: Any) -> bool:
+    if spec.type == "bool":
+        return False
+    return str("" if raw is None else raw).strip() == ""
+
+
+def _blank_resets(spec: SettingSpec) -> bool:
+    """Whether a blank submission drops the override instead of storing an empty.
+
+    Numbers, choices and paths have no meaningful empty value, so clearing such
+    a field in the Admin form reads as "put it back the way it was".
+    """
+    return not spec.allow_blank or spec.type in ("int", "choice", "path")
+
+
+def _resolved(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """Defaults with the stored overrides layered on, all coerced."""
+    values = dict(_DEFAULTS)
+    for key, raw in overrides.items():
+        spec = _SPEC_BY_KEY.get(key)
+        if spec is None:
+            continue
+        try:
+            values[key] = coerce(spec, raw)
+        except SettingsError:
+            # A hand-edited or stale store entry must not stop the app from
+            # starting; fall back to the .env-seeded default for that key.
+            continue
+    return values
+
+
+def apply_saved() -> None:
+    """Snapshot the .env defaults, then apply the saved overrides to ``config``.
+
+    The snapshot is taken once, on the first call (from config's own import,
+    before anything has been overridden). Later calls only re-apply the store,
+    so a stray second call can never promote an override into a "default".
+    """
+    config = _config()
+    global _DEFAULTS
+    if not _DEFAULTS:
+        _DEFAULTS = {spec.key: getattr(config, spec.key) for spec in SPECS}
+    config.apply_values(_resolved(_read_store()))
+
+
+def defaults() -> dict[str, Any]:
+    return dict(_DEFAULTS)
+
+
+def mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "****"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _display(spec: SettingSpec, value: Any) -> Any:
+    if spec.type == "secret":
+        return ""
+    if spec.type == "path":
+        return str(value)
+    if spec.type in ("bool", "int"):
+        return value
+    return "" if value is None else str(value)
+
+
+def schema() -> list[dict[str, Any]]:
+    """Groups + fields with their current values, for the Admin console."""
+    config = _config()
+    overrides = _read_store()
+    fields_by_group: dict[str, list[dict[str, Any]]] = {group.id: [] for group in GROUPS}
+
+    for spec in SPECS:
+        current = getattr(config, spec.key)
+        default = _DEFAULTS.get(spec.key, current)
+        entry: dict[str, Any] = {
+            "key": spec.key,
+            "label": spec.label,
+            "type": spec.type,
+            "description": spec.description,
+            "placeholder": spec.placeholder,
+            "unit": spec.unit,
+            "options": list(spec_options(spec)),
+            "value": _display(spec, current),
+            "default": _display(spec, default),
+            "is_overridden": spec.key in overrides,
+            "restart_required": spec.restart_required,
+            "allow_blank": not _blank_resets(spec),
+        }
+        if spec.type == "secret":
+            entry["masked"] = mask_secret(str(current))
+            entry["default_masked"] = mask_secret(str(default))
+            entry["is_set"] = bool(str(current))
+        fields_by_group[spec.group].append(entry)
+
+    return [
+        {
+            "id": group.id,
+            "label": group.label,
+            "description": group.description,
+            "fields": fields_by_group[group.id],
+        }
+        for group in GROUPS
+    ]
+
+
+def update(submitted: Mapping[str, Any]) -> list[str]:
+    """Validate, persist and apply the submitted values.
+
+    Only the keys present are touched. A blank submission for a field that
+    cannot be blank drops the override, which restores the .env/built-in
+    default. Returns the changed keys that need a restart to take full effect.
+    """
+    unknown = [key for key in submitted if key not in _SPEC_BY_KEY]
+    if unknown:
+        raise SettingsError(f"Unknown setting(s): {', '.join(sorted(unknown))}")
+
+    overrides = _read_store()
+    before = _resolved(overrides)
+    for key, raw in submitted.items():
+        spec = _SPEC_BY_KEY[key]
+        if _is_blank(spec, raw) and _blank_resets(spec):
+            overrides.pop(key, None)
+            continue
+        value = coerce(spec, raw)
+        if value == _DEFAULTS.get(key):
+            # Identical to the default: drop the override rather than freezing a
+            # copy of it, so later .env edits still show through.
+            overrides.pop(key, None)
+        else:
+            overrides[key] = _store_value(spec, value)
+
+    _write_store(overrides)
+    after = _resolved(overrides)
+    _config().apply_values(after)
+    return [
+        key
+        for key in submitted
+        if _SPEC_BY_KEY[key].restart_required and before.get(key) != after.get(key)
+    ]
+
+
+def reset(keys: Iterable[str]) -> list[str]:
+    """Drop the stored overrides for ``keys``, restoring the .env defaults.
+
+    Returns the reset keys that need a restart to take full effect.
+    """
+    keys = list(keys)
+    unknown = [key for key in keys if key not in _SPEC_BY_KEY]
+    if unknown:
+        raise SettingsError(f"Unknown setting(s): {', '.join(sorted(unknown))}")
+    overrides = _read_store()
+    before = _resolved(overrides)
+    for key in keys:
+        overrides.pop(key, None)
+    _write_store(overrides)
+    after = _resolved(overrides)
+    _config().apply_values(after)
+    return [
+        key
+        for key in keys
+        if _SPEC_BY_KEY[key].restart_required and before.get(key) != after.get(key)
+    ]

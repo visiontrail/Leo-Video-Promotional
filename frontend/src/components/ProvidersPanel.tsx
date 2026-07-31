@@ -119,12 +119,8 @@ export default function ProvidersPanel() {
             <p style={{ color: 'var(--text-dim)' }}>No providers configured.</p>
           )}
           {providers.map((p) => (
-            <div
-              key={p.id}
-              className="card"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, gap: 12 }}
-            >
-              <div style={{ minWidth: 0 }}>
+            <div key={p.id} className="card provider-row">
+              <div className="provider-info">
                 <div style={{ fontWeight: 600 }}>
                   {p.name}{' '}
                   {p.is_default && (
@@ -138,8 +134,8 @@ export default function ProvidersPanel() {
                   key: {p.api_key_masked || '(none)'}
                 </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <div className="provider-actions">
+                <div className="provider-actions-row">
                   <button disabled={testing === `card-${p.id}`} onClick={() => runTest(`card-${p.id}`, { provider_id: p.id })}>
                     Test
                   </button>

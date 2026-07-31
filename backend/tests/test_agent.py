@@ -3,7 +3,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from backend import config
+from backend import config, skills_admin
 from backend.pipeline import agent
 
 
@@ -42,7 +42,7 @@ def fake_sdk(query):
 
 
 class AgentCompleteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_container_safe_permission_mode_and_provider_environment(self):
+    async def test_safe_permission_mode_and_provider_environment(self):
         captured = {}
 
         async def query(*, prompt, options):
@@ -57,6 +57,11 @@ class AgentCompleteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(config, "ANTHROPIC_AUTH_TOKEN", ""),
             patch.object(config, "ANTHROPIC_MODEL", ""),
             patch.object(config, "ANTHROPIC_DEFAULT_HAIKU_MODEL", ""),
+            patch.object(
+                skills_admin,
+                "runtime_skill_names",
+                return_value=(["hyperframes", "animejs"], ["openspec-archive-change"]),
+            ),
         ):
             result = await agent.agent_complete(
                 "Reply pong.",
@@ -69,6 +74,18 @@ class AgentCompleteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "pong")
         self.assertEqual(captured["prompt"], "ping")
         self.assertEqual(captured["options"].permission_mode, "default")
+        self.assertEqual(captured["options"].cwd, config.PROJECT_ROOT)
+        self.assertEqual(captured["options"].setting_sources, ["project"])
+        self.assertEqual(captured["options"].tools, ["Skill"])
+        self.assertEqual(
+            captured["options"].allowed_tools,
+            ["Skill(hyperframes)", "Skill(animejs)"],
+        )
+        self.assertEqual(
+            captured["options"].disallowed_tools,
+            ["Skill(openspec-archive-change)"],
+        )
+        self.assertEqual(captured["options"].max_turns, 2)
         self.assertEqual(
             captured["options"].env["ANTHROPIC_BASE_URL"],
             "http://oneapi.example",
@@ -91,6 +108,7 @@ class AgentCompleteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(config, "ANTHROPIC_BASE_URL", ""),
             patch.object(config, "ANTHROPIC_AUTH_TOKEN", ""),
             patch.object(config, "ANTHROPIC_MODEL", ""),
+            patch.object(skills_admin, "runtime_skill_names", return_value=([], [])),
         ):
             with self.assertRaisesRegex(
                 RuntimeError,

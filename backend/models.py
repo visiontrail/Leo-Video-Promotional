@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 import uuid
 
@@ -53,12 +53,23 @@ class TaskConfig(BaseModel):
     footage_license_policy: str = "open_only"
     footage_clip_count: int = Field(default=3, ge=1, le=6)
     footage_orientation: str = "landscape"
+    # Skip the audio review pause and go straight from TTS into compose. The
+    # default keeps the review step so existing clients are unaffected.
+    auto_render: bool = False
 
 
 class TaskCreate(BaseModel):
     source_type: SourceType
     source_url: Optional[str] = None
     config: TaskConfig = Field(default_factory=TaskConfig)
+    # Hold the task in the queue until this moment (UTC ISO-8601). None starts
+    # it as soon as the worker is free.
+    scheduled_at: Optional[str] = None
+
+
+class TaskSchedule(BaseModel):
+    """Move a still-queued task's start time, or clear it to start now."""
+    scheduled_at: Optional[str] = None
 
 
 class TaskResponse(BaseModel):
@@ -71,6 +82,7 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     error_message: Optional[str] = None
     config: TaskConfig
+    scheduled_at: Optional[str] = None
     output_dir: Optional[str] = None
     script_path: Optional[str] = None
     audio_path: Optional[str] = None
@@ -142,10 +154,61 @@ class SettingsResponse(BaseModel):
     available_voices: dict
 
 
+class VoiceOption(BaseModel):
+    name: str
+    gender: str
+    lang: str
+    # The preset the selected TTS model actually uses (0.5B substitutes some).
+    resolved_name: str
+    preview_available: bool
+
+
 class SettingsUpdate(BaseModel):
     ai_endpoint: Optional[str] = None
     ai_api_key: Optional[str] = None
     ai_model: Optional[str] = None
+
+
+class SettingField(BaseModel):
+    """One runtime setting, as rendered by the Admin console."""
+    key: str                      # the .env variable name / config attribute
+    label: str
+    type: str                     # string | secret | int | bool | choice | path
+    description: str = ""
+    placeholder: str = ""
+    unit: str = ""
+    options: list[str] = Field(default_factory=list)
+    value: Any = None
+    default: Any = None
+    is_overridden: bool = False
+    restart_required: bool = False
+    allow_blank: bool = True
+    # Secrets only: the value is never sent back, just its shape.
+    masked: Optional[str] = None
+    default_masked: Optional[str] = None
+    is_set: Optional[bool] = None
+
+
+class SettingGroup(BaseModel):
+    id: str
+    label: str
+    description: str = ""
+    fields: list[SettingField] = Field(default_factory=list)
+
+
+class SettingsSchemaResponse(BaseModel):
+    groups: list[SettingGroup]
+    # Keys whose last change needs a restart before it fully takes effect.
+    restart_required: list[str] = Field(default_factory=list)
+
+
+class SettingsValuesUpdate(BaseModel):
+    """Partial update: only the submitted keys are touched."""
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class SettingsResetRequest(BaseModel):
+    keys: list[str] = Field(default_factory=list)
 
 
 class PromptSummary(BaseModel):
@@ -196,3 +259,29 @@ class SkillUpdate(BaseModel):
 
 def new_task_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+
+
+def normalize_schedule(value: str | None) -> str | None:
+    """Normalise a client-supplied start time to a UTC ISO-8601 string.
+
+    Start times are compared as text in SQL (``scheduled_at <= now``), so every
+    stored value has to carry the same UTC offset — a local-offset string like
+    ``2026-07-28T01:00+08:00`` would otherwise compare wrong. Naive input is
+    read as UTC. Empty input means "no schedule".
+
+    Raises ValueError on input that is not a valid ISO-8601 datetime.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text[-1] in "Zz":
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"Invalid start time: {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()

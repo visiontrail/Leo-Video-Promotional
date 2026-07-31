@@ -1,43 +1,51 @@
+"""Compose the narration into a rendered video.
+
+The stage runs in five steps:
+
+1. **Storyboard** — cut the script into timed scenes against the audio.
+2. **Direction** — an art director model decides what each scene shows.
+3. **Authoring** — Claude Agent SDK crews write the HyperFrames scene files,
+   starting from deterministic drafts and falling back to them scene-by-scene.
+4. **Assembly** — a generated spine mounts the scenes on the audio timeline.
+5. **Render** — the HyperFrames CLI captures the composition to MP4.
+
+Steps 2 and 3 are the only places a model is involved, and neither can produce a
+blank video: the spine is generated, every authored scene is gated against the
+HyperFrames runtime contract, and lint failures revert the offending scene to
+its deterministic draft before the render starts.
+"""
+
+from __future__ import annotations
+
 import json
 import logging
 import re
-import shutil
-import wave
 from collections.abc import Callable
 from pathlib import Path
-from jinja2 import Environment, FileSystemLoader
+
 from backend import config
+from backend.pipeline import assembler, director, footage, scene_kit, storyboard as sb, visual_plan
 from backend.pipeline.process_logging import run_capture_logged, stream_subprocess
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
 
-TEMPLATE_FILES = {
-    "podcast": "podcast.html",
-    "kinetic": "podcast_kinetic.html",
-    "swiss": "podcast_swiss.html",
-    "minimal": "podcast_minimal.html",
-}
-
-TITLE_DURATION = 5.0
-OUTRO_DURATION = 5.0
-TRANSITION_DURATION = 0.4
+BRAND = "Video Promotional"
 
 # FFmpeg silence analysis is a quick pass; the HyperFrames render is the long
 # stage and is streamed live, so this ceiling only guards a genuine hang.
 SILENCE_TIMEOUT = 120
 
 # Per-frame wall-clock ceiling used to derive the render timeout from the frame
-# count (duration x fps). Generous on purpose: it must not kill a slow-but-live
-# render, only a genuinely wedged one. ~2 fps capture was measured on this Mac
-# at 1 worker; 1.5 s/frame leaves headroom for multi-worker and warmup.
+# count (duration x fps). Scene-based compositions capture far faster than the
+# old 158-clip single-page layout, but the ceiling stays generous: it must not
+# kill a slow-but-live render, only a genuinely wedged one.
 RENDER_SECONDS_PER_FRAME = 1.5
 RENDER_TIMEOUT_FLOOR = 900  # never below 15 min, regardless of how short the clip is
-
-
-def _get_audio_duration(wav_path: str) -> float:
-    with wave.open(wav_path, "rb") as w:
-        return w.getnframes() / w.getframerate()
+# The real hang detector: HyperFrames reports capture progress continuously, so
+# going silent for this long means it is wedged rather than merely slow. Warmup
+# (Chrome launch, first-frame compile) is the longest legitimate quiet stretch.
+RENDER_STALL_TIMEOUT = 600
 
 
 def _detect_silence_boundaries(wav_path: str, log: LogCallback | None = None) -> list[float]:
@@ -71,62 +79,6 @@ def _detect_silence_boundaries(wav_path: str, log: LogCallback | None = None) ->
     return boundaries
 
 
-SPEAKER_LABEL_RE = re.compile(r"^Speaker\s*(\d+)\s*[:：\-—–]\s*(.+)$", re.IGNORECASE)
-
-
-def _parse_script_segments(script_path: str, is_monologue: bool = False) -> list[dict]:
-    segments = []
-    with open(script_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            match = SPEAKER_LABEL_RE.match(line)
-            if match:
-                text = match.group(2)
-                segments.append({
-                    "speaker": int(match.group(1)),
-                    "text": text,
-                    "word_count": len(text.split()),
-                })
-            else:
-                speaker = 1 if is_monologue else (len(segments) % 2) + 1
-                segments.append({
-                    "speaker": speaker,
-                    "text": line,
-                    "word_count": len(line.split()),
-                })
-    return segments
-
-
-def _assign_timing(segments: list[dict], total_duration: float, silence_boundaries: list[float]) -> list[dict]:
-    total_words = sum(s["word_count"] for s in segments)
-    if not total_words:
-        return segments
-
-    if silence_boundaries and len(silence_boundaries) >= len(segments) - 1:
-        boundaries = [0.0] + silence_boundaries[:len(segments) - 1]
-        for i, seg in enumerate(segments):
-            seg["start"] = boundaries[i]
-            seg["duration"] = (boundaries[i + 1] if i + 1 < len(boundaries) else total_duration) - boundaries[i]
-    else:
-        elapsed = 0.0
-        for seg in segments:
-            proportion = seg["word_count"] / total_words
-            seg["start"] = elapsed
-            seg["duration"] = proportion * total_duration
-            elapsed += seg["duration"]
-
-    return segments
-
-
-def _truncate_text(text: str, max_words: int = 25) -> str:
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-    return " ".join(words[:max_words]) + "..."
-
-
 def _project_relative(path: str | Path, project_dir: Path) -> str:
     """Path of ``path`` relative to the render project dir, POSIX-style.
 
@@ -145,12 +97,11 @@ def _project_relative(path: str | Path, project_dir: Path) -> str:
 def _build_render_command(project_dir: Path, video_path: Path) -> list[str]:
     """Build the render command for the current HyperFrames CLI (v0.6.x).
 
-    The old ``--input/--width/--height`` flags no longer exist: the render entry
-    is the project directory (which must contain ``index.html``) and dimensions
-    come from ``--resolution``. Prefer the locally-installed, version-pinned
-    binary so a render never triggers an on-demand ``npx`` install (the old
-    unpinned ``npx hyperframes`` re-installed latest every run); fall back to a
-    *pinned* npx invocation only if the local install is missing.
+    The render entry is the project directory (which must contain
+    ``index.html``) and dimensions come from ``--resolution``. Prefer the
+    locally-installed, version-pinned binary so a render never triggers an
+    on-demand ``npx`` install; fall back to a *pinned* npx invocation only if the
+    local install is missing.
     """
     local_bin = config.HYPERFRAME_DIR / "node_modules" / ".bin" / "hyperframes"
     if local_bin.exists():
@@ -167,6 +118,49 @@ def _build_render_command(project_dir: Path, video_path: Path) -> list[str]:
     ]
 
 
+def _mount_list(board: dict) -> list[dict]:
+    """Every mount needed to cover the timeline with no gaps.
+
+    A hole here renders as a black frame, which is how the first five seconds of
+    the previous pipeline came out blank: the title card was styled but never
+    mounted as a clip.
+    """
+    mounts = [
+        {
+            "id": visual_plan.TITLE_SCENE_ID,
+            "start": 0.0,
+            "duration": float(board["content_start"]),
+        }
+    ]
+    mounts += [
+        {"id": scene["id"], "start": scene["start"], "duration": scene["duration"]}
+        for scene in board["scenes"]
+    ]
+    mounts.append(
+        {
+            "id": visual_plan.OUTRO_SCENE_ID,
+            "start": float(board["outro_start"]),
+            "duration": float(board["outro_duration"]),
+        }
+    )
+    return mounts
+
+
+def _kit_plans(
+    plans: list[dict], mounts: list[dict], theme: scene_kit.Theme
+) -> list[scene_kit.ScenePlan]:
+    duration_by_id = {mount["id"]: float(mount["duration"]) for mount in mounts}
+    return [
+        scene_kit.ScenePlan.from_dict(
+            plan,
+            duration=duration_by_id.get(plan["id"], 6.0),
+            scene_id=plan["id"],
+            theme=theme,
+        )
+        for plan in plans
+    ]
+
+
 async def compose_video(
     script_path: str,
     audio_path: str,
@@ -175,6 +169,9 @@ async def compose_video(
     include_character: bool = False,
     video_template: str = "podcast",
     is_monologue: bool = False,
+    ai_endpoint: str | None = None,
+    ai_model: str | None = None,
+    provider_id: int | None = None,
     log: LogCallback | None = None,
 ) -> str:
     output_dir_path = Path(output_dir)
@@ -184,84 +181,177 @@ async def compose_video(
     # module logger (start.sh log). Prefer the callback to avoid double-logging.
     emit = lambda message: log(message) if log else logger.info(message)
 
-    audio_duration = _get_audio_duration(audio_path)
-    composition_duration = audio_duration + TITLE_DURATION + OUTRO_DURATION
-    emit(f"Audio duration: {audio_duration:.1f}s; composition {composition_duration:.1f}s")
-
-    segments = _parse_script_segments(script_path, is_monologue=is_monologue)
-    emit(f"Parsed {len(segments)} script segments")
+    # --- 1. Storyboard -----------------------------------------------------
+    audio_duration = sb.get_audio_duration(audio_path)
     boundaries = _detect_silence_boundaries(audio_path, log)
-    timing_mode = "silence boundaries" if boundaries and len(boundaries) >= len(segments) - 1 else "proportional (word count)"
-    emit(f"Detected {len(boundaries)} silence boundaries; caption timing via {timing_mode}")
-    segments = _assign_timing(segments, audio_duration, boundaries)
+    emit(f"Audio duration: {audio_duration:.1f}s; {len(boundaries)} silence boundaries detected")
 
-    display_segments = []
-    for seg in segments:
-        display_segments.append({
-            "start": round(seg["start"] + TITLE_DURATION, 2),
-            "duration": round(seg["duration"], 2),
-            "speaker": seg["speaker"],
-            "text": _truncate_text(seg["text"]),
-        })
+    summary_path = output_dir_path / "summary.json"
+    summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
 
-    env = Environment(loader=FileSystemLoader(str(config.TEMPLATES_DIR)))
-    template_file = TEMPLATE_FILES.get(video_template)
-    if not template_file:
-        raise ValueError(f"Unknown video template: {video_template}")
-    template = env.get_template(template_file)
-    emit(f"Rendering template '{video_template}' ({template_file})")
-
-    # HyperFrames renders output_dir as the project root and sandboxes asset
-    # access to it, so every referenced file must live inside output_dir and be
-    # referenced by a path relative to it. An absolute path (or a file outside
-    # the project) is reported as audio_src_not_found and the video comes out
-    # SILENT — which is why earlier renders had no sound.
-    audio_src = _project_relative(audio_path, output_dir_path)
-
-    character_src = None
-    if include_character:
-        lottie_source = config.PROJECT_ROOT / "assets" / "lottie" / "podcast_host.json"
-        if lottie_source.exists():
-            char_dest = output_dir_path / "assets" / "podcast_host.json"
-            char_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(lottie_source, char_dest)
-            character_src = _project_relative(char_dest, output_dir_path)
-    has_character = character_src is not None
-
-    html = template.render(
+    board = sb.build_storyboard(
+        script_path=script_path,
+        audio_duration=audio_duration,
         title=title,
-        total_duration=round(composition_duration, 2),
-        audio_duration=round(audio_duration, 2),
-        content_start=round(TITLE_DURATION, 2),
-        outro_start=round(TITLE_DURATION + audio_duration, 2),
-        outro_duration=round(OUTRO_DURATION, 2),
-        transition_duration=round(TRANSITION_DURATION, 2),
-        segments=display_segments,
-        audio_path=audio_src,
-        include_character=has_character,
-        character_path=character_src,
+        silence_boundaries=boundaries,
         is_monologue=is_monologue,
+        summary=summary,
+        log=emit,
+    )
+    sb.write_storyboard(output_dir_path, board)
+    emit(f"Composition {board['total_duration']:.1f}s over {board['scene_count']} scenes")
+
+    # --- 2. Direction ------------------------------------------------------
+    plans = await visual_plan.plan_scene_visuals(
+        board,
+        ai_endpoint=ai_endpoint,
+        ai_model=ai_model,
+        provider_id=provider_id,
+        log=emit,
     )
 
-    # HyperFrames discovers the entry composition as <project>/index.html, so the
-    # task output dir doubles as a single-composition project. Write index.html
-    # (not composition.html) and drop any stale entry file that would trip the
-    # multiple_root_compositions check and cause duplicate audio.
-    composition_path = output_dir_path / "index.html"
-    composition_path.write_text(html)
-    stale = output_dir_path / "composition.html"
-    if stale.exists():
-        stale.unlink()
+    manifest = footage.read_manifest(output_dir_path)
+    attached = visual_plan.attach_footage(plans, board, manifest, output_dir_path)
+    if attached:
+        emit(f"Footage: {attached} open-license clip(s) placed as full-bleed scenes")
+
+    scene_plans = list(plans)
+    plans = (
+        [visual_plan.title_plan(board)]
+        + scene_plans
+        + [visual_plan.outro_plan(board, brand=BRAND)]
+    )
+    (output_dir_path / "visual_plan.json").write_text(
+        json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    # --- 3. Authoring ------------------------------------------------------
+    mounts = _mount_list(board)
+    theme = scene_kit.resolve_theme(video_template)
+    kit_plans = _kit_plans(plans, mounts, theme)
+
+    assembler.vendor_assets(output_dir_path, include_lottie=include_character)
+    character_src = assembler.stage_character(output_dir_path) if include_character else None
+    assembler.write_scene_files(output_dir_path, kit_plans)
+    emit(f"Wrote {len(kit_plans)} deterministic scene draft(s)")
+
+    # The crews talk to the same provider as the digest stage, so they need its
+    # resolved credentials — not just the task's overrides.
+    from backend.pipeline.digester import _resolve_provider
+
+    try:
+        endpoint, model, api_key = await _resolve_provider(provider_id, ai_endpoint, ai_model)
+    except Exception as exc:  # noqa: BLE001 - the deterministic scenes still stand
+        emit(f"Provider lookup failed ({exc}); rendering the deterministic scenes")
+        endpoint, model, api_key = None, None, None
+
+    if config.DIRECTOR_ENABLED and scene_plans and model:
+        budget = scene_plans[: config.DIRECTOR_MAX_SCENES] if config.DIRECTOR_MAX_SCENES else scene_plans
+        try:
+            outcome = await director.direct_scenes(
+                output_dir_path,
+                board,
+                budget,
+                kit_plans,
+                model=model,
+                endpoint=endpoint,
+                api_key=api_key,
+                log=emit,
+            )
+            (output_dir_path / "director_report.json").write_text(
+                json.dumps(
+                    {
+                        "authored": outcome.authored,
+                        "rejected": outcome.rejected,
+                        "failures": outcome.failures,
+                        "agents_run": outcome.agents_run,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - the deterministic scenes still stand
+            emit(f"Director unavailable ({exc}); rendering the deterministic scenes")
+            outcome = director.DirectorOutcome()
+    else:
+        emit("Director agents disabled; rendering the deterministic scenes")
+        outcome = director.DirectorOutcome()
+
+    # --- 4. Assembly -------------------------------------------------------
+    audio_src = _project_relative(audio_path, output_dir_path)
+    spine = assembler.build_spine(
+        board,
+        audio_src=audio_src,
+        mounts=mounts,
+        brand=BRAND,
+        theme=theme,
+        character_src=character_src,
+    )
+    composition_path = assembler.write_spine(output_dir_path, spine)
     emit(f"Composition written to {composition_path}")
 
-    video_path = output_dir_path / "video.mp4"
+    clean, lint_output = assembler.lint_project(output_dir_path, emit)
+    if not clean and outcome.authored:
+        # Only agent-authored files can be wrong here — the spine and the kit are
+        # generated. Revert exactly the scenes lint named, then re-check.
+        blamed = director.scenes_named_in(lint_output, outcome.authored)
+        if blamed:
+            director.revert_scenes(output_dir_path, blamed, kit_plans)
+            emit(f"Lint: reverted {len(blamed)} agent scene(s) to the deterministic draft")
+            clean, lint_output = assembler.lint_project(output_dir_path, emit)
+    if not clean:
+        # Last resort: every scene goes back to the known-good renderer rather
+        # than shipping a composition the runtime may refuse to drive.
+        director.revert_scenes(output_dir_path, [plan.id for plan in kit_plans], kit_plans)
+        emit("Lint still failing; reverted every scene to the deterministic kit")
+        outcome.authored.clear()
+        clean, lint_output = assembler.lint_project(output_dir_path, emit)
+        if not clean:
+            raise RuntimeError(f"Composition failed HyperFrames lint:\n{lint_output[-1200:]}")
 
-    total_frames = max(1, round(composition_duration * config.RENDER_FPS))
+    # Layout check. Overlapping text and content spilling out of a card do not
+    # stop a render — they just make it look broken — so this loop is advisory:
+    # give the agents HyperFrames' own findings, and revert anything still
+    # failing afterwards rather than blocking the video.
+    if config.INSPECT_ENABLED:
+        layout_ok, findings = assembler.inspect_project(output_dir_path, emit)
+        blamed = director.scenes_named_in_findings(findings, outcome.authored, mounts)
+        if not layout_ok and blamed:
+            try:
+                await director.repair_scenes(
+                    output_dir_path,
+                    blamed,
+                    findings,
+                    model=model,
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    log=emit,
+                )
+            except Exception as exc:  # noqa: BLE001 - layout polish is never fatal
+                emit(f"Director repair pass unavailable ({exc})")
+            clean, lint_output = assembler.lint_project(output_dir_path, emit)
+            if not clean:
+                director.revert_scenes(output_dir_path, blamed, kit_plans)
+                emit("Repair broke lint; reverted those scenes to the deterministic draft")
+            else:
+                layout_ok, findings = assembler.inspect_project(output_dir_path, emit)
+                still_bad = director.scenes_named_in_findings(findings, blamed, mounts)
+                if still_bad:
+                    director.revert_scenes(output_dir_path, still_bad, kit_plans)
+                    emit(
+                        f"Layout still failing for {len(still_bad)} scene(s); "
+                        "reverted them to the deterministic draft"
+                    )
+
+    # --- 5. Render ---------------------------------------------------------
+    video_path = output_dir_path / "video.mp4"
+    total_frames = max(1, round(float(board["total_duration"]) * config.RENDER_FPS))
     render_timeout = max(RENDER_TIMEOUT_FLOOR, int(300 + total_frames * RENDER_SECONDS_PER_FRAME))
     emit(
         f"Rendering ~{total_frames} frames "
-        f"({composition_duration:.0f}s @ {config.RENDER_FPS}fps, {config.RENDER_QUALITY}, "
-        f"{config.RENDER_WORKERS} worker(s)); render timeout {render_timeout}s"
+        f"({board['total_duration']:.0f}s @ {config.RENDER_FPS}fps, {config.RENDER_QUALITY}, "
+        f"{config.RENDER_WORKERS} worker(s)); render timeout {render_timeout}s, "
+        f"stall timeout {RENDER_STALL_TIMEOUT}s"
     )
 
     render_command = _build_render_command(output_dir_path, video_path)
@@ -272,6 +362,7 @@ async def compose_video(
         log=log,
         cwd=config.HYPERFRAME_DIR,
         timeout=render_timeout,
+        stall_timeout=RENDER_STALL_TIMEOUT,
     )
 
     if returncode != 0:

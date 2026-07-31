@@ -16,9 +16,22 @@ LATEST_LOG="$LOG_DIR/start-latest.log"
 mkdir -p "$LOG_DIR"
 ln -sf "$LOG_FILE" "$LATEST_LOG"
 
-exec > >(while IFS= read -r line; do
-  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line"
-done | tee -a "$LOG_FILE") 2>&1
+# Prefix every line with a timestamp WITHOUT forking a process per line.
+# The previous `while read; do ... $(date) ...; done` loop spawned /bin/date
+# once per line, which cannot keep up with streamed subprocess output (TTS and
+# render emit progress several times a second). The 64 KiB stdout pipe then
+# fills, and the backend's next log write blocks — inside its asyncio event
+# loop — until something drains the pipe. That deadlocked a live TTS run for
+# ten hours and surfaced as a bogus "TTS timed out" once the pipe drained.
+if command -v python3 >/dev/null 2>&1; then
+    exec > >(python3 -u -c '
+import sys, time
+for line in sys.stdin:
+    sys.stdout.write(time.strftime("%Y-%m-%d %H:%M:%S ") + line)
+' | tee -a "$LOG_FILE") 2>&1
+else
+    exec > >(tee -a "$LOG_FILE") 2>&1
+fi
 
 # Load nvm so that node/npm/npx are available
 export NVM_DIR="$HOME/.nvm"

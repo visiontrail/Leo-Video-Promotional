@@ -1,13 +1,15 @@
 """Skills registry — the source of truth for the admin Skills console.
 
 Skills are ``SKILL.md`` bundles under ``.claude/skills`` (most are symlinks into
-``.agents/skills``). They give the composition/render side of the pipeline its
-HyperFrames know-how. This module discovers them, parses their YAML frontmatter
-(``name`` / ``description``), exposes the markdown body for viewing and editing,
-and tracks a soft enabled/disabled flag in ``data/admin_state.json``.
+``.agents/skills``). They give the Claude Agent SDK the composition/render
+know-how managed by the Admin console. This module discovers them, parses their
+YAML frontmatter (``name`` / ``description``), exposes the markdown body for
+viewing and editing, and tracks enabled/disabled state in
+``data/admin_state.json``.
 
-The enabled flag is advisory metadata the console owns; it does not delete or
-move any skill file, so toggling is always reversible.
+The files stay in place when a skill is disabled. The SDK integration consumes
+the state through :func:`runtime_skill_names` and blocks disabled Skill tool
+calls, so toggling remains reversible without making the flag merely advisory.
 """
 
 from __future__ import annotations
@@ -340,6 +342,16 @@ def list_skills(include_body: bool = False) -> list[SkillInfo]:
             )
         )
     return skills
+
+
+def runtime_skill_names() -> tuple[list[str], list[str]]:
+    """Return (enabled, disabled) Skill tool names for an SDK invocation."""
+    enabled: list[str] = []
+    disabled: list[str] = []
+    for skill in list_skills(include_body=False):
+        target = enabled if skill.enabled else disabled
+        target.append(skill.name)
+    return enabled, disabled
 
 
 def get_skill(name: str, include_body: bool = True) -> SkillInfo | None:

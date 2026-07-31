@@ -15,8 +15,12 @@ from backend.models import (
     TaskStatus,
     ScriptUpdate,
     FootageAcquireRequest,
+    TaskSchedule,
+    normalize_schedule,
 )
-from backend.config import UPLOADS_DIR, OUTPUTS_DIR
+# Imported as a module, not by name: the Admin console rebinds these paths
+# at runtime, and `config` is shadowed by a local TaskConfig below.
+from backend import config as app_config
 from backend.pipeline.footage import read_manifest
 from backend.worker import is_task_logging_active, pipeline_log_file, subscribe_task_logs, unsubscribe_task_logs
 
@@ -28,15 +32,21 @@ async def create_task(
     source_type: str = Form(...),
     source_url: str | None = Form(None),
     config_json: str = Form("{}"),
+    scheduled_at: str | None = Form(None),
     file: UploadFile | None = File(None),
 ):
     st = SourceType(source_type)
     import json
     config = TaskConfig(**json.loads(config_json))
 
+    try:
+        start_at = normalize_schedule(scheduled_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
     upload_path = None
     if file and st in (SourceType.EPUB, SourceType.PDF):
-        upload_dir = UPLOADS_DIR / f"{st.value}"
+        upload_dir = app_config.UPLOADS_DIR / f"{st.value}"
         upload_dir.mkdir(parents=True, exist_ok=True)
         dest = upload_dir / file.filename
         with open(dest, "wb") as f:
@@ -48,8 +58,27 @@ async def create_task(
         source_url=source_url,
         config=config,
         upload_path=upload_path,
+        scheduled_at=start_at,
     )
     return task
+
+
+@router.post("/{task_id}/schedule", response_model=TaskResponse)
+async def reschedule_task(task_id: str, body: TaskSchedule):
+    """Move a queued task's start time, or clear it (null) to start now."""
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatus.QUEUED:
+        raise HTTPException(409, "Only a queued task's start time can be changed")
+
+    try:
+        start_at = normalize_schedule(body.scheduled_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    await db.update_task(task_id, scheduled_at=start_at)
+    return await db.get_task(task_id)
 
 
 @router.get("", response_model=TaskListResponse)
@@ -71,7 +100,7 @@ async def get_task_footage(task_id: str):
     task = await db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
     manifest = read_manifest(out_dir)
     if manifest is not None:
         return manifest
@@ -95,7 +124,7 @@ async def get_task_footage_file(task_id: str, clip_id: str):
     task = await db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
     manifest = read_manifest(out_dir)
     if manifest is None:
         raise HTTPException(404, "Footage manifest not available")
@@ -126,7 +155,7 @@ async def acquire_task_footage(task_id: str, body: FootageAcquireRequest):
     if not task.script_path or not Path(task.script_path).exists():
         raise HTTPException(400, "No script available for footage planning")
 
-    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
     marker = {
         "resume_status": task.status.value,
@@ -215,7 +244,7 @@ async def update_script(task_id: str, body: ScriptUpdate):
     if not task:
         raise HTTPException(404, "Task not found")
 
-    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
     path = Path(task.script_path) if task.script_path else out_dir / "script.txt"
     path.write_text(body.content)
@@ -235,7 +264,7 @@ async def regenerate_task(task_id: str):
     if not task.script_path or not Path(task.script_path).exists():
         raise HTTPException(400, "No script available to regenerate from")
 
-    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / ".regenerate").write_text("")
 
@@ -253,7 +282,7 @@ async def render_task(task_id: str):
     if not task.audio_path or not Path(task.audio_path).exists():
         raise HTTPException(400, "No audio available to render from")
 
-    out_dir = Path(task.output_dir) if task.output_dir else OUTPUTS_DIR / task_id
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / ".render").write_text("")
 

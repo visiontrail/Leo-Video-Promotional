@@ -1,0 +1,86 @@
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from backend import config
+
+
+class VoiceSampleTests(unittest.TestCase):
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.sample_dir = Path(self._temp.name)
+        (self.sample_dir / "en-Carter_man.wav").write_bytes(b"wav")
+        (self.sample_dir / "en-Mary_woman_bgm.wav").write_bytes(b"wav")
+        self.addCleanup(self._temp.cleanup)
+
+    def _patch_dir(self):
+        return patch.object(config, "VOICE_SAMPLE_DIR", self.sample_dir)
+
+    def test_finds_sample_regardless_of_lang_and_suffix(self):
+        with self._patch_dir():
+            self.assertEqual(
+                config.voice_sample_path("Carter"),
+                self.sample_dir / "en-Carter_man.wav",
+            )
+            # The trailing "_bgm" variant must still resolve.
+            self.assertEqual(
+                config.voice_sample_path("Mary"),
+                self.sample_dir / "en-Mary_woman_bgm.wav",
+            )
+
+    def test_missing_sample_returns_none(self):
+        with self._patch_dir():
+            self.assertIsNone(config.voice_sample_path("Alice"))
+
+    def test_resolves_model_voice_aliases(self):
+        # The 0.5B model substitutes Alice -> Emma, so a preview must look for
+        # the substitute's sample, not Alice's.
+        self.assertEqual(config.resolve_voice("Alice", "vibevoice-0.5b"), "Emma")
+        self.assertEqual(config.resolve_voice("Alice", "vibevoice-1.5b"), "Alice")
+        with self._patch_dir():
+            (self.sample_dir / "en-Emma_woman.wav").write_bytes(b"wav")
+            self.assertEqual(
+                config.voice_sample_path("Alice", "vibevoice-0.5b"),
+                self.sample_dir / "en-Emma_woman.wav",
+            )
+
+    def test_unknown_model_falls_back_to_no_substitution(self):
+        self.assertEqual(config.resolve_voice("Alice", "nope"), "Alice")
+
+
+class VoiceRouteTests(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+        from backend.routers import voices
+
+        app = FastAPI()
+        app.include_router(voices.router)
+        self.client = TestClient(app)
+
+    def test_lists_every_available_voice(self):
+        body = self.client.get("/api/voices").json()
+        self.assertEqual(
+            [v["name"] for v in body], list(config.AVAILABLE_VOICES)
+        )
+
+    def test_rejects_unknown_voice_before_touching_the_filesystem(self):
+        res = self.client.get("/api/voices/Bogus*/preview")
+        self.assertEqual(res.status_code, 404)
+        self.assertIn("Unknown voice", res.json()["detail"])
+
+    def test_path_traversal_never_reaches_a_file(self):
+        res = self.client.get("/api/voices/..%2F..%2Fetc%2Fpasswd/preview")
+        self.assertEqual(res.status_code, 404)
+
+    def test_missing_sample_is_a_404(self):
+        with tempfile.TemporaryDirectory() as empty:
+            with patch.object(config, "VOICE_SAMPLE_DIR", Path(empty)):
+                res = self.client.get("/api/voices/Carter/preview")
+        self.assertEqual(res.status_code, 404)
+        self.assertIn("No preview sample", res.json()["detail"])
+
+
+if __name__ == "__main__":
+    unittest.main()

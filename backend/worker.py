@@ -107,8 +107,9 @@ async def _worker_loop():
                     else " [footage]" if footage
                     else ""
                 )
-                logger.info(f"Processing task {task.id} ({task.source_type}){mode}")
-                _persist_and_publish(task, f"Processing task ({task.source_type}){mode}")
+                held = f" [scheduled for {task.scheduled_at}]" if task.scheduled_at else ""
+                logger.info(f"Processing task {task.id} ({task.source_type}){mode}{held}")
+                _persist_and_publish(task, f"Processing task ({task.source_type}){mode}{held}")
                 try:
                     if regenerate:
                         await run_regenerate(task, log=lambda message: publish_task_log(task.id, message))

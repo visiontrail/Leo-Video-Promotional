@@ -69,6 +69,30 @@ async def _acquire_task_footage(
     )
 
 
+async def _after_audio(
+    task: TaskResponse,
+    *,
+    script_path: str,
+    audio_path: str,
+    task_log: LogCallback,
+    log: LogCallback | None,
+    prefix: str = "",
+):
+    """Either pause for audio review or, when the task opted out, continue
+    straight into the compose stage."""
+    if not task.config.auto_render:
+        await update_task(task.id, status=TaskStatus.AWAITING_REVIEW.value)
+        task_log(f"{prefix}Audio ready, awaiting review before video render")
+        return
+
+    task_log(f"{prefix}Audio ready, audio review skipped — rendering video now")
+    # run_compose reads the paths off the task object, which still holds the
+    # values from before this run wrote them.
+    task.script_path = script_path
+    task.audio_path = audio_path
+    await run_compose(task, log=log)
+
+
 async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     task_dir = config.OUTPUTS_DIR / task.id
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -150,9 +174,15 @@ async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     await update_task(task.id, audio_path=audio_path)
 
     # Pause for audio review before the (expensive) video composition. The user
-    # previews the audio and triggers the compose stage via the render endpoint.
-    await update_task(task.id, status=TaskStatus.AWAITING_REVIEW.value)
-    task_log("Audio ready, awaiting review before video render")
+    # previews the audio and triggers the compose stage via the render endpoint,
+    # unless the task was created with the review step turned off.
+    await _after_audio(
+        task,
+        script_path=script_path,
+        audio_path=audio_path,
+        task_log=task_log,
+        log=log,
+    )
 
 
 async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
@@ -181,8 +211,14 @@ async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
     await update_task(task.id, audio_path=audio_path)
 
     # Pause for audio review, same as the full pipeline.
-    await update_task(task.id, status=TaskStatus.AWAITING_REVIEW.value)
-    task_log("Regenerate: audio ready, awaiting review")
+    await _after_audio(
+        task,
+        script_path=script_path,
+        audio_path=audio_path,
+        task_log=task_log,
+        log=log,
+        prefix="Regenerate: ",
+    )
 
 
 async def run_footage_acquisition(
@@ -241,6 +277,12 @@ async def run_compose(task: TaskResponse, log: LogCallback | None = None):
         include_character=task.config.include_character,
         video_template=task.config.video_template,
         is_monologue=task.config.script_format == ScriptFormat.MONOLOGUE,
+        # The compose stage now runs its own AI calls (art direction, then the
+        # Claude Agent SDK authoring crews), so it needs the same provider the
+        # digest stage used.
+        ai_endpoint=task.config.ai_endpoint,
+        ai_model=task.config.ai_model,
+        provider_id=task.config.provider_id,
         log=task_log,
     )
     await update_task(task.id, video_path=video_path, status=TaskStatus.COMPLETE.value)

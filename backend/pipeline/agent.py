@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
-from backend import config
+from backend import config, skills_admin
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
@@ -124,22 +124,30 @@ async def agent_complete(
     resolved_model = (config.ANTHROPIC_MODEL or model or "").strip() or None
     env = build_agent_env(model, endpoint, api_key, max_tokens)
 
+    enabled_skills, disabled_skills = skills_admin.runtime_skill_names()
+    skill_tools = [f"Skill({name})" for name in enabled_skills]
+
     base_options: dict = {
         "system_prompt": system_prompt,
         "model": resolved_model,
-        "max_turns": 1,
-        # Pure text transform: no tools, and don't load repo/user CLAUDE.md or
-        # settings so behaviour is deterministic and side-effect free.
-        "allowed_tools": [],
-        "setting_sources": [],
-        # The Docker image runs as root. Claude Code refuses
-        # --dangerously-skip-permissions (the CLI flag emitted for
-        # bypassPermissions) under root/sudo before it sends any request.
-        # There are no tools to approve here, so the normal permission mode is
-        # both non-interactive and compatible with the container runtime.
+        # One turn may load a relevant Skill; the following turn emits the
+        # requested text result.
+        "max_turns": 2,
+        # Restrict the agent to Admin-managed project Skills. No filesystem,
+        # shell, web, or mutation tools are exposed by this pipeline.
+        "tools": ["Skill"] if enabled_skills else [],
+        "allowed_tools": skill_tools,
+        "disallowed_tools": [f"Skill({name})" for name in disabled_skills],
+        "setting_sources": ["project"],
+        "cwd": config.PROJECT_ROOT,
         "permission_mode": "default",
         "env": env,
     }
+    # Newer SDK releases support an initialize-time Skill context filter.
+    # Keep compatibility with the vendored SDK while using the stronger filter
+    # automatically after it is upgraded.
+    if "skills" in getattr(ClaudeAgentOptions, "__dataclass_fields__", {}):
+        base_options["skills"] = enabled_skills
     if config.CLAUDE_CLI_PATH:
         base_options["cli_path"] = config.CLAUDE_CLI_PATH
 
@@ -147,6 +155,7 @@ async def agent_complete(
         log,
         f"{label}: Claude Agent SDK (model={resolved_model or 'default'}, "
         f"base={env.get('ANTHROPIC_BASE_URL', 'default')}, "
+        f"skills={len(enabled_skills)} enabled/{len(disabled_skills)} disabled, "
         f"~{len(user_content.split())} words in)",
     )
 

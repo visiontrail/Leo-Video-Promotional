@@ -8,12 +8,15 @@ import {
   updateScript,
   regenerateTask,
   renderTask,
+  scheduleTask,
   videoUrl,
   audioUrl,
   scriptUrl,
 } from '../api'
 import LogPanel from './LogPanel'
 import FootagePanel from './FootagePanel'
+import { IconChevronLeft } from './Icons'
+import { countdown, formatStart, isPendingStart, localInputToIso, toLocalInputValue } from '../schedule'
 
 const STAGES = ['extracting', 'digesting', 'sourcing', 'tts', 'awaiting_review', 'composing', 'complete'] as const
 const STAGE_LABELS: Record<string, string> = {
@@ -61,6 +64,8 @@ export default function TaskDetail() {
   const draft = draftOverride ?? scriptText ?? ''
   const dirty = draftOverride !== null && draftOverride !== scriptText
 
+  const [startOverride, setStartOverride] = useState<string | null>(null)
+
   const deleteMutation = useMutation({
     mutationFn: () => deleteTask(id!),
     onSuccess: () => {
@@ -93,36 +98,84 @@ export default function TaskDetail() {
     },
   })
 
+  const scheduleMutation = useMutation({
+    mutationFn: (scheduledAt: string | null) => scheduleTask(id!, scheduledAt),
+    onSuccess: () => {
+      setStartOverride(null)
+      queryClient.invalidateQueries({ queryKey: ['task', id] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    },
+  })
+
   if (isLoading || !task) return <div className="empty-state">Loading...</div>
 
   const isRunning = !['complete', 'failed', 'queued', 'awaiting_review'].includes(task.status)
   const awaitingReview = task.status === 'awaiting_review'
+  // Parked in the queue behind a future start time — still cancellable.
+  const parked = task.status === 'queued' && isPendingStart(task.scheduled_at)
+  const startDraft = startOverride ?? (task.scheduled_at ? toLocalInputValue(new Date(task.scheduled_at)) : '')
+  const startMoved = !!startOverride && localInputToIso(startDraft) !== task.scheduled_at
 
   return (
-    <div>
-      <button className="btn-ghost" onClick={() => navigate('/')} style={{ marginBottom: 16 }}>
-        &larr; Back
-      </button>
+    <div className="detail-workspace">
+      <header className="detail-command">
+        <button
+          type="button"
+          className="icon-btn detail-back"
+          aria-label="Back to tasks"
+          title="Back to tasks"
+          onClick={() => navigate('/')}
+        >
+          <IconChevronLeft />
+        </button>
 
-      <div className="card">
-        <div className="detail-header">
-          <div>
-            <h2>{task.source_title || task.id}</h2>
-            <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-              {task.source_type.toUpperCase()}
-              {task.source_url && <> &middot; <span style={{ wordBreak: 'break-all' }}>{task.source_url}</span></>}
-            </div>
-          </div>
-          <span className={`badge ${task.status}`}>
-            {task.status === 'tts'
-              ? 'Generating Audio'
-              : task.status === 'awaiting_review'
-                ? 'Awaiting Review'
-                : task.status}
-            {isRunning && ' ...'}
+        <div className="detail-identity">
+          <span className="eyebrow">
+            {task.source_type.toUpperCase()} &middot; {task.id.slice(0, 8)}
           </span>
+          <h1>{task.source_title || task.id}</h1>
+          {task.source_url && <p className="detail-source">{task.source_url}</p>}
         </div>
 
+        <div className="detail-command-side">
+          <span className={`badge ${parked ? 'scheduled' : task.status}`}>
+            {parked
+              ? 'Scheduled'
+              : task.status === 'tts'
+                ? 'Generating Audio'
+                : task.status === 'awaiting_review'
+                  ? 'Awaiting Review'
+                  : task.status}
+            {isRunning && ' ...'}
+          </span>
+          <div className="detail-quick-actions">
+            {task.script_path && (
+              <a href={scriptUrl(task.id)} target="_blank" rel="noopener">
+                <button className="btn-ghost" type="button">Script</button>
+              </a>
+            )}
+            {task.audio_path && (
+              <a href={audioUrl(task.id)} target="_blank" rel="noopener">
+                <button className="btn-ghost" type="button">Audio</button>
+              </a>
+            )}
+            {task.video_path && (
+              <a href={videoUrl(task.id)} download>
+                <button className="btn-primary" type="button">Download Video</button>
+              </a>
+            )}
+            <button
+              className="btn-danger"
+              type="button"
+              onClick={() => { if (confirm('Delete this task?')) deleteMutation.mutate() }}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div className="detail-progress">
         <div className="pipeline-stages">
           {STAGES.map((s) => (
             <div key={s} className={`stage ${stageState(task.status, s)}`}>
@@ -130,125 +183,141 @@ export default function TaskDetail() {
             </div>
           ))}
         </div>
-
-        {task.status === 'failed' && task.error_message && (
-          <div className="error-box">{task.error_message}</div>
-        )}
-
-        {task.status === 'complete' && task.video_path && (
-          <div style={{ marginTop: 16 }}>
-            <video controls src={videoUrl(task.id)} />
+        <dl className="detail-facts">
+          <div>
+            <dt>Duration</dt>
+            <dd>{task.config.target_duration_minutes} min</dd>
           </div>
-        )}
-
-        {task.audio_path && task.status !== 'complete' && (
-          <div style={{ marginTop: 16 }}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 15 }}>Audio Preview</h3>
-            <audio controls src={audioUrl(task.id)} style={{ width: '100%' }} />
-            {awaitingReview && (
-              <>
-                <p style={{ fontSize: 13, color: 'var(--text-dim)', margin: '8px 0' }}>
-                  Listen to the generated audio. Render the video to continue, or edit the
-                  script below and re-generate the audio.
-                </p>
-                <div className="actions">
-                  <button
-                    className="btn-primary"
-                    disabled={renderMutation.isPending}
-                    onClick={() => renderMutation.mutate()}
-                  >
-                    {renderMutation.isPending ? 'Starting...' : 'Render Video'}
-                  </button>
-                </div>
-                {renderMutation.isError && (
-                  <div className="error-box" style={{ marginTop: 8 }}>
-                    {(renderMutation.error as Error).message}
-                  </div>
-                )}
-              </>
-            )}
+          <div>
+            <dt>Voices</dt>
+            <dd>{task.config.voice_1} + {task.config.voice_2}</dd>
           </div>
-        )}
-
-        <div style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
-            <strong>Duration:</strong> {task.config.target_duration_minutes} min &middot;
-            <strong> Voices:</strong> {task.config.voice_1} + {task.config.voice_2}
-            {task.config.include_character && <> &middot; <strong>Character:</strong> On</>}
+          <div>
+            <dt>Character</dt>
+            <dd>{task.config.include_character ? 'On' : 'Off'}</dd>
           </div>
-        </div>
+        </dl>
+      </div>
 
-        {hasScript && (
-          <div style={{ marginTop: 24 }}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 15 }}>Script</h3>
-            <textarea
-              value={draft}
-              onChange={(e) => setDraftOverride(e.target.value)}
-              spellCheck={false}
-              style={{
-                width: '100%',
-                minHeight: 280,
-                fontFamily: 'var(--font-mono, monospace)',
-                fontSize: 13,
-                lineHeight: 1.5,
-                padding: 12,
-                resize: 'vertical',
-              }}
-            />
-            <div className="actions" style={{ marginTop: 8 }}>
-              <button
-                className="btn-ghost"
-                disabled={!dirty || saveMutation.isPending}
-                onClick={() => saveMutation.mutate()}
-              >
-                {saveMutation.isPending ? 'Saving...' : 'Save Script'}
-              </button>
-              <button
-                className="btn-primary"
-                disabled={isRunning || dirty || regenMutation.isPending}
-                title={dirty ? 'Save your changes first' : isRunning ? 'Task is processing' : ''}
-                onClick={() => regenMutation.mutate()}
-              >
-                {regenMutation.isPending ? 'Starting...' : 'Re-generate Audio'}
-              </button>
-            </div>
-            {regenMutation.isError && (
-              <div className="error-box" style={{ marginTop: 8 }}>
-                {(regenMutation.error as Error).message}
+      <div className="detail-body">
+        <section className="detail-column detail-main">
+          {parked && (
+            <div className="schedule-bar">
+              <div className="schedule-bar-copy">
+                <strong>Starts {formatStart(task.scheduled_at!)}</strong>
+                <small>Held in the queue · {countdown(task.scheduled_at!)}</small>
               </div>
-            )}
-          </div>
-        )}
-
-        {task.config.footage_enabled && (
-          <FootagePanel task={task} />
-        )}
-
-        <LogPanel taskId={task.id} taskStatus={task.status} />
-
-        <div className="actions">
-          {task.script_path && (
-            <a href={scriptUrl(task.id)} target="_blank" rel="noopener">
-              <button className="btn-ghost">Download Script</button>
-            </a>
+              <div className="schedule-bar-controls">
+                <input
+                  type="datetime-local"
+                  aria-label="Start time"
+                  value={startDraft}
+                  min={toLocalInputValue(new Date())}
+                  onChange={(e) => setStartOverride(e.target.value)}
+                />
+                <button
+                  className="btn-ghost"
+                  disabled={!startMoved || scheduleMutation.isPending}
+                  onClick={() => scheduleMutation.mutate(localInputToIso(startDraft))}
+                >
+                  Move
+                </button>
+                <button
+                  className="btn-primary"
+                  disabled={scheduleMutation.isPending}
+                  onClick={() => scheduleMutation.mutate(null)}
+                >
+                  {scheduleMutation.isPending ? 'Working…' : 'Start now'}
+                </button>
+              </div>
+            </div>
           )}
-          {task.audio_path && (
-            <a href={audioUrl(task.id)} target="_blank" rel="noopener">
-              <button className="btn-ghost">Download Audio</button>
-            </a>
+          {scheduleMutation.isError && (
+            <div className="error-box">{(scheduleMutation.error as Error).message}</div>
           )}
-          {task.video_path && (
-            <a href={videoUrl(task.id)} download>
-              <button className="btn-primary">Download Video</button>
-            </a>
+
+          {task.status === 'failed' && task.error_message && (
+            <div className="error-box">{task.error_message}</div>
           )}
-          <button
-            className="btn-danger"
-            onClick={() => { if (confirm('Delete this task?')) deleteMutation.mutate() }}
-          >
-            Delete
-          </button>
-        </div>
+
+          {task.status === 'complete' && task.video_path && (
+            <section className="detail-panel">
+              <h3>Final Cut</h3>
+              <video controls src={videoUrl(task.id)} />
+            </section>
+          )}
+
+          {task.audio_path && task.status !== 'complete' && (
+            <section className="detail-panel">
+              <h3>Audio Preview</h3>
+              <audio controls src={audioUrl(task.id)} />
+              {awaitingReview && (
+                <>
+                  <p className="detail-hint">
+                    Listen to the generated audio. Render the video to continue, or edit the
+                    script below and re-generate the audio.
+                  </p>
+                  <div className="actions">
+                    <button
+                      className="btn-primary"
+                      disabled={renderMutation.isPending}
+                      onClick={() => renderMutation.mutate()}
+                    >
+                      {renderMutation.isPending ? 'Starting...' : 'Render Video'}
+                    </button>
+                  </div>
+                  {renderMutation.isError && (
+                    <div className="error-box" style={{ marginTop: 8 }}>
+                      {(renderMutation.error as Error).message}
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {hasScript && (
+            <section className="detail-panel">
+              <h3>Script</h3>
+              <textarea
+                className="script-editor"
+                value={draft}
+                onChange={(e) => setDraftOverride(e.target.value)}
+                spellCheck={false}
+              />
+              <div className="actions">
+                <button
+                  className="btn-ghost"
+                  disabled={!dirty || saveMutation.isPending}
+                  onClick={() => saveMutation.mutate()}
+                >
+                  {saveMutation.isPending ? 'Saving...' : 'Save Script'}
+                </button>
+                <button
+                  className="btn-primary"
+                  disabled={isRunning || dirty || regenMutation.isPending}
+                  title={dirty ? 'Save your changes first' : isRunning ? 'Task is processing' : ''}
+                  onClick={() => regenMutation.mutate()}
+                >
+                  {regenMutation.isPending ? 'Starting...' : 'Re-generate Audio'}
+                </button>
+              </div>
+              {regenMutation.isError && (
+                <div className="error-box" style={{ marginTop: 8 }}>
+                  {(regenMutation.error as Error).message}
+                </div>
+              )}
+            </section>
+          )}
+
+          {task.config.footage_enabled && (
+            <FootagePanel task={task} />
+          )}
+        </section>
+
+        <aside className="detail-column detail-rail">
+          <LogPanel taskId={task.id} taskStatus={task.status} fill />
+        </aside>
       </div>
     </div>
   )

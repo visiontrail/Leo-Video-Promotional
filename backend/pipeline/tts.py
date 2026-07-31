@@ -8,9 +8,10 @@ from backend.pipeline.process_logging import stream_subprocess
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
 
-# VibeVoice synthesis is the slowest stage; allow up to an hour, but stream its
-# progress live so a hang is visible long before this fires.
-TTS_TIMEOUT = 3600
+# Synthesis is watched by inactivity, not elapsed time: a long script legitimately
+# runs for hours, but VibeVoice prints a decode-progress line several times a
+# second, so silence is the only reliable hang signal. The values are read from
+# config at call time so an Admin change applies to the next run.
 SPEAKER_LABEL_RE = re.compile(r"^\s*Speaker\s*\d+\s*[:：\-—–]\s*", re.IGNORECASE)
 
 
@@ -47,6 +48,24 @@ async def generate_tts(
         valid = ", ".join(sorted(config.TTS_MODELS))
         raise ValueError(f"Unknown TTS model '{tts_model}'. Valid models: {valid}")
 
+    required_runtime_paths = {
+        "environment script": Path(model["env_script"]),
+        "project directory": Path(model["project_dir"]),
+        "inference script": Path(model["inference_script"]),
+    }
+    missing = [
+        f"{label}: {path}"
+        for label, path in required_runtime_paths.items()
+        if not path.exists()
+    ]
+    if missing:
+        details = "; ".join(missing)
+        raise RuntimeError(
+            "VibeVoice TTS runtime is unavailable in this process "
+            f"({details}). Run the local app with ./scripts/start.sh and "
+            "verify AIWORK_ROOT points to the installed VibeVoice runtime."
+        )
+
     # Single-speaker models (e.g. 0.5B realtime) only accept one voice source,
     # so drop any extras regardless of the task's configured speaker count.
     if model.get("single_speaker") and len(voices) > 1:
@@ -56,12 +75,30 @@ async def generate_tts(
         )
         voices = voices[:1]
 
-    output_dir_path = Path(output_dir)
+    voice_aliases = model.get("voice_aliases", {})
+    resolved_voices = [voice_aliases.get(voice, voice) for voice in voices]
+    substitutions = [
+        f"{requested} -> {resolved}"
+        for requested, resolved in zip(voices, resolved_voices)
+        if requested != resolved
+    ]
+    if substitutions:
+        emit(
+            f"Model '{tts_model}' voice substitution: "
+            f"{', '.join(substitutions)}"
+        )
+    voices = resolved_voices
+
+    # The subprocess runs from VibeVoice's project directory. Resolve every
+    # application-owned path before changing cwd, otherwise relative paths are
+    # interpreted under VibeVoice and valid inputs appear to be missing.
+    script_path_obj = Path(script_path).expanduser().resolve()
+    output_dir_path = Path(output_dir).expanduser().resolve()
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
     # TTS models can read speaker labels aloud, so always feed a label-stripped
     # copy while leaving canonical script.txt available for captions/editing.
-    cleaned = _strip_speaker_labels(Path(script_path).read_text(encoding="utf-8"))
+    cleaned = _strip_speaker_labels(script_path_obj.read_text(encoding="utf-8"))
     tts_input = output_dir_path / "tts_input.txt"
     tts_input.write_text(cleaned, encoding="utf-8")
     tts_script_path = str(tts_input)
@@ -75,18 +112,19 @@ cd "{model['project_dir']}"
 python "{model['inference_script']}" \
     --txt_path "{tts_script_path}" \
     {model['speaker_flag']} {speaker_args} \
-    --output_dir "{output_dir}" \
+    --output_dir "{output_dir_path}" \
     --device {config.TTS_DEVICE}
 """
 
-    emit(f"Running TTS: model={tts_model}, voices={voices}, script={script_path}")
+    emit(f"Running TTS: model={tts_model}, voices={voices}, script={script_path_obj}")
     returncode, output = await stream_subprocess(
         name="TTS",
         command=["bash", "-c", cmd],
         logger=logger,
         log=log,
         cwd=model["project_dir"],
-        timeout=TTS_TIMEOUT,
+        timeout=config.TTS_TIMEOUT,
+        stall_timeout=config.TTS_STALL_TIMEOUT,
     )
 
     if returncode != 0:

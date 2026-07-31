@@ -81,6 +81,18 @@ PROMPT_REGISTRY: list[PromptSpec] = [
         ),
         variables=[],
     ),
+    PromptSpec(
+        key="visual_plan",
+        file="visual_plan.txt",
+        label="Scene Art Direction",
+        stage="Compose",
+        description=(
+            "Decides what the viewer sees during each storyboard scene — layout "
+            "archetype, on-screen copy, accent colour and motif. Drives both the "
+            "deterministic scene kit and the brief handed to the authoring agents."
+        ),
+        variables=[],
+    ),
 ]
 
 _BY_KEY = {spec.key: spec for spec in PROMPT_REGISTRY}

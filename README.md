@@ -4,7 +4,8 @@ A local agent that turns a **YouTube video, EPUB, or PDF** into a short **podcas
 The primary output is a **solo talk-show monologue** (a single host talking to the audience);
 a two-host dialogue format is also available.
 
-Pipeline: **source extract → AI digest → script → public-footage scout → VibeVoice TTS → HyperFrames video render**.
+Pipeline: **source extract → AI digest → script → public-footage scout → VibeVoice TTS →
+storyboard → art direction → agent-authored scenes → HyperFrames video render**.
 
 ## Architecture
 
@@ -25,8 +26,10 @@ submodules, see `.gitmodules`). The SDK spawns the `claude` CLI in-process and t
 provider registry (endpoint / key / model) keeps working — the endpoint host is simply
 reinterpreted as an Anthropic base URL.
 
+All of it is configured in **Admin -> System** (groups *AI Engine* and *Claude Agent SDK*):
+
 - `AI_BACKEND=agent_sdk` (default) — Claude Agent SDK. Requires the `claude` CLI on `PATH`
-  (`npm install -g @anthropic-ai/claude-code`), which is installed automatically in the Docker image.
+  (install with `npm install -g @anthropic-ai/claude-code`).
 - `AI_BACKEND=http` — the original OpenAI-compatible HTTP client (no CLI needed).
 - `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` — leave blank to derive from
   `AI_ENDPOINT` / `AI_API_KEY` / `AI_MODEL`; set explicitly for gateways whose Anthropic route
@@ -35,25 +38,44 @@ reinterpreted as an Anthropic base URL.
 The transport lives in `backend/pipeline/agent.py`; `backend/pipeline/digester.py` dispatches
 between the two backends. All chunking, JSON parsing, and CJK-repair logic is backend-agnostic.
 
-## Docker deployment
+### Video composition: storyboard → art direction → agent crews
 
-A container image (`Dockerfile` + `docker-compose.yml`) bundles the API, the built frontend, the
-Claude Agent SDK **and** the `claude` CLI, plus Node and ffmpeg. Runtime data (rendered videos,
-uploads, tasks DB) persists in named volumes.
+The compose stage does not render one caption line per script line. It builds a **storyboard**,
+gets **art direction** for it, and then has **Claude Agent SDK crews author the actual scenes**.
 
-```bash
-cp .env.example .env      # then fill in AI_API_KEY (the scripts auto-create .env if missing)
-./scripts/docker_start.sh # build + start; prints the endpoints
-./scripts/docker_logs.sh  # follow logs
-./scripts/docker_down.sh  # stop (volumes preserved)
-```
+| Module | Role |
+| --- | --- |
+| `pipeline/storyboard.py` | Cuts the script into timed scenes against the audio (silence map, else word count). Pure arithmetic — no model. |
+| `pipeline/visual_plan.py` | Art director. Assigns each scene a layout archetype, on-screen copy, accent colour and motif. JSON in / JSON out, so any provider works. Falls back to direction derived from the narration. |
+| `pipeline/scene_kit.py` | Deterministic renderer for nine archetypes (`title`, `statement`, `topic`, `contrast`, `list`, `stat`, `quote`, `footage`, `outro`) with seeded SVG motif artwork. Produces the drafts and the fallback. |
+| `pipeline/director.py` | Claude Agent SDK crews. Each is given a slice of the storyboard and rewrites those scene files with bespoke layout and artwork. Several run concurrently. |
+| `pipeline/assembler.py` | Generates `index.html` — the spine that mounts scenes on the audio timeline — and runs `hyperframes lint`. |
 
-App: **http://localhost:8100** (override with `APP_PORT`).
+**Why the split.** The spine is generated, never written by a model, so a creative failure cannot
+desynchronise picture from sound or leave a gap in the timeline. Every file a crew writes is
+checked against the HyperFrames runtime contract (`director.validate_scene_html`) before it
+ships; anything that fails is reverted to its deterministic draft. A crew that dies costs plain
+scenes, never a blank video.
 
-> **TTS / render caveat.** VibeVoice runs on Apple **MPS** and HyperFrames renders via headless
-> Chrome — both are host-hardware bound and are **not** exercised inside the Linux container.
-> The container fully covers extraction, AI digest/scriptwriting (Agent SDK), and the API/UI; run
-> `./scripts/start.sh` natively on the Mac host when you need the VibeVoice/render stages.
+**Checked against HyperFrames' own tooling.** After assembly the pipeline runs
+`hyperframes lint` (contract errors — blocking) and `hyperframes inspect` (layout errors —
+overlapping text, content spilling out of frame). Inspect findings are mapped back to the scenes
+that caused them, by selector or by timestamp, and handed to a repair agent; anything still
+failing afterwards is reverted rather than shipped.
+
+Per-task artifacts land in the output directory: `storyboard.json`, `visual_plan.json`,
+`director_report.json`, `compositions/scene-*.html`, and the generated `index.html`.
+
+**Cost.** Art direction is one model call per 12 scenes. Authoring is one agent per 6 scenes,
+three at a time. On a 12-minute episode (~42 scenes) expect the compose stage to spend most of
+its wall clock in the crews; the HyperFrames render itself is roughly a third of real time. Set
+**Agent direction** off (Admin -> System -> Video Direction) for a fast deterministic render.
+
+Tuning (Admin -> System -> Video Direction):
+
+- **Agent direction** off — skip the crews and render the deterministic scenes.
+- **Max directed scenes** `N` — hand only the first N scenes to agents (`0` = all).
+- The task's `video_template` (`podcast` / `kinetic` / `swiss` / `minimal`) selects the theme.
 
 This runs as a **single-port production service**: one backend process serves both the API and
 the UI, so there is only **one URL to open**.
@@ -62,11 +84,12 @@ the UI, so there is only **one URL to open**.
 
 - **Python 3.11** (setup uses `~/.pyenv/versions/3.11.9`)
 - **Node.js** via `nvm` (for the frontend build and HyperFrames CLI)
-- **VibeVoice** installed under `AIWORK_ROOT` (default `/Volumes/TP-1TB/AIWork`) — see `backend/config.py`
-- An **AI provider gateway** (configured in `.env`) — OpenAI-compatible endpoint that also exposes
-  the Anthropic protocol (used by the default Claude Agent SDK backend)
-- The **`claude` CLI** on `PATH` for `AI_BACKEND=agent_sdk` (`npm install -g @anthropic-ai/claude-code`);
-  not needed if you set `AI_BACKEND=http`
+- **VibeVoice** installed under the *VibeVoice install root* (default `/Volumes/TP-1TB/AIWork`) —
+  Admin -> System -> Voice & TTS
+- An **AI provider gateway** (Admin -> System -> AI Engine, or the Models tab) — OpenAI-compatible
+  endpoint that also exposes the Anthropic protocol (used by the default Claude Agent SDK backend)
+- The **`claude` CLI** on `PATH` for the `agent_sdk` backend (`npm install -g @anthropic-ai/claude-code`);
+  not needed if you switch the backend to `http`
 - **Git submodules** for the vendored SDK — after a fresh clone run
   `git submodule update --init --recursive`
 
@@ -92,7 +115,21 @@ Open: **http://localhost:8100** (new task form at **http://localhost:8100/new**)
 
 > First load after a rebuild: hard-refresh once (`Cmd+Shift+R`) if the browser shows a cached page.
 
-### Useful environment variables
+### Configuration lives in Admin → System
+
+Every AI, TTS, render, direction, footage and path setting (`AI_ENDPOINT`, `AI_MODEL`,
+`AIWORK_ROOT`, `TTS_DEVICE`, `RENDER_FPS`, `RENDER_QUALITY`, …) is edited in the app:
+**Admin → System**. Saves go to `data/settings.json` and apply to the next pipeline stage
+immediately — no restart, except the two fields flagged `restart` in the UI (`OUTPUTS_DIR`,
+`DB_PATH`), which are bound at startup.
+
+`.env` is now only the **seed**: it supplies the defaults a fresh machine starts from, and
+"Reset to default" in the UI restores them. See `.env.example` for the full list, and
+`backend/settings_store.py` for the registry that drives the form.
+
+### Launch-only environment variables
+
+These are read by `scripts/start.sh` before the app exists, so they stay in the environment:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -100,9 +137,6 @@ Open: **http://localhost:8100** (new task form at **http://localhost:8100/new**)
 | `HOST` | `0.0.0.0` | Bind address |
 | `SKIP_FRONTEND_BUILD` | `0` | Set to `1` to reuse the existing `frontend/dist` (faster restarts) |
 | `LOG_DIR` | `logs/` | Where `start-*.log` is written (`start-latest.log` symlinks the latest) |
-
-AI, TTS, and render settings (`AI_ENDPOINT`, `AI_MODEL`, `AIWORK_ROOT`, `TTS_DEVICE`,
-`RENDER_FPS`, `RENDER_QUALITY`, …) live in `.env` / `backend/config.py`.
 
 Stop the app with `Ctrl+C` (it terminates the backend cleanly).
 
