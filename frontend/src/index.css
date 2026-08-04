@@ -685,19 +685,11 @@ small {
   margin-bottom: 16px;
 }
 
-.source-tabs,
-.template-grid {
+.source-tabs {
   display: grid;
   gap: 8px;
-}
-
-.source-tabs {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 20px;
-}
-
-.template-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .source-tab {
@@ -1215,7 +1207,6 @@ video {
   }
 
   .grid-2,
-  .template-grid,
   .source-tabs,
   .pipeline-stages {
     grid-template-columns: 1fr;
@@ -2401,23 +2392,9 @@ video {
   cursor: not-allowed;
 }
 
-.wb-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.wb-check input {
-  width: auto;
-}
-
 /* ── Deferred start ──────────────────────────────────────────────── */
 /* Two tiles in a half-width panel wrap the copy to a word a line — stack
-   them instead, the same fix the template tiles need. */
+   them instead. */
 .wb-panel .schedule-modes {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -2509,14 +2486,176 @@ video {
   font-size: 13px;
 }
 
-/* Template tiles stack inside a half-width panel — a 2×2 grid there
-   squeezes the copy into unreadable columns. */
-.wb-panel .template-grid {
-  grid-template-columns: minmax(0, 1fr);
+/* ── Template picker ─────────────────────────────────────────────── */
+/* Five description tiles in a one-column panel ran ~2× the height of the
+   neighbouring cards and tore holes in the grid. The swatch shows the theme's
+   real page, ink, accent and wash instead, so each row is a single line and the
+   prose moves to one note under the current pick. */
+.template-picker {
+  display: grid;
+  gap: 5px;
 }
 
-.wb-panel .template-grid .choice-tile {
-  min-height: 0;
+.template-option {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--input) 62%, transparent);
+  padding: 7px 12px 7px 8px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.template-option:hover {
+  border-color: var(--border-strong);
+  transform: translateX(2px);
+}
+
+.template-option.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--input));
+}
+
+/* The dark palette's accent is itself a navy, so the unselected rows have to
+   drop back to near-transparent for the active one to read. */
+:root[data-theme='dark'] .template-option {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+:root[data-theme='dark'] .template-option.active {
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(37, 37, 77, 0.92);
+}
+
+/* The radio stays in the tab order and drives the label's focus ring; the
+   swatch and the tint carry the selected state visually. */
+.template-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.template-option:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.template-option b {
+  flex: 1 1 auto;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.template-option.active b {
+  color: var(--text);
+}
+
+.template-option.active::after {
+  color: var(--accent);
+  content: '✓';
+  font-size: 12px;
+  line-height: 1;
+}
+
+:root[data-theme='dark'] .template-option.active::after {
+  color: var(--accent-3);
+}
+
+/* A 16:9 chip of the theme itself: page colour, an accent wash at the theme's
+   own alpha, and two ink bars standing in for the type. */
+.template-swatch {
+  position: relative;
+  overflow: hidden;
+  width: 46px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--tpl-ink) 24%, transparent);
+  border-radius: min(8px, var(--radius-sm));
+  background:
+    radial-gradient(
+      120% 130% at 84% 16%,
+      color-mix(in srgb, var(--tpl-accent) calc(var(--tpl-wash) * 300%), transparent),
+      transparent 66%
+    ),
+    var(--tpl-bg);
+}
+
+.template-swatch::before,
+.template-swatch::after {
+  position: absolute;
+  left: 7px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--tpl-ink);
+  content: '';
+}
+
+.template-swatch::before {
+  top: 9px;
+  width: 23px;
+  opacity: 0.92;
+}
+
+.template-swatch::after {
+  top: 16px;
+  width: 13px;
+  opacity: 0.48;
+}
+
+.template-note {
+  display: block;
+  margin-top: 10px;
+}
+
+/* ── Switch stack ────────────────────────────────────────────────── */
+/* Run-level on/off decisions, one row each, in a single card. */
+.switch-stack {
+  display: grid;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+}
+
+.switch-row + .switch-row {
+  border-top: 1px solid var(--border);
+}
+
+.switch-row:first-child {
+  padding-top: 0;
+}
+
+.switch-row:last-child {
+  padding-bottom: 0;
+}
+
+.switch-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.switch-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.switch-copy small {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 /* The footage scout keeps its own chrome — just drop the stray margins. */

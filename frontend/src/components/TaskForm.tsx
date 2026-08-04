@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import type { DragEvent } from 'react'
+import type { CSSProperties, DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { createTask, fetchProviders, fetchVoices, voicePreviewUrl } from '../api'
@@ -81,13 +81,49 @@ function VoiceField({ label, value, onChange, voices, playing, onPreview }: Voic
 
 /* The template picks the visual system used by deterministic scenes and the
    authoring agents. Most vary the surface treatment; Shan Shui also introduces
-   its own paper, terrain, contour, and route-mark layers. */
-const VIDEO_TEMPLATES: Array<{ key: VideoTemplate; name: string; description: string }> = [
-  { key: 'podcast', name: 'Documentary', description: 'Deep navy with warm ink — the default look' },
-  { key: 'kinetic', name: 'Kinetic', description: 'Near-black and high contrast for punchy statement cuts' },
-  { key: 'swiss', name: 'Swiss Grid', description: 'Paper-white editorial with dark type' },
-  { key: 'minimal', name: 'Minimal', description: 'Restrained washes, type does the work' },
-  { key: 'shanshui', name: 'Shan Shui', description: 'Rice paper, ink-green contours and ochre route lines' },
+   its own paper, terrain, contour, and route-mark layers.
+
+   `swatch` mirrors the real theme in backend/pipeline/scene_kit.py — page, ink,
+   scene accent and wash alpha — so the picker previews the room the video is
+   actually shot in instead of a decorative colour. Keep the two in sync. */
+type TemplateSwatch = { bg: string; ink: string; accent: string; wash: number }
+
+const VIDEO_TEMPLATES: Array<{
+  key: VideoTemplate
+  name: string
+  description: string
+  swatch: TemplateSwatch
+}> = [
+  {
+    key: 'podcast',
+    name: 'Documentary',
+    description: 'Deep navy with warm ink — the default look',
+    swatch: { bg: '#0B0D17', ink: '#F5F2EA', accent: '#F0A63C', wash: 0.16 },
+  },
+  {
+    key: 'kinetic',
+    name: 'Kinetic',
+    description: 'Near-black and high contrast for punchy statement cuts',
+    swatch: { bg: '#08070C', ink: '#FFFFFF', accent: '#F0A63C', wash: 0.24 },
+  },
+  {
+    key: 'swiss',
+    name: 'Swiss Grid',
+    description: 'Paper-white editorial with dark type',
+    swatch: { bg: '#F4F1EA', ink: '#14161F', accent: '#F0A63C', wash: 0.12 },
+  },
+  {
+    key: 'minimal',
+    name: 'Minimal',
+    description: 'Restrained washes, type does the work',
+    swatch: { bg: '#0E0E10', ink: '#EDEDED', accent: '#F0A63C', wash: 0.09 },
+  },
+  {
+    key: 'shanshui',
+    name: 'Shan Shui',
+    description: 'Rice paper, ink-green contours and ochre route lines',
+    swatch: { bg: '#F7F0E4', ink: '#263A30', accent: '#B46F35', wash: 0.13 },
+  },
 ]
 
 const SOURCE_LABEL: Record<SourceType, string> = { youtube: 'YouTube', epub: 'EPUB', pdf: 'PDF' }
@@ -255,6 +291,8 @@ export default function TaskForm() {
     if (f) setFile(f)
   }
 
+  const activeTemplate = VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!
+
   // Preview of the pipeline this configuration will actually run.
   const pipeline: Array<{ label: string; note: string; on: boolean }> = [
     ...(scheduled && !scheduleIsPast
@@ -275,7 +313,7 @@ export default function TaskForm() {
       note: autoRender ? 'Skipped — render starts without approval' : 'Pause for your audio approval',
       on: !autoRender,
     },
-    { label: 'Compose', note: `Render the ${VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!.name} template`, on: true },
+    { label: 'Compose', note: `Render the ${activeTemplate.name} template`, on: true },
   ]
 
   // Live read-out pinned above the launch button — the run at a glance.
@@ -286,7 +324,7 @@ export default function TaskForm() {
     ['Style', isMonologue ? 'Solo' : 'Two-host'],
     ['Voice', isMonologue ? voice1 : `${voice1} · ${voice2}`],
     ['Engine', is05b ? '0.5B' : '1.5B'],
-    ['Template', VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!.name],
+    ['Template', activeTemplate.name],
     ['Captions', captionsEnabled ? 'On · single line' : 'Off'],
     ['Thumbnail', thumbnailEnabled ? 'ChatGPT Web' : 'Off'],
     ['B-roll', footageEnabled ? `${footageClipCount} · ${footageProvider === 'hybrid' ? 'Hybrid' : footageProvider === 'wikimedia' ? 'Commons' : 'Web'}` : 'Off'],
@@ -507,7 +545,22 @@ export default function TaskForm() {
             </article>
 
             <article className="wb-panel">
-              <h3>Engine &amp; length</h3>
+              <h3>Engines &amp; length</h3>
+              {providers.length > 0 && (
+                <div className="form-group">
+                  <label>AI provider</label>
+                  <select
+                    value={providerId ?? ''}
+                    onChange={(e) => setProviderId(e.target.value === '' ? null : Number(e.target.value))}
+                  >
+                    <option value="">Default {providers.find((p) => p.is_default) ? `(${providers.find((p) => p.is_default)!.name})` : ''}</option>
+                    {providers.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name} — {p.model}</option>
+                    ))}
+                  </select>
+                  <small className="wb-hint">Drives script digestion, thumbnail direction, and the media scout.</small>
+                </div>
+              )}
               <div className="form-group">
                 <label>TTS Model</label>
                 <select value={ttsModel} onChange={(e) => selectModel(e.target.value)}>
@@ -532,10 +585,118 @@ export default function TaskForm() {
                   <option value={20}>20 min</option>
                 </select>
               </div>
-              <label className="wb-check">
-                <input type="checkbox" checked={character} onChange={(e) => setCharacter(e.target.checked)} />
-                Include animated character
-              </label>
+            </article>
+
+            {/* Five stacked description tiles made this the tallest card on the
+                deck; the swatch carries the look and the copy follows the pick. */}
+            <article className="wb-panel">
+              <h3>Video template</h3>
+              <div className="template-picker">
+                {VIDEO_TEMPLATES.map((template) => (
+                  <label
+                    key={template.key}
+                    className={`template-option ${videoTemplate === template.key ? 'active' : ''}`}
+                    title={template.description}
+                  >
+                    <input
+                      type="radio"
+                      name="video_template"
+                      value={template.key}
+                      checked={videoTemplate === template.key}
+                      onChange={() => setVideoTemplate(template.key)}
+                    />
+                    <span
+                      className="template-swatch"
+                      aria-hidden="true"
+                      style={{
+                        '--tpl-bg': template.swatch.bg,
+                        '--tpl-ink': template.swatch.ink,
+                        '--tpl-accent': template.swatch.accent,
+                        '--tpl-wash': template.swatch.wash,
+                      } as CSSProperties}
+                    />
+                    <b>{template.name}</b>
+                  </label>
+                ))}
+              </div>
+              <small className="wb-hint template-note">{activeTemplate.description}</small>
+            </article>
+
+            {/* The run-level switches share one panel: on their own they were
+                four near-empty cards that pushed the rest of the deck apart. */}
+            <article className="wb-panel">
+              <h3>Output &amp; review</h3>
+              <div className="switch-stack">
+                <div className="switch-row">
+                  <span className="switch-copy">
+                    <strong>Captions</strong>
+                    <small>{captionsEnabled ? 'One concise line at a time' : 'No captions on the render'}</small>
+                  </span>
+                  <label className="footage-toggle">
+                    <input
+                      type="checkbox"
+                      checked={captionsEnabled}
+                      onChange={(event) => setCaptionsEnabled(event.target.checked)}
+                      aria-label="Include captions"
+                    />
+                    <span aria-hidden="true" />
+                    <b>{captionsEnabled ? 'On' : 'Off'}</b>
+                  </label>
+                </div>
+
+                <div className="switch-row">
+                  <span className="switch-copy">
+                    <strong>Animated character</strong>
+                    <small>{character ? 'A Lottie host shares the frame' : 'No character overlay'}</small>
+                  </span>
+                  <label className="footage-toggle">
+                    <input
+                      type="checkbox"
+                      checked={character}
+                      onChange={(event) => setCharacter(event.target.checked)}
+                      aria-label="Include animated character"
+                    />
+                    <span aria-hidden="true" />
+                    <b>{character ? 'On' : 'Off'}</b>
+                  </label>
+                </div>
+
+                <div className="switch-row">
+                  <span className="switch-copy">
+                    <strong>Viral thumbnail</strong>
+                    <small>{thumbnailEnabled ? '16:9 cover via ChatGPT Web' : 'No automatic cover art'}</small>
+                  </span>
+                  <label className="footage-toggle">
+                    <input
+                      type="checkbox"
+                      checked={thumbnailEnabled}
+                      onChange={(event) => setThumbnailEnabled(event.target.checked)}
+                      aria-label="Generate viral thumbnail"
+                    />
+                    <span aria-hidden="true" />
+                    <b>{thumbnailEnabled ? 'On' : 'Off'}</b>
+                  </label>
+                </div>
+
+                {/* The row reads as a gate you switch on, so checked is the
+                    pause and `autoRender` stays its inverse. */}
+                <div className="switch-row">
+                  <span className="switch-copy">
+                    <strong>Audio review</strong>
+                    <small>{autoRender ? 'Renders without approval' : 'Pause after TTS to approve'}</small>
+                  </span>
+                  <label className="footage-toggle">
+                    <input
+                      type="checkbox"
+                      checked={!autoRender}
+                      onChange={(event) => setAutoRender(!event.target.checked)}
+                      aria-label="Pause for audio review"
+                    />
+                    <span aria-hidden="true" />
+                    <b>{autoRender ? 'Off' : 'On'}</b>
+                  </label>
+                </div>
+              </div>
             </article>
 
             <article className="wb-panel">
@@ -603,108 +764,6 @@ export default function TaskForm() {
                 </div>
               )}
             </article>
-
-            <article className="wb-panel">
-              <h3>Audio review</h3>
-              <div className="footage-config-head">
-                <p>
-                  {autoRender
-                    ? 'The video renders as soon as the narration is ready — no stop for approval.'
-                    : 'The task pauses after TTS so you can preview the audio before rendering.'}
-                </p>
-                <label className="footage-toggle">
-                  <input
-                    type="checkbox"
-                    checked={autoRender}
-                    onChange={(event) => setAutoRender(event.target.checked)}
-                  />
-                  <span aria-hidden="true" />
-                  <b>{autoRender ? 'Skip' : 'Review'}</b>
-                </label>
-              </div>
-            </article>
-
-            <article className="wb-panel">
-              <h3>Video template</h3>
-              <div className="template-grid">
-                {VIDEO_TEMPLATES.map((template) => (
-                  <label
-                    key={template.key}
-                    className={`choice-tile ${videoTemplate === template.key ? 'active' : ''}`}
-                  >
-                    <input
-                      type="radio"
-                      name="video_template"
-                      value={template.key}
-                      checked={videoTemplate === template.key}
-                      onChange={() => setVideoTemplate(template.key)}
-                    />
-                    <span>
-                      <strong>{template.name}</strong>
-                      <small>{template.description}</small>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </article>
-
-            <article className="wb-panel">
-              <h3>Captions</h3>
-              <div className="footage-config-head">
-                <p>
-                  {captionsEnabled
-                    ? 'Show concise captions as one line at a time.'
-                    : 'Render the video without captions.'}
-                </p>
-                <label className="footage-toggle">
-                  <input
-                    type="checkbox"
-                    checked={captionsEnabled}
-                    onChange={(event) => setCaptionsEnabled(event.target.checked)}
-                    aria-label="Include captions"
-                  />
-                  <span aria-hidden="true" />
-                  <b>{captionsEnabled ? 'On' : 'Off'}</b>
-                </label>
-              </div>
-            </article>
-
-            <article className="wb-panel">
-              <h3>Viral thumbnail</h3>
-              <div className="footage-config-head">
-                <p>
-                  {thumbnailEnabled
-                    ? 'Turn the final narration script into a 16:9 cover through ChatGPT Web.'
-                    : 'Skip automatic cover generation.'}
-                </p>
-                <label className="footage-toggle">
-                  <input
-                    type="checkbox"
-                    checked={thumbnailEnabled}
-                    onChange={(event) => setThumbnailEnabled(event.target.checked)}
-                    aria-label="Generate viral thumbnail"
-                  />
-                  <span aria-hidden="true" />
-                  <b>{thumbnailEnabled ? 'On' : 'Off'}</b>
-                </label>
-              </div>
-            </article>
-
-            {providers.length > 0 && (
-              <article className="wb-panel">
-                <h3>AI provider</h3>
-                <select
-                  value={providerId ?? ''}
-                  onChange={(e) => setProviderId(e.target.value === '' ? null : Number(e.target.value))}
-                >
-                  <option value="">Default {providers.find((p) => p.is_default) ? `(${providers.find((p) => p.is_default)!.name})` : ''}</option>
-                  {providers.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} — {p.model}</option>
-                  ))}
-                </select>
-                <small className="wb-hint">Drives script digestion, thumbnail direction, and the media scout.</small>
-              </article>
-            )}
 
             <section className={`footage-config wb-wide ${footageEnabled ? 'is-enabled' : ''}`}>
               <div className="footage-config-head">
