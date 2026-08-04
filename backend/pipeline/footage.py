@@ -511,7 +511,7 @@ async def acquire_footage(
     """Route one task through Wikimedia-only or the hybrid web scout.
 
     Hybrid mode intentionally keeps at least one Commons clip when possible,
-    then alternates Bilibili/YouTube candidates for source diversity.
+    then fills the remaining slots from YouTube.
     """
     provider = (media_provider or "wikimedia").strip().lower()
     common = {
@@ -558,7 +558,7 @@ async def acquire_footage(
             "status": "planning",
             "created_at": _now(),
             "updated_at": _now(),
-            "provider": "OpenCLI Web",
+            "provider": "YouTube: yt-dlp + Gemini Web",
             "provider_id": "opencli-web",
             "license_policy": "review_required",
             "requested_license_policy": license_policy,

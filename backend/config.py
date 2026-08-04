@@ -50,6 +50,8 @@ FOOTAGE_MAX_BYTES = int(os.getenv("FOOTAGE_MAX_BYTES", str(50 * 1024 * 1024)))
 OPENCLI_BIN = resolve_project_path(os.getenv("OPENCLI_BIN", "scripts/opencli.sh"))
 OPENCLI_PROFILE = os.getenv("OPENCLI_PROFILE", "").strip()
 OPENCLI_TIMEOUT = int(os.getenv("OPENCLI_TIMEOUT", "180"))
+# ChatGPT image generation routinely takes longer than simple browser reads.
+THUMBNAIL_CHATGPT_TIMEOUT = int(os.getenv("THUMBNAIL_CHATGPT_TIMEOUT", "360"))
 WEB_FOOTAGE_ENABLED = _env_bool("WEB_FOOTAGE_ENABLED", "1")
 WEB_FOOTAGE_GEMINI_ENABLED = _env_bool("WEB_FOOTAGE_GEMINI_ENABLED", "1")
 WEB_FOOTAGE_GEMINI_TIMEOUT = int(os.getenv("WEB_FOOTAGE_GEMINI_TIMEOUT", "120"))
@@ -100,7 +102,7 @@ TTS_DEVICE = os.getenv("TTS_DEVICE", "mps")
 TTS_TIMEOUT = int(os.getenv("TTS_TIMEOUT", str(6 * 3600)))
 TTS_STALL_TIMEOUT = int(os.getenv("TTS_STALL_TIMEOUT", "600"))
 
-TTS_DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "vibevoice-1.5b")
+TTS_DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "vibevoice-0.5b")
 TTS_DEFAULT_VOICE_1 = os.getenv("TTS_DEFAULT_VOICE_1", "Carter")
 TTS_DEFAULT_VOICE_2 = os.getenv("TTS_DEFAULT_VOICE_2", "Alice")
 

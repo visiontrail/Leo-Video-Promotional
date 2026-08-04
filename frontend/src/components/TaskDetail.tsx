@@ -12,6 +12,8 @@ import {
   videoUrl,
   audioUrl,
   scriptUrl,
+  thumbnailUrl,
+  thumbnailPromptUrl,
 } from '../api'
 import LogPanel from './LogPanel'
 import FootagePanel from './FootagePanel'
@@ -164,6 +166,11 @@ export default function TaskDetail() {
                 <button className="btn-primary" type="button">Download Video</button>
               </a>
             )}
+            {task.thumbnail_path && (
+              <a href={thumbnailUrl(task.id)} download>
+                <button className="btn-primary" type="button">Download Thumbnail</button>
+              </a>
+            )}
             <button
               className="btn-danger"
               type="button"
@@ -195,6 +202,10 @@ export default function TaskDetail() {
           <div>
             <dt>Character</dt>
             <dd>{task.config.include_character ? 'On' : 'Off'}</dd>
+          </div>
+          <div>
+            <dt>Captions</dt>
+            <dd>{task.config.captions_enabled !== false ? 'On · single line' : 'Off'}</dd>
           </div>
         </dl>
       </div>
@@ -238,6 +249,21 @@ export default function TaskDetail() {
 
           {task.status === 'failed' && task.error_message && (
             <div className="error-box">{task.error_message}</div>
+          )}
+
+          {task.thumbnail_path && (
+            <section className="detail-panel thumbnail-result">
+              <h3>Viral Thumbnail</h3>
+              <img src={thumbnailUrl(task.id)} alt={`Thumbnail for ${task.source_title || task.id}`} />
+              <div className="actions">
+                <a href={thumbnailUrl(task.id)} download>
+                  <button className="btn-primary" type="button">Download Thumbnail</button>
+                </a>
+                <a href={thumbnailPromptUrl(task.id)} target="_blank" rel="noopener">
+                  <button className="btn-ghost" type="button">View Image Prompt</button>
+                </a>
+              </div>
+            </section>
           )}
 
           {task.status === 'complete' && task.video_path && (

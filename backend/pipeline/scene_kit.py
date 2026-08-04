@@ -56,6 +56,7 @@ class Theme:
     wash_alpha: float = 0.16
     caption_bg: str = "rgba(9,11,19,.62)"
     caption_ink: str = "rgba(245,242,234,.94)"
+    accents: tuple[tuple[str, str], ...] = ()
 
 
 THEMES: dict[str, Theme] = {
@@ -72,6 +73,23 @@ THEMES: dict[str, Theme] = {
     ),
     # Near-black with restrained washes; type does the work.
     "minimal": Theme("minimal", "#0E0E10", "#EDEDED", "#8B8B92", wash_alpha=0.09),
+    # Warm rice paper, layered ink-green terrain and ochre route marks. This
+    # mirrors the visual language used by the project's X banner and avatar.
+    "shanshui": Theme(
+        "shanshui", "#F7F0E4", "#263A30", "#5E6D61",
+        wash_alpha=0.13,
+        caption_bg="rgba(247,240,228,.94)",
+        caption_ink="rgba(38,58,48,.98)",
+        accents=(
+            ("amber", "#B46F35"),
+            ("coral", "#A85F43"),
+            ("teal", "#4E695A"),
+            ("violet", "#70655C"),
+            ("rose", "#9E6B61"),
+            ("lime", "#747D59"),
+            ("sky", "#708079"),
+        ),
+    ),
 }
 DEFAULT_THEME = THEMES["podcast"]
 
@@ -107,8 +125,10 @@ ARCHETYPES = (
 )
 
 
-def accent_hex(name: str | None) -> str:
-    return ACCENTS.get((name or "").lower(), ACCENTS[DEFAULT_ACCENT])
+def accent_hex(name: str | None, theme: Theme | None = None) -> str:
+    key = (name or "").lower()
+    themed = dict(theme.accents) if theme and theme.accents else {}
+    return themed.get(key, ACCENTS.get(key, themed.get(DEFAULT_ACCENT, ACCENTS[DEFAULT_ACCENT])))
 
 
 def _rgba(hex_color: str, alpha: float) -> str:
@@ -301,12 +321,14 @@ _MOTIF_BUILDERS = {
 }
 
 
-def render_motif(motif: str, accent: str, seed_text: str) -> str:
+def render_motif(
+    motif: str, accent: str, seed_text: str, theme: Theme | None = None
+) -> str:
     """Inline SVG for ``motif``, or an empty string for ``none``/unknown."""
     builder = _MOTIF_BUILDERS.get((motif or "").lower())
     if builder is None:
         return ""
-    color = accent_hex(accent)
+    color = accent_hex(accent, theme)
     svg = builder(_Rand(_seed_from(seed_text)), color)
     return (
         '<svg class="motif-svg" viewBox="0 0 600 600" width="100%" height="100%" '
@@ -433,9 +455,80 @@ _BASE_CSS = """
 """
 
 
+def _shanshui_backdrop(plan: ScenePlan) -> str:
+    """Full-frame paper-and-terrain artwork for the Shan Shui template.
+
+    The geometry is baked at build time. Small seeded offsets keep consecutive
+    scenes related without making every frame a duplicate of the banner.
+    """
+    rnd = _Rand(_seed_from(plan.id + plan.headline))
+    dx = int(rnd.between(-70, 55))
+    dy = int(rnd.between(-22, 28))
+    noise_seed = _seed_from(plan.id) % 89 + 1
+    sid = plan.id
+    return f"""    <svg class="shanshui-backdrop" data-layout-ignore viewBox="0 0 1920 1080"
+         xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <filter id="{sid}-paper-grain" x="0" y="0" width="100%" height="100%">
+          <feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="3" seed="{noise_seed}"/>
+          <feColorMatrix type="saturate" values="0"/>
+          <feComponentTransfer><feFuncA type="table" tableValues="0 .22"/></feComponentTransfer>
+        </filter>
+      </defs>
+      <g class="shanshui-terrain" transform="translate({dx} {dy})">
+        <path d="M120 1080 C330 958 486 1002 646 878 C808 752 864 790 1010 664 C1172 524 1308 548 1428 384 C1554 212 1742 254 1990 100 L1990 1080Z" fill="#E9D9BB" opacity=".56"/>
+        <path d="M470 1080 C650 956 748 970 852 832 C974 670 1092 720 1204 582 C1338 416 1490 484 1602 326 C1722 158 1836 174 1990 72 L1990 1080Z" fill="#D4B17B" opacity=".66"/>
+        <path d="M700 1080 C842 926 956 976 1060 810 C1178 622 1304 690 1412 524 C1532 340 1652 420 1742 250 C1802 138 1884 100 1990 66 L1990 1080Z" fill="#7A8A75" opacity=".74"/>
+        <path d="M900 1080 C1040 930 1148 984 1242 828 C1350 648 1446 710 1544 558 C1660 378 1750 432 1826 276 C1874 178 1932 136 1990 118 L1990 1080Z" fill="#4E6656" opacity=".9"/>
+        <path d="M1120 1080 C1248 938 1350 982 1430 840 C1526 670 1628 724 1708 586 C1796 432 1876 454 1990 314 L1990 1080Z" fill="#263A30" opacity=".96"/>
+        <g fill="none" stroke="#D9C9A8" stroke-width="1.6" opacity=".34">
+          <path d="M1090 1030 C1260 910 1362 948 1470 814 C1586 670 1720 692 1960 470"/>
+          <path d="M1060 988 C1240 866 1354 916 1460 774 C1580 616 1724 656 1970 422"/>
+          <path d="M1040 946 C1228 826 1340 864 1444 728 C1566 568 1714 612 1978 380"/>
+          <path d="M1000 900 C1196 786 1320 814 1428 680 C1550 526 1706 564 1982 336"/>
+          <path d="M970 852 C1170 744 1300 764 1408 634 C1530 486 1688 516 1988 292"/>
+          <path d="M938 806 C1140 700 1270 716 1388 588 C1510 444 1676 476 1992 248"/>
+        </g>
+      </g>
+      <g class="shanshui-routes" fill="none" stroke="#B46F35" stroke-width="2.1" opacity=".62">
+        <path d="M-40 968 C300 598 632 830 934 620 C1192 440 1308 158 1662 198 C1812 216 1902 296 1970 378"/>
+        <path d="M1032 1100 C1258 770 1322 522 1578 480 C1710 458 1832 478 1990 438"/>
+      </g>
+      <g class="shanshui-nodes" fill="#B46F35" opacity=".92">
+        <circle cx="934" cy="620" r="10"/><circle cx="1662" cy="198" r="10"/>
+        <circle cx="1578" cy="480" r="10"/><circle cx="1868" cy="462" r="9"/>
+      </g>
+      <rect width="1920" height="1080" fill="#8C6A42" opacity=".12" filter="url(#{sid}-paper-grain)"/>
+    </svg>
+"""
+
+
+def _shanshui_css(plan: ScenePlan) -> str:
+    if plan.theme.name != "shanshui":
+        return ""
+    sid = plan.id
+    return f"""
+  #{sid} .plate {{ z-index:0; background-image:radial-gradient(circle at 18% 18%, rgba(255,255,255,.5), transparent 38%), repeating-linear-gradient(8deg, rgba(117,87,48,.025) 0 1px, transparent 1px 7px); }}
+  #{sid} .wash {{ background:radial-gradient(1200px 820px at 24% 34%, rgba(255,250,241,.82) 0%, rgba(247,240,228,.28) 58%, rgba(247,240,228,0) 100%); }}
+  #{sid} .shanshui-backdrop {{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }}
+  #{sid} .motif {{ z-index:2; mix-blend-mode:multiply; filter:saturate(.62); }}
+  #{sid} .motif-svg .arc {{ stroke-width:2px; opacity:.3; }}
+  #{sid} .stage {{ z-index:3; }}
+  #{sid} .vignette {{ z-index:4; background:radial-gradient(circle at 46% 44%, rgba(255,255,255,0) 52%, rgba(111,78,42,.11) 100%); }}
+  #{sid} .headline {{ font-family:Georgia, 'Times New Roman', serif; font-weight:700; letter-spacing:-.025em; text-shadow:0 2px 0 rgba(255,255,255,.24); }}
+  #{sid} .figure {{ font-family:Georgia, 'Times New Roman', serif; font-weight:700; }}
+  #{sid} .quote {{ font-family:Georgia, 'Times New Roman', serif; }}
+  #{sid} .kicker {{ color:#9B5D2F; }}
+  #{sid} .kicker::before {{ background:#B46F35; height:2px; }}
+  #{sid} .col {{ background:rgba(247,240,228,.72); border:2px solid rgba(78,105,90,.22); border-radius:5px; box-shadow:0 18px 60px rgba(75,55,33,.08); }}
+  #{sid} .vs {{ color:#526B5B; }}
+  #{sid} .rule {{ height:3px; }}
+"""
+
+
 def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple[int, int]) -> str:
     """Wrap scene-specific CSS/markup/timeline in the sub-composition envelope."""
-    accent = accent_hex(plan.accent)
+    accent = accent_hex(plan.accent, plan.theme)
     theme = plan.theme
     base = _BASE_CSS.format(
         sid=plan.id,
@@ -448,11 +541,22 @@ def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple
         wx=wash[0],
         wy=wash[1],
     )
+    themed_css = _shanshui_css(plan)
+    themed_backdrop = _shanshui_backdrop(plan) if theme.name == "shanshui" else ""
+    themed_timeline = ""
+    if theme.name == "shanshui":
+        drift_duration = max(2.0, plan.duration - 0.3)
+        themed_timeline = f'''        inAt("#{plan.id} .shanshui-backdrop", {{ opacity: 0 }}, {{ opacity: 1, duration: 1.25, ease: "sine.out" }}, 0.1);
+        inAt("#{plan.id} .shanshui-terrain", {{ x: 18 }}, {{ x: 0, duration: {drift_duration:.2f}, ease: "none" }}, 0.15);
+        inAt("#{plan.id} .shanshui-routes path", {{ strokeDasharray: 1200, strokeDashoffset: 1200 }}, {{ strokeDashoffset: 0, duration: 2.15, ease: "power2.out", stagger: 0.16 }}, 0.24);
+        inAt("#{plan.id} .shanshui-nodes circle", {{ scale: .25, opacity: 0 }}, {{ scale: 1, opacity: 1, duration: .58, ease: "back.out(1.8)", stagger: 0.17, transformOrigin: "50% 50%" }}, 0.72);
+'''
     return f"""<template id="{plan.id}-template">
   <div id="{plan.id}" data-composition-id="{plan.id}" data-width="1920" data-height="1080">
     <style>
-{base}{css}
+{base}{css}{themed_css}
     </style>
+{themed_backdrop}
 {markup}
     <script src="../vendor/gsap.min.js"></script>
     <script>
@@ -464,7 +568,7 @@ def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple
         // tweens rather than handing GSAP an empty target.
         const inAt = (sel, from, to, at) => {{ const el = q(sel); if (el.length) tl.fromTo(el, from, to, at); }};
         const outAt = (sel, to, at) => {{ const el = q(sel); if (el.length) tl.to(el, to, at); }};
-{timeline}
+{themed_timeline}{timeline}
         window.__timelines["{plan.id}"] = tl;
       }})();
     </script>
@@ -474,10 +578,13 @@ def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple
 
 
 def _motif_block(plan: ScenePlan, *, style: str) -> str:
-    art = render_motif(plan.motif, plan.accent, plan.id + plan.headline)
+    art = render_motif(plan.motif, plan.accent, plan.id + plan.headline, plan.theme)
     if not art:
         return ""
-    return f'    <div class="motif" id="{plan.id}-motif" style="{style}">{art}</div>\n'
+    return (
+        f'    <div class="motif" id="{plan.id}-motif" data-layout-ignore '
+        f'style="{style}">{art}</div>\n'
+    )
 
 
 def _render_topic(plan: ScenePlan) -> str:
@@ -516,7 +623,7 @@ def _render_statement(plan: ScenePlan) -> str:
     css = f"""
   #{plan.id} .stage {{ align-items:flex-start; }}
   #{plan.id} .headline {{ font-size:{hsize}px; max-width:1560px; }}
-  #{plan.id} .rule {{ width:180px; height:6px; background:{accent_hex(plan.accent)}; border-radius:3px; }}
+  #{plan.id} .rule {{ width:180px; height:6px; background:{accent_hex(plan.accent, plan.theme)}; border-radius:3px; }}
 """
     markup = (
         '    <div class="plate"><div class="wash"></div></div>\n'
@@ -535,7 +642,7 @@ def _render_statement(plan: ScenePlan) -> str:
 
 
 def _render_contrast(plan: ScenePlan) -> str:
-    accent = accent_hex(plan.accent)
+    accent = accent_hex(plan.accent, plan.theme)
     css = f"""
   #{plan.id} .stage {{ padding:120px 130px 200px; gap:34px; }}
   #{plan.id} .headline {{ font-size:{headline_size(plan.headline, base=76)}px; max-width:1500px; }}
@@ -578,7 +685,7 @@ def _render_contrast(plan: ScenePlan) -> str:
 
 
 def _render_list(plan: ScenePlan) -> str:
-    accent = accent_hex(plan.accent)
+    accent = accent_hex(plan.accent, plan.theme)
     rows = "".join(
         f'        <div class="row" id="{plan.id}-row-{i}">'
         f'<div class="num">{i + 1:02d}</div>'
@@ -643,7 +750,7 @@ def _render_stat(plan: ScenePlan) -> str:
 
 
 def _render_quote(plan: ScenePlan) -> str:
-    accent = accent_hex(plan.accent)
+    accent = accent_hex(plan.accent, plan.theme)
     text = plan.quote or plan.headline
     size = 84 if len(text) <= 90 else (66 if len(text) <= 160 else 50)
     css = f"""
@@ -676,7 +783,7 @@ def _render_quote(plan: ScenePlan) -> str:
 
 def _render_footage(plan: ScenePlan) -> str:
     """Full-bleed public-domain plate with a Ken Burns push and a caption bar."""
-    accent = accent_hex(plan.accent)
+    accent = accent_hex(plan.accent, plan.theme)
     if plan.footage_kind == "video":
         media = (
             f'      <video id="{plan.id}-media" class="clip media" src="{_esc(plan.footage_src)}" '
@@ -722,7 +829,7 @@ def _render_footage(plan: ScenePlan) -> str:
 
 
 def _render_title(plan: ScenePlan) -> str:
-    accent = accent_hex(plan.accent)
+    accent = accent_hex(plan.accent, plan.theme)
     hsize = headline_size(plan.headline, base=124, floor=58)
     css = f"""
   #{plan.id} .stage {{ align-items:center; text-align:center; padding:150px 180px; gap:34px; }}

@@ -1,4 +1,4 @@
-# OpenCLI web-footage loop
+# OpenCLI media loop: web footage + ChatGPT thumbnails
 
 ## Product contract
 
@@ -9,26 +9,27 @@ and the project workflow are stored in `.claude/skills`. The backend executes on
 
 ```text
 narration script
+  -> viral thumbnail formula -> ChatGPT Web image -> thumbnail image + prompt + manifest
   -> query plan
   -> Wikimedia search -----------------------> explicit-open-license candidate
-  -> OpenCLI + signed-in Chrome -> Bilibili --> rights-review candidate
   -> project yt-dlp ------------> YouTube ----> rights-review candidate
   -> Gemini Web link analysis (YouTube) ------> trim JSON or recorded fallback
   -> FFprobe + FFmpeg ------------------------> silent normalized clip + evidence frames
   -> footage/manifest.json -------------------> visual plan -> HyperFrames -> final MP4
 ```
 
-OpenCLI is used where a real signed-in browser session matters. YouTube discovery/download stays
-on `yt-dlp` because upstream OpenCLI 1.8.6 has a Bilibili adapter but no equivalent YouTube
-adapter. This is deliberate capability routing, not a second global dependency.
+OpenCLI is used where a real signed-in browser session matters. It connects to ChatGPT Web for
+script-driven cover generation and to Gemini Web for visual interval analysis. YouTube
+discovery/download stays on `yt-dlp`.
 
 ## Setup and isolation
 
 1. Run `./scripts/setup.sh` or `npm install --prefix tools/opencli --no-audit --no-fund`.
 2. Install the official OpenCLI Browser Bridge Chrome extension and keep Chrome running.
-3. Sign in to Bilibili and Gemini as needed.
+3. Sign in to Gemini and ChatGPT as needed.
 4. Run `./scripts/opencli.sh doctor`.
-5. In the New Task form select Hybrid or Web Platforms.
+5. Verify `./scripts/opencli.sh chatgpt status -f json` reports `Login: Yes`.
+6. In the New Task form leave Viral thumbnail enabled; select Hybrid or Web Platforms for web footage.
 
 Project isolation can be audited with:
 
@@ -40,6 +41,24 @@ find .claude/skills -maxdepth 2 -name SKILL.md -print
 No workflow step writes to `~/.claude`, installs `opencli` globally, or changes global Claude
 Code settings. Browser login/extension state is intentionally user-owned Chrome state.
 
+## Thumbnail contract
+
+The final audio narration script—not the summary or source transcript—is the sole content input
+to thumbnail art direction. `backend/prompts/thumbnail.txt` contains the independently editable
+master formula and is loaded on every task. The configured AI provider resolves one visual story,
+then the backend executes only this project wrapper:
+
+```bash
+./scripts/opencli.sh chatgpt image "<final prompt>" \
+  --op outputs/<task-id>/thumbnail/images \
+  --window background --site-session persistent --keep-tab false -f json
+```
+
+The backend accepts only valid image-signature files inside that task's thumbnail image directory.
+`thumbnail/manifest.json` records generation status, source script, final prompt path, all exported
+image paths, the primary image, ChatGPT conversation link, timestamps, and any error. A provider,
+bridge, or web failure is logged and recorded but does not discard a valid script or block TTS/video.
+
 ## Manifest and failure semantics
 
 Every retained clip has a canonical source link, creator, provider, source duration, exact trim,
@@ -47,10 +66,9 @@ script excerpt, analyzer/status/reason, normalized media facts, SHA-256, and thr
 paths. Manifest writes are atomic. Raw downloads are deleted only after the normalized derivative and
 evidence frames succeed; failed raw files are retained for diagnosis.
 
-Gemini's web product can usually inspect public YouTube links, but it cannot reliably open
-Bilibili links and may time out or return no response. These are normal external limitations.
-They do not become fabricated model judgments: the manifest records a low-confidence
-`deterministic-safe-offset` result and the rest of the pipeline continues.
+Gemini's web product can usually inspect public YouTube links, but OpenCLI may time out before a
+slow response becomes visible. The scout polls the same conversation for late assistant JSON
+before using a low-confidence `deterministic-safe-offset` result.
 
 Downloading is not a rights grant. Wikimedia clips pass an explicit license allowlist. Web clips
 are always `rights_status=review_required` and add a publication blocker. The editor must review
@@ -58,16 +76,19 @@ the original page and reuse terms before publishing.
 
 ## TTS-free validation
 
-For a light test, use a text script and a short silent timing WAV rather than generating local
-TTS. Acquire one Bilibili and one YouTube clip, inspect `footage/manifest.json`, then compose at
-draft quality. Verify the final file with:
+For thumbnail-only validation, call `pipeline.thumbnail.generate_thumbnail` with a checked text
+script and inspect `thumbnail/prompt.txt`, the image, and `thumbnail/manifest.json`. This path does
+not invoke a TTS subprocess. For the footage/video path, use a text script and a short silent
+timing WAV rather than generating local TTS, then compose at draft quality. Verify the final file
+with:
 
 ```bash
 ffprobe -v error -show_entries format=duration:stream=codec_name,width,height,pix_fmt \
   -of json outputs/<task-id>/video.mp4
 ```
 
-The checked development fixture `outputs/opencli-e2e/` is intentionally ignored by Git.
+The checked development fixtures `outputs/opencli-e2e/` and `outputs/thumbnail-e2e/` are
+intentionally ignored by Git.
 
 ## Next product bets
 
@@ -80,8 +101,8 @@ The checked development fixture `outputs/opencli-e2e/` is intentionally ignored 
 4. **Beat-aware editing.** Derive energy and cut points from the final audio waveform, then align
    B-roll entrances and transitions without regenerating narration.
 5. **Evidence-first multimodal review.** Add a project OpenCLI adapter that uploads the three local
-   frames to Gemini when link access fails. This is preferable to pretending Bilibili URLs were
-   seen; upstream's generic upload command currently needs a real file input exposed by the page.
+   frames to Gemini when link access fails; upstream's generic upload command currently needs a
+   real file input exposed by the page.
 6. **Rights inbox.** Present all web candidates in one approval queue with source snapshot, creator
    terms, intended use, and accept/replace controls; only approved clips can clear publication.
 7. **Self-healing web adapters.** Run the project copies of `opencli-browser-sitemap` and
@@ -92,4 +113,4 @@ The checked development fixture `outputs/opencli-e2e/` is intentionally ignored 
 
 The first two bets most directly improve perceived video quality; the rights inbox is the most
 important release-safety investment. Frame upload is the highest-value OpenCLI extension because
-it closes the current Bilibili/Gemini visibility gap while keeping claims auditable.
+it keeps link-analysis failures auditable.

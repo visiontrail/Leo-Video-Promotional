@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     script_path TEXT,
     audio_path TEXT,
     video_path TEXT,
+    thumbnail_path TEXT,
     duration_seconds REAL
 );
 
@@ -62,6 +63,9 @@ async def _migrate_tasks(db: aiosqlite.Connection):
     existing = {row["name"] for row in rows}
     if "scheduled_at" not in existing:
         await db.execute("ALTER TABLE tasks ADD COLUMN scheduled_at TEXT")
+        await db.commit()
+    if "thumbnail_path" not in existing:
+        await db.execute("ALTER TABLE tasks ADD COLUMN thumbnail_path TEXT")
         await db.commit()
 
 
@@ -181,6 +185,7 @@ def _row_to_response(row: aiosqlite.Row) -> TaskResponse:
         script_path=row["script_path"],
         audio_path=row["audio_path"],
         video_path=row["video_path"],
+        thumbnail_path=row["thumbnail_path"],
         duration_seconds=row["duration_seconds"],
     )
 

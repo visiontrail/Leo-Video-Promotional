@@ -92,6 +92,15 @@ def test_the_deterministic_kit_always_passes_its_own_gate():
         assert director.validate_scene_html(scene_kit.render_scene(plan), "scene-01") == [], archetype
 
 
+def test_shanshui_director_prompt_preserves_the_selected_style():
+    prompt = director._system_prompt(scene_kit.THEMES["shanshui"])
+
+    assert "background:#F7F0E4" in prompt
+    assert "ink #263A30" in prompt
+    assert "layered organic terrain" in prompt
+    assert "Avoid neon" in prompt
+
+
 def test_revert_restores_the_deterministic_draft(tmp_path):
     plan = scene_kit.ScenePlan(id="scene-01", duration=8.0, headline="Kept")
     assembler.write_scene_files(tmp_path, [plan])

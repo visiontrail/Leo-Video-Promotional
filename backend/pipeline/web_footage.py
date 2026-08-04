@@ -1,4 +1,4 @@
-"""Bilibili/YouTube discovery, web-model trim analysis, and FFmpeg editing.
+"""YouTube discovery, web-model trim analysis, and FFmpeg editing.
 
 The source ledger is intentionally stricter than the Wikimedia path: a file
 being downloadable does not imply reuse rights. Platform-hosted clips are
@@ -25,8 +25,10 @@ from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
 
-BV_RE = re.compile(r"\b(BV[0-9A-Za-z]+)\b")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'-]{2,}")
+YOUTUBE_URL_RE = re.compile(r"https?://(?:www\.)?(?:youtube\.com/watch|youtu\.be/)")
+GEMINI_RECOVERY_TIMEOUT_SECONDS = 60.0
+GEMINI_RECOVERY_POLL_SECONDS = 5.0
 
 
 class WebFootageError(RuntimeError):
@@ -103,33 +105,6 @@ def _yt_dlp_bin() -> str:
     if binary:
         return binary
     raise WebFootageError("yt-dlp is not installed in the project virtualenv")
-
-
-async def search_bilibili(query: str, *, limit: int = 4) -> list[dict]:
-    result = await run_opencli(
-        ["bilibili", "search", query, "--limit", str(limit), "-f", "json"],
-        timeout=min(config.OPENCLI_TIMEOUT, 90),
-    )
-    rows = first_json(result.stdout)
-    if not isinstance(rows, list):
-        raise OpenCLIError("Bilibili search returned a non-array result")
-    candidates = []
-    for row in rows:
-        if not isinstance(row, dict) or not row.get("url"):
-            continue
-        candidates.append(
-            {
-                "platform": "bilibili",
-                "provider": "Bilibili via OpenCLI",
-                "provider_id": "opencli-bilibili",
-                "title": str(row.get("title") or "Bilibili video"),
-                "creator": str(row.get("author") or "Unknown"),
-                "source_page_url": str(row["url"]),
-                "duration_seconds": 0.0,
-                "search_score": int(row.get("score") or 0),
-            }
-        )
-    return candidates
 
 
 async def search_youtube(query: str, *, limit: int = 4) -> list[dict]:
@@ -219,14 +194,81 @@ def _normalise_analysis(parsed: dict, candidate: dict) -> dict:
     }
 
 
+def _analysis_from_gemini_turns(value: str, source_page_url: str) -> dict | None:
+    """Find the assistant JSON belonging to ``source_page_url`` in Gemini read output."""
+    rows = first_json(value)
+    if not isinstance(rows, list):
+        return None
+
+    anchor = -1
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("Role") or row.get("role") or "").lower()
+        text = str(row.get("Text") or row.get("text") or "")
+        if role == "user" and source_page_url in text:
+            anchor = index
+    if anchor < 0:
+        return None
+
+    for row in rows[anchor + 1 :]:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("Role") or row.get("role") or "").lower()
+        text = str(row.get("Text") or row.get("text") or "")
+        # Do not attribute an answer to this request after a different video
+        # request has begun in the same persistent browser session.
+        if role == "user" and YOUTUBE_URL_RE.search(text) and source_page_url not in text:
+            return None
+        if role != "assistant":
+            continue
+        try:
+            parsed = first_json(text)
+        except OpenCLIError:
+            continue
+        if isinstance(parsed, dict) and "start_seconds" in parsed and "end_seconds" in parsed:
+            return parsed
+    return None
+
+
+async def _recover_late_gemini_analysis(candidate: dict) -> dict:
+    """Poll the current Gemini conversation after ``gemini ask`` times out."""
+    source_page_url = str(candidate["source_page_url"])
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + GEMINI_RECOVERY_TIMEOUT_SECONDS
+    last_error = "assistant response was not visible"
+
+    while True:
+        remaining = deadline - loop.time()
+        if remaining < 0:
+            break
+        try:
+            result = await run_opencli(
+                ["gemini", "read", "-f", "json"],
+                timeout=max(5, min(30, int(remaining) + 5)),
+            )
+            parsed = _analysis_from_gemini_turns(result.stdout, source_page_url)
+            if parsed is not None:
+                return parsed
+        except Exception as exc:  # noqa: BLE001 - keep polling within the grace window
+            last_error = str(exc)
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(GEMINI_RECOVERY_POLL_SECONDS, remaining))
+
+    raise OpenCLIError(
+        "Gemini returned no detectable response during the recovery window: "
+        f"{last_error}"
+    )
+
+
 async def analyze_candidate_link(candidate: dict, script_excerpt: str) -> dict:
     if not config.WEB_FOOTAGE_GEMINI_ENABLED:
         return _fallback_analysis(candidate, reason="Gemini web analysis is disabled")
     if candidate.get("platform") != "youtube":
-        return _fallback_analysis(
-            candidate,
-            reason="Gemini Web cannot reliably open Bilibili links; local safe-offset fallback used",
-        )
+        raise WebFootageError("Web footage only accepts YouTube candidates")
 
     duration = float(candidate.get("duration_seconds") or 0)
     prompt = (
@@ -252,65 +294,51 @@ async def analyze_candidate_link(candidate: dict, script_excerpt: str) -> dict:
             ],
             timeout=config.WEB_FOOTAGE_GEMINI_TIMEOUT + 30,
         )
-        if "[NO RESPONSE]" in result.stdout:
-            raise OpenCLIError("Gemini returned no response before its web timeout")
-        parsed = first_json(result.stdout)
+        recovered = "[NO RESPONSE]" in result.stdout
+        parsed = (
+            await _recover_late_gemini_analysis(candidate)
+            if recovered
+            else first_json(result.stdout)
+        )
         if not isinstance(parsed, dict):
             raise OpenCLIError("Gemini trim analysis was not a JSON object")
-        return _normalise_analysis(parsed, candidate)
+        analysis = _normalise_analysis(parsed, candidate)
+        if recovered:
+            analysis["status"] = "analyzed_after_timeout"
+        return analysis
     except Exception as exc:  # noqa: BLE001 - trim fallback must keep the scout moving
         return _fallback_analysis(candidate, reason=f"Gemini analysis fallback: {exc}")
 
 
-async def _download_bilibili(candidate: dict, raw_dir: Path) -> Path:
-    match = BV_RE.search(candidate["source_page_url"])
-    if not match:
-        raise WebFootageError("Bilibili candidate URL does not contain a BV id")
-    before = {path.resolve() for path in raw_dir.glob("*") if path.is_file()}
-    result = await run_opencli(
-        [
-            "bilibili",
-            "download",
-            match.group(1),
-            "--quality",
-            "480p",
-            "--output",
-            str(raw_dir),
-            "-f",
-            "json",
-        ],
-        timeout=config.WEB_FOOTAGE_DOWNLOAD_TIMEOUT,
-    )
-    after = [
-        path for path in raw_dir.glob("*")
-        if path.is_file() and path.resolve() not in before and path.suffix.lower() in {".mp4", ".webm", ".mkv", ".mov"}
-    ]
-    if not after:
-        raise WebFootageError(f"OpenCLI Bilibili download produced no media file: {result.stdout[-500:]}")
-    media_path = max(after, key=lambda path: path.stat().st_mtime_ns)
-    if media_path.stat().st_size > config.FOOTAGE_MAX_BYTES:
-        raise WebFootageError(
-            f"Bilibili download exceeds the {config.FOOTAGE_MAX_BYTES}-byte footage limit"
-        )
-    return media_path
-
-
-async def _download_youtube(candidate: dict, raw_dir: Path) -> Path:
+async def _download_youtube(
+    candidate: dict,
+    raw_dir: Path,
+    analysis: dict,
+) -> tuple[Path, bool]:
     template = raw_dir / "%(id)s.%(ext)s"
+    sectioned = float(candidate.get("duration_seconds") or 0) > 0
     command = [
         _yt_dlp_bin(),
         *_yt_dlp_common_args(include_cookies=False),
         "--no-playlist",
-        "--max-filesize",
-        str(config.FOOTAGE_MAX_BYTES),
         "-f",
-        "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-        "--merge-output-format",
-        "mp4",
+        "bestvideo[height<=720][ext=mp4]/bestvideo[height<=720]/best[height<=720]",
         "-o",
         str(template),
-        candidate["source_page_url"],
     ]
+    if not sectioned:
+        command.extend(["--max-filesize", str(config.FOOTAGE_MAX_BYTES)])
+    if sectioned:
+        start = float(analysis["start_seconds"])
+        end = float(analysis["end_seconds"])
+        command.extend(
+            [
+                "--download-sections",
+                f"*{start:.3f}-{end:.3f}",
+                "--force-keyframes-at-cuts",
+            ]
+        )
+    command.append(candidate["source_page_url"])
     before = {path.resolve() for path in raw_dir.glob("*") if path.is_file()}
     await _run_command(command, timeout=config.WEB_FOOTAGE_DOWNLOAD_TIMEOUT)
     after = [
@@ -324,7 +352,7 @@ async def _download_youtube(candidate: dict, raw_dir: Path) -> Path:
         raise WebFootageError(
             f"YouTube download exceeds the {config.FOOTAGE_MAX_BYTES}-byte footage limit"
         )
-    return media_path
+    return media_path, sectioned
 
 
 async def _probe(path: Path) -> dict:
@@ -363,9 +391,8 @@ def _fit_analysis_to_media(analysis: dict, duration: float) -> dict:
         and requested_start == 0
         and duration > maximum * 2
     ):
-        # Bilibili search rows do not expose duration before download. Once the
-        # real duration is known, skip the likely channel bumper instead of
-        # blindly trimming from frame zero.
+        # If discovery did not expose duration, use the probed duration to skip
+        # the likely channel bumper instead of blindly trimming from frame zero.
         requested_start = min(max(3.0, duration * 0.1), duration - maximum)
     start = max(0.0, min(requested_start, max(0.0, duration - 1.0)))
     end = min(duration, start + requested_length)
@@ -458,46 +485,44 @@ async def supplement_web_footage(
     evidence_root = task_dir / "footage" / "evidence"
     used_sources = {str(clip.get("source_page_url") or "") for clip in manifest.get("clips", [])}
 
-    if manifest.get("provider_id") == "opencli-web":
-        manifest["provider"] = "OpenCLI Web: Bilibili + YouTube"
+    if manifest.get("provider_id") in {"opencli-web", "youtube-web"}:
+        manifest["provider"] = "YouTube: yt-dlp + Gemini Web"
+        manifest["provider_id"] = "youtube-web"
     else:
-        manifest["provider"] = "Hybrid: Wikimedia Commons + OpenCLI Web"
-        manifest["provider_id"] = "hybrid-opencli"
+        manifest["provider"] = "Hybrid: Wikimedia Commons + YouTube"
+        manifest["provider_id"] = "hybrid-youtube"
     manifest["requested_clip_count"] = target_total
     manifest["rights_review_required"] = True
     manifest.setdefault("publication_blockers", [])
-    blocker = "Review reuse rights for every Bilibili/YouTube clip before publication"
+    legacy_blocker = "Review reuse rights for every Bilibili/YouTube clip before publication"
+    manifest["publication_blockers"] = [
+        item for item in manifest["publication_blockers"] if item != legacy_blocker
+    ]
+    blocker = "Review reuse rights for every YouTube clip before publication"
     if blocker not in manifest["publication_blockers"]:
         manifest["publication_blockers"].append(blocker)
     manifest["status"] = "searching"
     manifest["updated_at"] = _now()
     _write_manifest(manifest_file, manifest)
 
-    for shot_index, shot in enumerate(query_plan):
+    for shot in query_plan:
         if len(manifest.get("clips", [])) >= target_total:
             break
         query = str(shot.get("query") or "").strip()
         if not query:
             continue
-        _emit(log, f"Web footage: searching Bilibili + YouTube for '{query}'")
-        results: dict[str, list[dict]] = {"bilibili": [], "youtube": []}
-        found = await asyncio.gather(
-            search_bilibili(query), search_youtube(query), return_exceptions=True
-        )
-        for platform, value in zip(("bilibili", "youtube"), found, strict=True):
-            if isinstance(value, Exception):
-                manifest.setdefault("errors", []).append(
-                    {"query": query, "stage": f"{platform}-search", "message": str(value)}
-                )
-            else:
-                results[platform] = value
-
-        preferred = ("bilibili", "youtube") if shot_index % 2 == 0 else ("youtube", "bilibili")
+        _emit(log, f"Web footage: searching YouTube for '{query}'")
+        try:
+            results = await search_youtube(query)
+        except Exception as exc:  # noqa: BLE001 - record and continue with the next shot
+            manifest.setdefault("errors", []).append(
+                {"query": query, "stage": "youtube-search", "message": str(exc)}
+            )
+            continue
         candidate = next(
             (
                 item
-                for platform in preferred
-                for item in results[platform]
+                for item in results
                 if item["source_page_url"] not in used_sources
             ),
             None,
@@ -513,15 +538,27 @@ async def supplement_web_footage(
         analysis = await analyze_candidate_link(candidate, excerpt)
         raw_path: Path | None = None
         try:
-            if candidate["platform"] == "bilibili":
-                raw_path = await _download_bilibili(candidate, raw_dir)
-            else:
-                raw_path = await _download_youtube(candidate, raw_dir)
+            source_duration = float(candidate.get("duration_seconds") or 0)
+            if source_duration:
+                analysis = _fit_analysis_to_media(analysis, source_duration)
+            raw_path, sectioned = await _download_youtube(candidate, raw_dir, analysis)
             media = await _probe(raw_path)
-            analysis = _fit_analysis_to_media(analysis, media["duration_seconds"])
+            if not source_duration:
+                source_duration = media["duration_seconds"]
+                analysis = _fit_analysis_to_media(analysis, source_duration)
+            edit_analysis = analysis
+            if sectioned:
+                requested_length = max(
+                    1.0,
+                    float(analysis["end_seconds"]) - float(analysis["start_seconds"]),
+                )
+                edit_analysis = {
+                    "start_seconds": 0.0,
+                    "end_seconds": min(media["duration_seconds"], requested_length),
+                }
             clip_id = f"clip-{len(manifest.get('clips', [])) + 1:02d}"
             destination = task_dir / "footage" / f"{clip_id}.mp4"
-            await _trim(raw_path, destination, analysis, orientation)
+            await _trim(raw_path, destination, edit_analysis, orientation)
             trimmed = await _probe(destination)
             evidence_names = await _evidence_frames(
                 destination,
@@ -551,7 +588,7 @@ async def supplement_web_footage(
             "purpose": str(shot.get("purpose") or ""),
             **candidate,
             "duration_seconds": round(trimmed["duration_seconds"], 3),
-            "source_duration_seconds": round(media["duration_seconds"], 3),
+            "source_duration_seconds": round(source_duration, 3),
             "width": trimmed["width"],
             "height": trimmed["height"],
             "bytes": destination.stat().st_size,

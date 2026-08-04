@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import shutil
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -42,6 +43,10 @@ LINT_TIMEOUT = 180
 # so it costs real time on a long episode — but it is the only check that sees
 # text overflowing a card or two blocks landing on top of each other.
 INSPECT_TIMEOUT = 900
+
+CAPTION_MAX_WORDS = 6
+CAPTION_MAX_CJK_CHARS = 28
+CAPTION_MAX_DISPLAY_UNITS = 34.0
 
 
 def _esc(value: object) -> str:
@@ -105,25 +110,114 @@ def write_scene_files(task_dir: Path, plans: Sequence[scene_kit.ScenePlan]) -> l
     return written
 
 
+def _display_units(text: str) -> float:
+    """Approximate rendered width in ems for safe, deterministic grouping."""
+    units = 0.0
+    for char in text:
+        if "\u3400" <= char <= "\u9fff" or "\uf900" <= char <= "\ufaff":
+            units += 1.0
+        elif char.isspace():
+            units += 0.3
+        else:
+            units += 0.55
+    return units
+
+
+def _split_dense_caption(text: str, limit: int) -> list[str]:
+    """Split unspaced CJK (and other dense text) at nearby punctuation."""
+    chunks: list[str] = []
+    remaining = text.strip()
+    punctuation = "。！？；，、.!?;,"
+    while len(remaining) > limit:
+        window = remaining[: limit + 1]
+        cut = max(window.rfind(mark) for mark in punctuation) + 1
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(remaining[:cut].strip())
+        remaining = remaining[cut:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _caption_chunks(value: object) -> list[str]:
+    """Create readable, single-line groups from a storyboard spoken line."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return []
+
+    has_cjk = bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", text))
+    if " " not in text and has_cjk:
+        return _split_dense_caption(text, CAPTION_MAX_CJK_CHARS)
+
+    words = text.split(" ")
+    chunks: list[str] = []
+    current: list[str] = []
+    for word in words:
+        candidate = " ".join([*current, word])
+        if current and (
+            len(current) >= CAPTION_MAX_WORDS
+            or _display_units(candidate) > CAPTION_MAX_DISPLAY_UNITS
+        ):
+            chunks.append(" ".join(current))
+            current = []
+
+        # A single unbroken token can still exceed the safe width (for example,
+        # CJK text mixed with a Latin speaker label). Split it rather than
+        # relying on clipping as the primary behaviour.
+        if not current and _display_units(word) > CAPTION_MAX_DISPLAY_UNITS:
+            limit = CAPTION_MAX_CJK_CHARS if has_cjk else int(CAPTION_MAX_DISPLAY_UNITS / 0.55)
+            parts = _split_dense_caption(word, limit)
+            chunks.extend(parts[:-1])
+            current = parts[-1:]
+        else:
+            current.append(word)
+
+        if len(current) >= 3 and re.search(r"[.!?。！？；;][\"']?$", current[-1]):
+            chunks.append(" ".join(current))
+            current = []
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
 def _caption_clips(storyboard: dict) -> list[str]:
-    """One caption clip per spoken line, clamped so neighbours never overlap."""
+    """Timed single-line caption groups, clamped so neighbours never overlap."""
     lines: list[dict] = []
     for scene in storyboard.get("scenes", []):
         lines.extend(scene.get("lines", []))
     lines.sort(key=lambda line: line["start"])
 
-    out: list[str] = []
+    segments: list[dict] = []
     for i, line in enumerate(lines):
-        start = round(float(line["start"]), 2)
-        next_start = round(float(lines[i + 1]["start"]), 2) if i + 1 < len(lines) else None
-        duration = float(line["duration"])
+        line_start = float(line["start"])
+        line_end = line_start + max(0.02, float(line["duration"]))
+        if i + 1 < len(lines):
+            # Silence-map rounding can leave adjacent spoken lines overlapping.
+            line_end = min(line_end, max(line_start + 0.02, float(lines[i + 1]["start"]) - 0.02))
+
+        chunks = _caption_chunks(line.get("text", ""))
+        if not chunks:
+            continue
+        weights = [max(1.0, _display_units(chunk)) for chunk in chunks]
+        total_weight = sum(weights)
+        elapsed_weight = 0.0
+        for chunk, weight in zip(chunks, weights):
+            start = line_start + (line_end - line_start) * elapsed_weight / total_weight
+            elapsed_weight += weight
+            end = line_start + (line_end - line_start) * elapsed_weight / total_weight
+            segments.append({"start": start, "end": end, "text": chunk})
+
+    out: list[str] = []
+    for i, segment in enumerate(segments):
+        start = round(float(segment["start"]), 2)
+        end = round(float(segment["end"]), 2)
+        next_start = round(float(segments[i + 1]["start"]), 2) if i + 1 < len(segments) else None
         if next_start is not None:
-            # Round-off in the silence map can leave a caption ending a
-            # hundredth of a second after its successor starts, which the
-            # linter reports as an overlap. Clamp instead of trusting the map.
-            duration = min(duration, max(0.2, next_start - start - 0.02))
-        duration = round(max(0.2, duration), 2)
-        text = _esc(line["text"])
+            end = min(end, next_start - 0.02)
+        duration = round(max(0.02, end - start), 2)
+        text = _esc(segment["text"])
         out.append(
             f'      <div id="cap-{i:03d}" class="clip caption" data-start="{start}" '
             f'data-duration="{duration}" data-track-index="{TRACK_CAPTION}">'
@@ -155,41 +249,52 @@ def _scene_mounts(mounts: Sequence[dict]) -> list[str]:
 
 
 def _spine_css(theme: scene_kit.Theme) -> str:
+    paper_style = theme.name == "shanshui"
+    caption_radius = "5px" if paper_style else "14px"
+    caption_shadow = (
+        "0 14px 42px rgba(78,55,31,.16)" if paper_style
+        else "0 12px 44px rgba(0,0,0,.45)"
+    )
+    caption_border = "2px solid rgba(78,105,90,.18)" if paper_style else "0 solid transparent"
+    progress_from = scene_kit.accent_hex("amber", theme)
+    progress_to = scene_kit.accent_hex("teal" if paper_style else "coral", theme)
+    brand_alpha = 0.78 if paper_style else 0.45
     return f"""
       * {{ margin:0; padding:0; box-sizing:border-box; }}
       html, body {{ width:1920px; height:1080px; overflow:hidden; background:{theme.bg}; }}
-      .scene-mount {{ position:absolute; inset:0; }}
+      .scene-mount {{ position:absolute; inset:0; z-index:1; isolation:isolate; }}
 
       .caption {{
         position:absolute; left:210px; right:210px; bottom:96px;
         display:flex; justify-content:center; align-items:flex-end;
-        text-align:center; pointer-events:none;
+        text-align:center; pointer-events:none; z-index:20;
       }}
       .caption-inner {{
         font:500 34px {scene_kit.SANS}; line-height:1.36;
         color:{theme.caption_ink};
         background:{theme.caption_bg};
-        padding:14px 30px; border-radius:14px;
-        box-shadow:0 12px 44px rgba(0,0,0,.45);
-        max-width:1360px;
+        padding:14px 30px; border-radius:{caption_radius};
+        border:{caption_border}; box-shadow:{caption_shadow};
+        max-width:1360px; white-space:nowrap;
+        overflow:hidden; text-overflow:ellipsis;
       }}
 
-      .chrome {{ position:absolute; inset:0; pointer-events:none; }}
+      .chrome {{ position:absolute; inset:0; pointer-events:none; z-index:40; }}
       .progress-track {{
         position:absolute; left:0; right:0; bottom:0; height:6px;
         background:rgba(128,128,128,.18);
       }}
       .progress-fill {{
         height:100%; width:100%; transform-origin:0 50%;
-        background:linear-gradient(90deg, {scene_kit.ACCENTS["amber"]}, {scene_kit.ACCENTS["coral"]});
+        background:linear-gradient(90deg, {progress_from}, {progress_to});
       }}
-      .character {{ position:absolute; right:64px; bottom:132px; width:210px; height:210px;
+      .character {{ position:absolute; right:64px; bottom:132px; width:210px; height:210px; z-index:30;
         pointer-events:none; }}
       .character #character-stage {{ width:100%; height:100%; }}
       .brand {{
         position:absolute; left:56px; bottom:36px;
         font:600 22px {scene_kit.SANS}; letter-spacing:.18em; text-transform:uppercase;
-        color:{scene_kit._rgba(theme.ink, 0.45)};
+        color:{scene_kit._rgba(theme.ink, brand_alpha)};
       }}
 """
 
@@ -202,6 +307,7 @@ def build_spine(
     brand: str = "",
     theme: scene_kit.Theme = scene_kit.DEFAULT_THEME,
     character_src: str | None = None,
+    captions_enabled: bool = True,
 ) -> str:
     """The root composition: mounts, captions, audio, progress chrome.
 
@@ -215,7 +321,7 @@ def build_spine(
     audio_duration = float(storyboard["audio_duration"])
 
     mount_tags = _scene_mounts(mounts)
-    captions = _caption_clips(storyboard)
+    captions = _caption_clips(storyboard) if captions_enabled else []
 
     brand_html = (
         f'        <div class="brand">{_esc(brand)}</div>\n' if brand else ""

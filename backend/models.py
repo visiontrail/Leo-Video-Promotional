@@ -39,7 +39,10 @@ class TaskConfig(BaseModel):
     voice_1: str = "Carter"
     voice_2: str = "Alice"
     include_character: bool = False
-    tts_model: str = "vibevoice-1.5b"
+    # Captions historically rendered for every task. Keep that behaviour for
+    # older clients while allowing new tasks to opt out explicitly.
+    captions_enabled: bool = True
+    tts_model: str = "vibevoice-0.5b"
     video_template: str = "podcast"
     processing_mode: str = "full_text"
     ai_endpoint: Optional[str] = None
@@ -54,9 +57,12 @@ class TaskConfig(BaseModel):
     footage_clip_count: int = Field(default=3, ge=1, le=6)
     footage_orientation: str = "landscape"
     footage_multimodal_analyzer: str = "gemini_web"
-    # Skip the audio review pause and go straight from TTS into compose. The
-    # default keeps the review step so existing clients are unaffected.
-    auto_render: bool = False
+    # Generate a script-driven cover through the signed-in ChatGPT web app.
+    # This runs before TTS and can therefore be tested independently.
+    thumbnail_enabled: bool = True
+    # Skip the audio review pause and go straight from TTS into compose by
+    # default. Clients can still opt into a manual review explicitly.
+    auto_render: bool = True
 
 
 class TaskCreate(BaseModel):
@@ -88,6 +94,7 @@ class TaskResponse(BaseModel):
     script_path: Optional[str] = None
     audio_path: Optional[str] = None
     video_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
     duration_seconds: Optional[float] = None
 
 

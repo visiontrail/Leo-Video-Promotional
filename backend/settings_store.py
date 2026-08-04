@@ -123,6 +123,12 @@ GROUPS: tuple[SettingGroup, ...] = (
         "Web-platform clips retain a source ledger and require rights review.",
     ),
     SettingGroup(
+        "thumbnail",
+        "Viral Thumbnail",
+        "Script-driven cover art generated in the signed-in ChatGPT web app. "
+        "The editable art-direction formula lives in the Prompts tab.",
+    ),
+    SettingGroup(
         "paths",
         "Paths & Storage",
         "Where the app reads and writes. Relative paths resolve under the "
@@ -350,7 +356,7 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         "WEB_FOOTAGE_ENABLED", "footage", "Web footage", "bool",
-        description="Allow Bilibili and YouTube discovery in hybrid footage mode.",
+        description="Allow YouTube discovery in hybrid footage mode.",
     ),
     SettingSpec(
         "WEB_FOOTAGE_GEMINI_ENABLED", "footage", "Gemini web analysis", "bool",
@@ -367,6 +373,12 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "WEB_FOOTAGE_DOWNLOAD_TIMEOUT", "footage", "Web download timeout", "int", unit="seconds",
         minimum=30, maximum=3600,
+    ),
+    # ── Thumbnail ─────────────────────────────────────────────────────────
+    SettingSpec(
+        "THUMBNAIL_CHATGPT_TIMEOUT", "thumbnail", "ChatGPT image timeout", "int",
+        unit="seconds", minimum=30, maximum=1800,
+        description="Maximum time to wait for ChatGPT Web to generate and export the cover image.",
     ),
     # ── Paths ────────────────────────────────────────────────────────────
     SettingSpec(

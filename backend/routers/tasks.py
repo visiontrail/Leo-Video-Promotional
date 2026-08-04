@@ -107,8 +107,8 @@ async def get_task_footage(task_id: str):
     provider_id = task.config.footage_provider
     uses_web = provider_id in {"hybrid", "opencli_web"}
     provider = {
-        "hybrid": "Hybrid: Wikimedia Commons + OpenCLI Web",
-        "opencli_web": "OpenCLI Web: Bilibili + YouTube",
+        "hybrid": "Hybrid: Wikimedia Commons + YouTube",
+        "opencli_web": "YouTube: yt-dlp + Gemini Web",
     }.get(provider_id, "Wikimedia Commons")
     return {
         "task_id": task_id,
@@ -122,7 +122,7 @@ async def get_task_footage(task_id: str):
         ),
         "rights_review_required": uses_web,
         "publication_blockers": (
-            ["Review reuse rights for every Bilibili/YouTube clip before publication"]
+            ["Review reuse rights for every YouTube clip before publication"]
             if uses_web else []
         ),
         "requested_clip_count": task.config.footage_clip_count,
@@ -189,6 +189,34 @@ async def download_video(task_id: str):
     if not path.exists():
         raise HTTPException(404, "Video file missing")
     return FileResponse(path, media_type="video/mp4", filename=f"{task_id}.mp4")
+
+
+@router.get("/{task_id}/thumbnail")
+async def download_thumbnail(task_id: str):
+    task = await db.get_task(task_id)
+    if not task or not task.thumbnail_path:
+        raise HTTPException(404, "Thumbnail not available")
+    path = Path(task.thumbnail_path)
+    if not path.is_file():
+        raise HTTPException(404, "Thumbnail file missing")
+    media_type = {
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(path.suffix.lower(), "image/jpeg")
+    return FileResponse(path, media_type=media_type, filename=f"{task_id}_thumbnail{path.suffix}")
+
+
+@router.get("/{task_id}/thumbnail/prompt")
+async def download_thumbnail_prompt(task_id: str):
+    task = await db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    out_dir = Path(task.output_dir) if task.output_dir else app_config.OUTPUTS_DIR / task_id
+    path = out_dir / "thumbnail" / "prompt.txt"
+    if not path.is_file():
+        raise HTTPException(404, "Thumbnail prompt not available")
+    return FileResponse(path, media_type="text/plain", filename=f"{task_id}_thumbnail_prompt.txt")
 
 
 @router.get("/{task_id}/audio")

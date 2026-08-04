@@ -3614,6 +3614,16 @@ video {
   margin-top: 12px;
 }
 
+.thumbnail-result img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--surface-muted);
+  object-fit: cover;
+}
+
 .detail-hint {
   margin: 10px 0 0;
   color: var(--text-dim);

@@ -86,6 +86,38 @@ def test_theme_selection_changes_surface_colours():
     assert sk.resolve_theme("nope") is sk.DEFAULT_THEME
 
 
+def test_shanshui_theme_uses_the_account_art_visual_language():
+    theme = sk.resolve_theme("shanshui")
+    html = sk.render_scene(
+        plan(
+            theme=theme,
+            archetype="topic",
+            kicker="CONNECTIONS",
+            body="Ideas become paths through a changing landscape.",
+            motif="arcs",
+            accent="sky",
+        )
+    )
+
+    assert theme is sk.THEMES["shanshui"]
+    assert 'class="shanshui-backdrop"' in html
+    assert "paper-grain" in html
+    assert 'class="shanshui-terrain"' in html
+    assert 'class="shanshui-routes"' in html
+    assert 'class="shanshui-nodes"' in html
+    assert "strokeDashoffset" in html
+    assert sk.accent_hex("sky", theme) in html
+    assert sk.ACCENTS["sky"] not in html
+    assert validate_scene_html(html, "scene-01") == []
+
+
+def test_shanshui_accents_stay_inside_the_muted_banner_palette():
+    theme = sk.THEMES["shanshui"]
+    assert sk.accent_hex("amber", theme) == "#B46F35"
+    assert sk.accent_hex("teal", theme) == "#4E695A"
+    assert sk.accent_hex("unknown", theme) == "#B46F35"
+
+
 def test_copy_is_html_escaped():
     html = sk.render_scene(plan(headline='Rats & <script>alert("x")</script>'))
     assert "<script>alert" not in html

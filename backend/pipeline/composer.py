@@ -167,6 +167,7 @@ async def compose_video(
     output_dir: str,
     title: str = "Podcast Episode",
     include_character: bool = False,
+    captions_enabled: bool = True,
     video_template: str = "podcast",
     is_monologue: bool = False,
     ai_endpoint: str | None = None,
@@ -286,6 +287,7 @@ async def compose_video(
         brand=BRAND,
         theme=theme,
         character_src=character_src,
+        captions_enabled=captions_enabled,
     )
     composition_path = assembler.write_spine(output_dir_path, spine)
     emit(f"Composition written to {composition_path}")

@@ -7,6 +7,7 @@ export interface TaskConfig {
   voice_1: string;
   voice_2: string;
   include_character: boolean;
+  captions_enabled?: boolean;
   tts_model?: string;
   video_template?: string;
   processing_mode?: string;
@@ -19,6 +20,7 @@ export interface TaskConfig {
   footage_clip_count?: number;
   footage_orientation?: 'landscape' | 'portrait';
   footage_multimodal_analyzer?: 'gemini_web';
+  thumbnail_enabled?: boolean;
   auto_render?: boolean;
 }
 
@@ -69,6 +71,7 @@ export interface Task {
   script_path: string | null;
   audio_path: string | null;
   video_path: string | null;
+  thumbnail_path: string | null;
   duration_seconds: number | null;
 }
 
@@ -463,6 +466,14 @@ export function audioUrl(taskId: string): string {
 
 export function scriptUrl(taskId: string): string {
   return `${BASE}/api/tasks/${taskId}/script`;
+}
+
+export function thumbnailUrl(taskId: string): string {
+  return `${BASE}/api/tasks/${taskId}/thumbnail`;
+}
+
+export function thumbnailPromptUrl(taskId: string): string {
+  return `${BASE}/api/tasks/${taskId}/thumbnail/prompt`;
 }
 
 export function logsStreamUrl(taskId: string): string {

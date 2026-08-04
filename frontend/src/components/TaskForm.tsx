@@ -8,7 +8,7 @@ import { countdown, formatStart, localInputToIso, toLocalInputValue } from '../s
 import { IconPlay, IconStop } from './Icons'
 
 type SourceType = 'youtube' | 'epub' | 'pdf'
-type VideoTemplate = 'podcast' | 'kinetic' | 'swiss' | 'minimal'
+type VideoTemplate = 'podcast' | 'kinetic' | 'swiss' | 'minimal' | 'shanshui'
 type ScriptFormat = 'monologue' | 'dialogue'
 type FootageProvider = 'wikimedia' | 'hybrid' | 'opencli_web'
 
@@ -79,14 +79,15 @@ function VoiceField({ label, value, onChange, voices, playing, onPreview }: Voic
   )
 }
 
-/* The template picks the theme the scene compositions are drawn in. Layout and
-   artwork come from the storyboard and the authoring agents, so these differ by
-   surface colour and contrast, not by structure. */
+/* The template picks the visual system used by deterministic scenes and the
+   authoring agents. Most vary the surface treatment; Shan Shui also introduces
+   its own paper, terrain, contour, and route-mark layers. */
 const VIDEO_TEMPLATES: Array<{ key: VideoTemplate; name: string; description: string }> = [
   { key: 'podcast', name: 'Documentary', description: 'Deep navy with warm ink — the default look' },
   { key: 'kinetic', name: 'Kinetic', description: 'Near-black and high contrast for punchy statement cuts' },
   { key: 'swiss', name: 'Swiss Grid', description: 'Paper-white editorial with dark type' },
   { key: 'minimal', name: 'Minimal', description: 'Restrained washes, type does the work' },
+  { key: 'shanshui', name: 'Shan Shui', description: 'Rice paper, ink-green contours and ochre route lines' },
 ]
 
 const SOURCE_LABEL: Record<SourceType, string> = { youtube: 'YouTube', epub: 'EPUB', pdf: 'PDF' }
@@ -118,11 +119,13 @@ export default function TaskForm() {
   const [scriptFormat, setScriptFormat] = useState<ScriptFormat>('monologue')
   const [voice1, setVoice1] = useState('Carter')
   const [voice2, setVoice2] = useState('Alice')
-  const [ttsModel, setTtsModel] = useState('vibevoice-1.5b')
+  const [ttsModel, setTtsModel] = useState('vibevoice-0.5b')
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
   const [processingMode, setProcessingMode] = useState<'full_text' | 'curated_highlights'>('full_text')
   const [character, setCharacter] = useState(false)
-  const [autoRender, setAutoRender] = useState(false)
+  const [captionsEnabled, setCaptionsEnabled] = useState(true)
+  const [thumbnailEnabled, setThumbnailEnabled] = useState(true)
+  const [autoRender, setAutoRender] = useState(true)
   const [footageEnabled, setFootageEnabled] = useState(true)
   const [footageProvider, setFootageProvider] = useState<FootageProvider>('hybrid')
   const [footageClipCount, setFootageClipCount] = useState(3)
@@ -214,6 +217,7 @@ export default function TaskForm() {
         video_template: videoTemplate,
         processing_mode: sourceType === 'epub' ? processingMode : 'full_text',
         include_character: character,
+        captions_enabled: captionsEnabled,
         provider_id: providerId,
         footage_enabled: footageEnabled,
         footage_provider: footageProvider,
@@ -221,6 +225,7 @@ export default function TaskForm() {
         footage_clip_count: footageClipCount,
         footage_orientation: footageOrientation,
         footage_multimodal_analyzer: 'gemini_web',
+        thumbnail_enabled: thumbnailEnabled,
         auto_render: autoRender,
       }
       return createTask(
@@ -257,8 +262,14 @@ export default function TaskForm() {
       : []),
     { label: 'Extract', note: `Pull text from the ${SOURCE_LABEL[sourceType]} source`, on: true },
     { label: 'Digest', note: isMonologue ? 'Write a solo talk-show script' : 'Write a two-host dialogue script', on: true },
+    { label: 'Thumbnail', note: thumbnailEnabled ? 'Generate cover art through ChatGPT Web' : 'Skipped — cover generation is off', on: thumbnailEnabled },
     { label: 'Footage', note: footageEnabled ? `Scout ${footageClipCount} clips via ${footageProvider === 'wikimedia' ? 'Commons' : footageProvider === 'hybrid' ? 'Commons + web' : 'web platforms'}` : 'Skipped — media scout is off', on: footageEnabled },
     { label: 'Voice', note: `Synthesise with VibeVoice ${is05b ? '0.5B' : '1.5B'}`, on: true },
+    {
+      label: 'Captions',
+      note: captionsEnabled ? 'Show concise, single-line captions' : 'Skipped — captions are off',
+      on: captionsEnabled,
+    },
     {
       label: 'Review',
       note: autoRender ? 'Skipped — render starts without approval' : 'Pause for your audio approval',
@@ -276,6 +287,8 @@ export default function TaskForm() {
     ['Voice', isMonologue ? voice1 : `${voice1} · ${voice2}`],
     ['Engine', is05b ? '0.5B' : '1.5B'],
     ['Template', VIDEO_TEMPLATES.find((t) => t.key === videoTemplate)!.name],
+    ['Captions', captionsEnabled ? 'On · single line' : 'Off'],
+    ['Thumbnail', thumbnailEnabled ? 'ChatGPT Web' : 'Off'],
     ['B-roll', footageEnabled ? `${footageClipCount} · ${footageProvider === 'hybrid' ? 'Hybrid' : footageProvider === 'wikimedia' ? 'Commons' : 'Web'}` : 'Off'],
     ['Review', autoRender ? 'Auto-render' : 'Manual'],
   ]
@@ -635,6 +648,48 @@ export default function TaskForm() {
               </div>
             </article>
 
+            <article className="wb-panel">
+              <h3>Captions</h3>
+              <div className="footage-config-head">
+                <p>
+                  {captionsEnabled
+                    ? 'Show concise captions as one line at a time.'
+                    : 'Render the video without captions.'}
+                </p>
+                <label className="footage-toggle">
+                  <input
+                    type="checkbox"
+                    checked={captionsEnabled}
+                    onChange={(event) => setCaptionsEnabled(event.target.checked)}
+                    aria-label="Include captions"
+                  />
+                  <span aria-hidden="true" />
+                  <b>{captionsEnabled ? 'On' : 'Off'}</b>
+                </label>
+              </div>
+            </article>
+
+            <article className="wb-panel">
+              <h3>Viral thumbnail</h3>
+              <div className="footage-config-head">
+                <p>
+                  {thumbnailEnabled
+                    ? 'Turn the final narration script into a 16:9 cover through ChatGPT Web.'
+                    : 'Skip automatic cover generation.'}
+                </p>
+                <label className="footage-toggle">
+                  <input
+                    type="checkbox"
+                    checked={thumbnailEnabled}
+                    onChange={(event) => setThumbnailEnabled(event.target.checked)}
+                    aria-label="Generate viral thumbnail"
+                  />
+                  <span aria-hidden="true" />
+                  <b>{thumbnailEnabled ? 'On' : 'Off'}</b>
+                </label>
+              </div>
+            </article>
+
             {providers.length > 0 && (
               <article className="wb-panel">
                 <h3>AI provider</h3>
@@ -647,7 +702,7 @@ export default function TaskForm() {
                     <option key={p.id} value={p.id}>{p.name} — {p.model}</option>
                   ))}
                 </select>
-                <small className="wb-hint">Drives script digestion and the media scout.</small>
+                <small className="wb-hint">Drives script digestion, thumbnail direction, and the media scout.</small>
               </article>
             )}
 
@@ -677,16 +732,16 @@ export default function TaskForm() {
                       value={footageProvider}
                       onChange={(event) => setFootageProvider(event.target.value as FootageProvider)}
                     >
-                      <option value="hybrid">Hybrid — Commons + Bilibili + YouTube</option>
+                      <option value="hybrid">Hybrid — Commons + YouTube</option>
                       <option value="wikimedia">Wikimedia Commons only</option>
-                      <option value="opencli_web">Bilibili + YouTube only</option>
+                      <option value="opencli_web">YouTube only</option>
                     </select>
                   </div>
 
                   <div className="source-readiness">
                     <span className="source-monogram">OC</span>
                     <span>
-                      <strong>{footageProvider === 'wikimedia' ? 'Wikimedia Commons' : 'OpenCLI web scout'}</strong>
+                      <strong>{footageProvider === 'wikimedia' ? 'Wikimedia Commons' : 'YouTube web scout'}</strong>
                       <small>{footageProvider === 'wikimedia' ? 'Explicit open-license metadata' : 'Gemini trim analysis · FFmpeg edits'}</small>
                     </span>
                     <em>Project local</em>

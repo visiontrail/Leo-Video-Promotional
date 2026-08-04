@@ -13,6 +13,7 @@ from backend.pipeline.digester import summarize, generate_script
 from backend.pipeline.tts import generate_tts
 from backend.pipeline.composer import compose_video
 from backend.pipeline.footage import acquire_footage
+from backend.pipeline.thumbnail import generate_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,29 @@ async def _acquire_task_footage(
         supplied_queries=supplied_queries,
         log=task_log,
     )
+
+
+async def _generate_task_thumbnail(
+    task: TaskResponse,
+    task_dir: Path,
+    task_log: LogCallback,
+    *,
+    title: str,
+):
+    script_path = Path(task.script_path or task_dir / "script.txt")
+    artifact = await generate_thumbnail(
+        task_id=task.id,
+        task_dir=task_dir,
+        title=title,
+        script_path=script_path,
+        provider_id=task.config.provider_id,
+        ai_endpoint=task.config.ai_endpoint,
+        ai_model=task.config.ai_model,
+        log=task_log,
+    )
+    await update_task(task.id, thumbnail_path=artifact.image_path)
+    task.thumbnail_path = artifact.image_path
+    return artifact
 
 
 async def _after_audio(
@@ -144,7 +168,25 @@ async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     script_path = str(task_dir / "script.txt")
     Path(script_path).write_text(script)
     await update_task(task.id, script_path=script_path)
+    task.script_path = script_path
     task_log(f"Script saved to {script_path}")
+
+    # Stage 2.25: use the final narration (the exact TTS input) to derive one
+    # cover-art prompt, then generate/download the image through the signed-in
+    # ChatGPT web session. Cover art is an enhancement, so a web/provider
+    # outage is recorded in thumbnail/manifest.json but never discards a valid
+    # script or forces a costly TTS retry.
+    if task.config.thumbnail_enabled:
+        task_log("Stage 2.25: Generating script-driven viral thumbnail")
+        try:
+            await _generate_task_thumbnail(
+                task,
+                task_dir,
+                task_log,
+                title=content.title,
+            )
+        except Exception as exc:
+            task_log(f"Thumbnail generation could not complete; continuing without cover art: {exc}")
 
     # Stage 2.5: AI-planned public B-roll. Footage is a production enhancement,
     # not a reason to lose an otherwise valid narration, so provider/network
@@ -198,6 +240,20 @@ async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
         raise FileNotFoundError(f"No script to regenerate from at {script_path}")
 
     title = task.source_title or task.id
+
+    # Keep cover art aligned with an edited script. This still precedes the TTS
+    # subprocess, so a thumbnail failure consumes no model-synthesis memory.
+    if task.config.thumbnail_enabled:
+        task_log("Regenerate: Updating viral thumbnail from edited script")
+        try:
+            await _generate_task_thumbnail(
+                task,
+                task_dir,
+                task_log,
+                title=title,
+            )
+        except Exception as exc:
+            task_log(f"Regenerate: Thumbnail update failed; retaining prior cover: {exc}")
 
     # Stage 3: TTS
     task_log(f"Regenerate: Generating TTS audio with {task.config.tts_model}")
@@ -276,6 +332,7 @@ async def run_compose(task: TaskResponse, log: LogCallback | None = None):
         output_dir=str(task_dir),
         title=title,
         include_character=task.config.include_character,
+        captions_enabled=task.config.captions_enabled,
         video_template=task.config.video_template,
         is_monologue=task.config.script_format == ScriptFormat.MONOLOGUE,
         # The compose stage now runs its own AI calls (art direction, then the

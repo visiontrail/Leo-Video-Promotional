@@ -90,6 +90,39 @@ def test_captions_are_escaped():
     assert "&lt;b&gt;" in html
 
 
+def test_captions_can_be_disabled():
+    lines = [{"start": 0.0, "duration": 2.0, "text": "hidden caption", "speaker": 1}]
+    html = assembler.build_spine(
+        board([scene("scene-01", 0.0, 2.0, lines)]),
+        audio_src="a.wav",
+        mounts=[{"id": "scene-01", "start": 0.0, "duration": 2.0}],
+        captions_enabled=False,
+    )
+    assert 'class="clip caption"' not in html
+    assert "hidden caption" not in html
+
+
+def test_long_captions_are_split_into_short_single_line_groups():
+    text = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+    html = assembler.build_spine(
+        board([scene("scene-01", 0.0, 8.0, [{"start": 0.0, "duration": 8.0, "text": text}])]),
+        audio_src="a.wav",
+        mounts=[{"id": "scene-01", "start": 0.0, "duration": 8.0}],
+    )
+    captions = re.findall(r'<span class="caption-inner">([^<]+)</span>', html)
+    assert len(captions) == 3
+    assert all(len(caption.split()) <= assembler.CAPTION_MAX_WORDS for caption in captions)
+    assert "white-space:nowrap" in html
+    assert "text-overflow:ellipsis" in html
+
+
+def test_unspaced_cjk_captions_are_split_to_the_character_limit():
+    text = "这是一段很长的中文字幕用于验证字幕始终只占一行并且会按照可读长度自动拆分成多个连续的字幕时间片"
+    chunks = assembler._caption_chunks(text)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= assembler.CAPTION_MAX_CJK_CHARS for chunk in chunks)
+
+
 def test_audio_starts_after_the_title_card():
     data = board([], audio_duration=100.0)
     html = assembler.build_spine(data, audio_src="audio/n.wav", mounts=[])
@@ -114,3 +147,15 @@ def test_theme_reaches_the_spine():
         board([]), audio_src="a.wav", mounts=[], theme=scene_kit.THEMES["swiss"]
     )
     assert scene_kit.THEMES["swiss"].bg in html
+
+
+def test_shanshui_spine_uses_paper_caption_and_muted_progress_colours():
+    theme = scene_kit.THEMES["shanshui"]
+    html = assembler.build_spine(board([]), audio_src="a.wav", mounts=[], theme=theme)
+
+    assert theme.caption_bg in html
+    assert "border:2px solid rgba(78,105,90,.18)" in html
+    assert scene_kit.accent_hex("amber", theme) in html
+    assert scene_kit.accent_hex("teal", theme) in html
+    assert ".scene-mount { position:absolute; inset:0; z-index:1" in html
+    assert "pointer-events:none; z-index:20" in html

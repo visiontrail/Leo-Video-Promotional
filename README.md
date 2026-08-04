@@ -4,8 +4,9 @@ A local agent that turns a **YouTube video, EPUB, or PDF** into a short **podcas
 The primary output is a **solo talk-show monologue** (a single host talking to the audience);
 a two-host dialogue format is also available.
 
-Pipeline: **source extract → AI digest → script → rights-ledgered footage scout → VibeVoice TTS →
-storyboard → art direction → agent-authored scenes → HyperFrames video render**.
+Pipeline: **source extract → AI digest → script → ChatGPT Web viral thumbnail → rights-ledgered
+footage scout → VibeVoice TTS → storyboard → art direction → agent-authored scenes → HyperFrames
+video render**.
 
 ## Architecture
 
@@ -75,7 +76,7 @@ Tuning (Admin -> System -> Video Direction):
 
 - **Agent direction** off — skip the crews and render the deterministic scenes.
 - **Max directed scenes** `N` — hand only the first N scenes to agents (`0` = all).
-- The task's `video_template` (`podcast` / `kinetic` / `swiss` / `minimal`) selects the theme.
+- The task's `video_template` (`podcast` / `kinetic` / `swiss` / `minimal` / `shanshui`) selects the theme. `shanshui` adds the rice-paper, layered ink-green terrain and ochre route-line language used by the account artwork.
 
 This runs as a **single-port production service**: one backend process serves both the API and
 the UI, so there is only **one URL to open**.
@@ -167,18 +168,18 @@ On the New Task form, **Format** is the first choice:
 
 The number of voice pickers follows the format automatically.
 
-## Footage scout: Commons + Bilibili + YouTube
+## Footage scout: Commons + YouTube
 
 New tasks can enable **Public Footage** and choose a source strategy:
 
-- **Hybrid** (default) fills from Wikimedia Commons first, then uses Bilibili and YouTube.
+- **Hybrid** (default) fills from Wikimedia Commons first, then uses YouTube.
 - **Wikimedia only** keeps the original explicit-open-license path.
-- **Web platforms** uses Bilibili through OpenCLI and YouTube through the project `yt-dlp`.
+- **YouTube only** discovers and downloads clips through the project `yt-dlp`.
 
 After scriptwriting, the configured AI provider produces concrete B-roll queries. For YouTube
 candidates the scout asks the signed-in Gemini web app, through OpenCLI, to select a coherent
-interval for the matching narration excerpt. Gemini failures, unsupported Bilibili links, and
-timeouts are recorded in the manifest and fall back to a deterministic non-intro interval.
+interval for the matching narration excerpt. If OpenCLI's initial wait expires, the scout polls
+the same conversation for the late assistant JSON before recording a failure and falling back.
 FFmpeg then trims, crops, removes source audio, normalizes to H.264/YUV420p, and writes three
 evidence frames. The resulting `footage/manifest.json` records the source URL, creator, exact
 trim, analyzer result, script excerpt, dimensions, duration, byte size, SHA-256, and local path.
@@ -187,10 +188,32 @@ The scout requires no stock-media API key. Its Wikimedia branch only accepts fil
 Public Domain, CC0, CC BY, or CC BY-SA metadata. The task detail page previews downloaded files
 and supports retrying the footage stage without re-running extraction, scriptwriting, or TTS.
 
-Platform downloadability is **not** treated as permission to republish. Every Bilibili/YouTube
+Platform downloadability is **not** treated as permission to republish. Every YouTube
 entry is marked `review_required`, and the manifest/UI includes a publication blocker until a
 human verifies the creator's reuse terms. Prefer creator-provided downloads, Creative Commons
 uploads, and short transformative excerpts; comply with platform terms and local law.
+
+### Script-driven viral thumbnail
+
+After the final narration script is saved—and before any TTS model is loaded—the pipeline asks
+the configured AI provider to turn that exact script into one focused cover-art prompt. The
+project-local OpenCLI `chatgpt image` adapter sends it to the signed-in ChatGPT web app, exports
+the generated image, and saves everything under the task output directory:
+
+```text
+thumbnail/prompt.txt
+thumbnail/images/chatgpt_<timestamp>.png
+thumbnail/manifest.json
+```
+
+The task API exposes the primary image as `/api/tasks/<id>/thumbnail` and the final prompt as
+`/api/tasks/<id>/thumbnail/prompt`; the task detail page shows both alongside the final cut. New
+tasks enable thumbnail generation by default and can switch it off in Production setup.
+
+The master formula is [backend/prompts/thumbnail.txt](backend/prompts/thumbnail.txt). It is also
+editable live in **Admin → Prompts → Viral Thumbnail Formula**, so composition rules can be tuned
+without a restart or code change. ChatGPT image generation has its own timeout in **Admin →
+System → Viral Thumbnail**.
 
 ### Project-local OpenCLI setup
 
@@ -200,12 +223,12 @@ project's `video-web-footage` workflow live only under `.claude/skills/`, which 
 skill path used by the Claude Agent SDK.
 
 Install or enable the official **OpenCLI Browser Bridge** Chrome extension once, keep Chrome
-open with the desired Bilibili/Gemini sessions signed in, then verify the project wrapper:
+open with the desired Gemini and ChatGPT sessions signed in, then verify the project wrapper:
 
 ```bash
 ./scripts/opencli.sh doctor
-./scripts/opencli.sh bilibili search "Singapore skyline" --limit 3 -f json
 ./scripts/opencli.sh gemini status -f json
+./scripts/opencli.sh chatgpt status -f json
 ```
 
 No command in the pipeline invokes a global `opencli`; the SDK process prepends this repository's

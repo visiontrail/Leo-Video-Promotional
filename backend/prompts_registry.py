@@ -82,6 +82,17 @@ PROMPT_REGISTRY: list[PromptSpec] = [
         variables=[],
     ),
     PromptSpec(
+        key="thumbnail",
+        file="thumbnail.txt",
+        label="Viral Thumbnail Formula",
+        stage="Thumbnail",
+        description=(
+            "Turns the final audio narration script into one high-impact 16:9 "
+            "ChatGPT image prompt. Edit this formula to tune every future cover."
+        ),
+        variables=[],
+    ),
+    PromptSpec(
         key="visual_plan",
         file="visual_plan.txt",
         label="Scene Art Direction",

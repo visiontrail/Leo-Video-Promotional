@@ -173,8 +173,28 @@ Report at the end with one line per scene: the scene id and the visual idea.
 """
 
 
-def _scene_brief(scene: dict, plan: dict) -> str:
-    accent = scene_kit.accent_hex(plan.get("accent"))
+def _system_prompt(theme: scene_kit.Theme) -> str:
+    """Give authoring crews the selected template instead of a dark default."""
+    prompt = SYSTEM_PROMPT.replace("background:#0B0D17;", f"background:{theme.bg};")
+    prompt = prompt.replace(
+        "- Palette: background #0B0D17, ink #F5F2EA, muted #98A1BA. Use the accent colour\n"
+        "  given in each scene's brief for emphasis, rules, and artwork.",
+        f"- Palette: background {theme.bg}, ink {theme.ink}, muted {theme.muted}. Use the accent colour\n"
+        "  given in each scene's brief for emphasis, rules, and artwork.",
+    )
+    if theme.name == "shanshui":
+        prompt = prompt.replace(
+            "- Draw with SVG, CSS gradients, and shapes.",
+            "- Shan Shui template: evoke warm rice paper, layered organic terrain in sand, sage, and ink green, "
+            "fine topographic veins, plus thin ochre route arcs with solid circular nodes. Motion is contemplative: "
+            "slow terrain drift, route-line drawing, and soft reveals. Avoid neon, glossy UI, rounded cards, and "
+            "generic geometric blobs.\n- Draw with SVG, CSS gradients, and shapes.",
+        )
+    return prompt
+
+
+def _scene_brief(scene: dict, plan: dict, theme: scene_kit.Theme) -> str:
+    accent = scene_kit.accent_hex(plan.get("accent"), theme)
     lines = [
         f"## {scene['id']}  —  {scene['duration']:.1f} seconds",
         f"accent: {plan.get('accent', 'amber')} ({accent})",
@@ -203,8 +223,9 @@ def _batch_prompt(
     *,
     batch_no: int,
     batch_total: int,
+    theme: scene_kit.Theme,
 ) -> str:
-    briefs = "\n\n".join(_scene_brief(scene, plan) for scene, plan in batch)
+    briefs = "\n\n".join(_scene_brief(scene, plan, theme) for scene, plan in batch)
     ids = ", ".join(scene["id"] for scene, _ in batch)
     return f"""Episode: {storyboard.get('title', '')}
 Thesis: {storyboard.get('thesis', '')}
@@ -240,7 +261,12 @@ def validate_scene_html(text: str, scene_id: str) -> list[str]:
     return problems
 
 
-def _agent_options(task_dir: Path, model: str | None, env: dict[str, str]):
+def _agent_options(
+    task_dir: Path,
+    model: str | None,
+    env: dict[str, str],
+    system_prompt: str = SYSTEM_PROMPT,
+):
     from claude_agent_sdk import ClaudeAgentOptions
 
     # File tools only. The HyperFrames CLI is run by the pipeline, not the agent,
@@ -257,7 +283,7 @@ def _agent_options(task_dir: Path, model: str | None, env: dict[str, str]):
         allowed.extend(f"Skill({name})" for name in framework_skills)
 
     options: dict = {
-        "system_prompt": SYSTEM_PROMPT,
+        "system_prompt": system_prompt,
         "model": model,
         "cwd": str(task_dir),
         "tools": tools,
@@ -289,12 +315,13 @@ async def _run_agent(
     env: dict[str, str],
     log: LogCallback | None,
     label: str = "authoring",
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> tuple[list[str], str | None]:
     """One agent session over one slice. Returns (scene ids it claimed, error)."""
     from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
 
     ids = list(ids)
-    options = _agent_options(task_dir, model, env)
+    options = _agent_options(task_dir, model, env, system_prompt)
     stderr_lines: list[str] = []
     options.stderr = stderr_lines.append
 
@@ -346,6 +373,7 @@ async def direct_scenes(
     outcome = DirectorOutcome()
     scenes = {scene["id"]: scene for scene in storyboard.get("scenes", [])}
     kit_by_id = {plan.id: plan for plan in kit_plans}
+    theme = next(iter(kit_by_id.values())).theme if kit_by_id else scene_kit.DEFAULT_THEME
 
     pairs = [(scenes[plan["id"]], plan) for plan in plans if plan["id"] in scenes]
     if not pairs:
@@ -377,13 +405,20 @@ async def direct_scenes(
         async with gate:
             return await _run_agent(
                 task_dir,
-                _batch_prompt(storyboard, batch, batch_no=batch_no, batch_total=len(batches)),
+                _batch_prompt(
+                    storyboard,
+                    batch,
+                    batch_no=batch_no,
+                    batch_total=len(batches),
+                    theme=theme,
+                ),
                 [scene["id"] for scene, _ in batch],
                 batch_no=batch_no,
                 batch_total=len(batches),
                 model=resolved_model,
                 env=env,
                 log=log,
+                system_prompt=_system_prompt(theme),
             )
 
     results = await asyncio.gather(
