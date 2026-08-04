@@ -50,6 +50,12 @@ FOOTAGE_MAX_BYTES = int(os.getenv("FOOTAGE_MAX_BYTES", str(50 * 1024 * 1024)))
 OPENCLI_BIN = resolve_project_path(os.getenv("OPENCLI_BIN", "scripts/opencli.sh"))
 OPENCLI_PROFILE = os.getenv("OPENCLI_PROFILE", "").strip()
 OPENCLI_TIMEOUT = int(os.getenv("OPENCLI_TIMEOUT", "180"))
+# OpenCode is the optional autonomous planner for account operations. It calls
+# the project-local OpenCLI wrapper through the account-operations skill; the
+# deterministic backend still owns image publishing and result persistence.
+OPENCODE_BIN = os.getenv("OPENCODE_BIN", "opencode").strip() or "opencode"
+OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "600"))
+ACCOUNT_OPS_POLL_SECONDS = int(os.getenv("ACCOUNT_OPS_POLL_SECONDS", "10"))
 # ChatGPT image generation routinely takes longer than simple browser reads.
 THUMBNAIL_CHATGPT_TIMEOUT = int(os.getenv("THUMBNAIL_CHATGPT_TIMEOUT", "360"))
 WEB_FOOTAGE_ENABLED = _env_bool("WEB_FOOTAGE_ENABLED", "1")

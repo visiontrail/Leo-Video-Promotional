@@ -2,7 +2,18 @@ import json
 import aiosqlite
 from datetime import datetime, timezone
 from backend import config
-from backend.models import TaskConfig, TaskResponse, TaskStatus, ProviderResponse, new_task_id
+from backend.models import (
+    AccountAutomationCreate,
+    AccountAutomationResponse,
+    AccountRunResponse,
+    AccountRunStatus,
+    ProviderResponse,
+    TaskConfig,
+    TaskResponse,
+    TaskStatus,
+    new_account_id,
+    new_task_id,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -33,6 +44,55 @@ CREATE TABLE IF NOT EXISTS providers (
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_automations (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    name TEXT NOT NULL,
+    feature_type TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    account_handle TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    schedule_time TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    prompt_template TEXT NOT NULL,
+    executor TEXT NOT NULL,
+    opencode_model TEXT NOT NULL,
+    next_run_at TEXT,
+    last_run_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS account_runs (
+    id TEXT PRIMARY KEY,
+    automation_id TEXT NOT NULL,
+    automation_name TEXT NOT NULL,
+    account_handle TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    scheduled_for TEXT,
+    event_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    title TEXT,
+    post_text TEXT,
+    image_path TEXT,
+    chatgpt_conversation_url TEXT,
+    post_url TEXT,
+    external_post_id TEXT,
+    executor TEXT NOT NULL,
+    content_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT,
+    log_text TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (automation_id) REFERENCES account_automations(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_automations_due
+    ON account_automations(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_account_runs_queue
+    ON account_runs(status, created_at);
 """
 
 
@@ -84,7 +144,12 @@ async def init_db():
             ("Default (settings)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
         )
         await db.commit()
+    automation_count = await db.execute_fetchall(
+        "SELECT COUNT(*) AS c FROM account_automations"
+    )
     await db.close()
+    if automation_count[0]["c"] == 0:
+        await create_account_automation(AccountAutomationCreate())
 
 
 def _row_to_provider(row: aiosqlite.Row) -> ProviderResponse:
@@ -296,3 +361,370 @@ async def get_next_queued_task() -> TaskResponse | None:
     )
     await db.close()
     return _row_to_response(rows[0]) if rows else None
+
+
+def _row_to_account_automation(row: aiosqlite.Row) -> AccountAutomationResponse:
+    return AccountAutomationResponse(
+        id=row["id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        name=row["name"],
+        feature_type=row["feature_type"],
+        platform=row["platform"],
+        account_handle=row["account_handle"],
+        enabled=bool(row["enabled"]),
+        schedule_time=row["schedule_time"],
+        timezone=row["timezone"],
+        prompt_template=row["prompt_template"],
+        executor=row["executor"],
+        opencode_model=row["opencode_model"],
+        next_run_at=row["next_run_at"],
+        last_run_at=row["last_run_at"],
+    )
+
+
+def _row_to_account_run(row: aiosqlite.Row) -> AccountRunResponse:
+    try:
+        content = json.loads(row["content_json"] or "{}")
+    except json.JSONDecodeError:
+        content = {}
+    return AccountRunResponse(
+        id=row["id"],
+        automation_id=row["automation_id"],
+        automation_name=row["automation_name"],
+        account_handle=row["account_handle"],
+        platform=row["platform"],
+        trigger=row["trigger"],
+        status=row["status"],
+        scheduled_for=row["scheduled_for"],
+        event_date=row["event_date"],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        title=row["title"],
+        post_text=row["post_text"],
+        image_path=row["image_path"],
+        chatgpt_conversation_url=row["chatgpt_conversation_url"],
+        post_url=row["post_url"],
+        external_post_id=row["external_post_id"],
+        executor=row["executor"],
+        content=content if isinstance(content, dict) else {},
+        error_message=row["error_message"],
+        log_text=row["log_text"],
+    )
+
+
+async def create_account_automation(
+    automation: AccountAutomationCreate,
+) -> AccountAutomationResponse:
+    from backend.account_ops.schedule import next_daily_run
+
+    automation_id = new_account_id("auto")
+    now = datetime.now(timezone.utc).isoformat()
+    next_run_at = (
+        next_daily_run(automation.schedule_time, automation.timezone)
+        if automation.enabled
+        else None
+    )
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO account_automations (
+               id, created_at, updated_at, name, feature_type, platform,
+               account_handle, enabled, schedule_time, timezone, prompt_template,
+               executor, opencode_model, next_run_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            automation_id,
+            now,
+            now,
+            automation.name,
+            automation.feature_type,
+            automation.platform,
+            automation.account_handle,
+            int(automation.enabled),
+            automation.schedule_time,
+            automation.timezone,
+            automation.prompt_template,
+            automation.executor.value,
+            automation.opencode_model,
+            next_run_at,
+        ),
+    )
+    await db.commit()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM account_automations WHERE id = ?", (automation_id,)
+    )
+    await db.close()
+    return _row_to_account_automation(rows[0])
+
+
+async def list_account_automations() -> list[AccountAutomationResponse]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM account_automations ORDER BY created_at ASC"
+    )
+    await db.close()
+    return [_row_to_account_automation(row) for row in rows]
+
+
+async def get_account_automation(
+    automation_id: str,
+) -> AccountAutomationResponse | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM account_automations WHERE id = ?", (automation_id,)
+    )
+    await db.close()
+    return _row_to_account_automation(rows[0]) if rows else None
+
+
+async def update_account_automation(
+    automation_id: str, values: dict[str, object]
+) -> AccountAutomationResponse | None:
+    from backend.account_ops.schedule import next_daily_run
+
+    current = await get_account_automation(automation_id)
+    if current is None:
+        return None
+    allowed = {
+        "name",
+        "account_handle",
+        "enabled",
+        "schedule_time",
+        "timezone",
+        "prompt_template",
+        "executor",
+        "opencode_model",
+    }
+    fields = {key: value for key, value in values.items() if key in allowed}
+    if not fields:
+        return current
+    schedule_changed = bool({"enabled", "schedule_time", "timezone"} & fields.keys())
+    if schedule_changed:
+        enabled = bool(fields.get("enabled", current.enabled))
+        schedule_time = str(fields.get("schedule_time", current.schedule_time))
+        timezone_name = str(fields.get("timezone", current.timezone))
+        fields["next_run_at"] = (
+            next_daily_run(schedule_time, timezone_name) if enabled else None
+        )
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    sets: list[str] = []
+    parameters: list[object] = []
+    for key, value in fields.items():
+        if key == "enabled":
+            value = int(bool(value))
+        if hasattr(value, "value"):
+            value = value.value
+        sets.append(f"{key} = ?")
+        parameters.append(value)
+    parameters.append(automation_id)
+    db = await get_db()
+    await db.execute(
+        f"UPDATE account_automations SET {', '.join(sets)} WHERE id = ?",
+        parameters,
+    )
+    await db.commit()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM account_automations WHERE id = ?", (automation_id,)
+    )
+    await db.close()
+    return _row_to_account_automation(rows[0])
+
+
+async def create_account_run(
+    automation: AccountAutomationResponse,
+    *,
+    trigger: str,
+    scheduled_for: str | None = None,
+    event_date: str | None = None,
+    connection: aiosqlite.Connection | None = None,
+) -> AccountRunResponse:
+    from backend.account_ops.schedule import local_event_date
+
+    run_id = new_account_id("acct")
+    now = datetime.now(timezone.utc).isoformat()
+    own_connection = connection is None
+    db = connection or await get_db()
+    await db.execute(
+        """INSERT INTO account_runs (
+               id, automation_id, automation_name, account_handle, platform,
+               trigger, status, scheduled_for, event_date, created_at, executor
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            run_id,
+            automation.id,
+            automation.name,
+            automation.account_handle,
+            automation.platform,
+            trigger,
+            AccountRunStatus.QUEUED.value,
+            scheduled_for,
+            event_date or local_event_date(automation.timezone),
+            now,
+            automation.executor.value,
+        ),
+    )
+    if own_connection:
+        await db.commit()
+    rows = await db.execute_fetchall("SELECT * FROM account_runs WHERE id = ?", (run_id,))
+    if own_connection:
+        await db.close()
+    return _row_to_account_run(rows[0])
+
+
+async def enqueue_due_account_runs() -> int:
+    """Atomically enqueue each due automation once and advance its schedule."""
+    from backend.account_ops.schedule import local_event_date, next_daily_run
+
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    db = await get_db()
+    await db.execute("BEGIN IMMEDIATE")
+    rows = await db.execute_fetchall(
+        """SELECT * FROM account_automations
+           WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
+           ORDER BY next_run_at ASC""",
+        (now,),
+    )
+    for row in rows:
+        automation = _row_to_account_automation(row)
+        await create_account_run(
+            automation,
+            trigger="scheduled",
+            scheduled_for=automation.next_run_at,
+            event_date=local_event_date(automation.timezone, at=now_dt),
+            connection=db,
+        )
+        await db.execute(
+            """UPDATE account_automations
+               SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?""",
+            (
+                automation.next_run_at,
+                next_daily_run(
+                    automation.schedule_time,
+                    automation.timezone,
+                    after=now_dt,
+                ),
+                now,
+                automation.id,
+            ),
+        )
+    await db.commit()
+    await db.close()
+    return len(rows)
+
+
+async def claim_next_account_run() -> AccountRunResponse | None:
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    await db.execute("BEGIN IMMEDIATE")
+    rows = await db.execute_fetchall(
+        """SELECT * FROM account_runs WHERE status = ?
+           ORDER BY created_at ASC LIMIT 1""",
+        (AccountRunStatus.QUEUED.value,),
+    )
+    if not rows:
+        await db.commit()
+        await db.close()
+        return None
+    run_id = rows[0]["id"]
+    await db.execute(
+        "UPDATE account_runs SET status = ?, started_at = ? WHERE id = ? AND status = ?",
+        (
+            AccountRunStatus.PLANNING.value,
+            now,
+            run_id,
+            AccountRunStatus.QUEUED.value,
+        ),
+    )
+    await db.commit()
+    claimed = await db.execute_fetchall("SELECT * FROM account_runs WHERE id = ?", (run_id,))
+    await db.close()
+    return _row_to_account_run(claimed[0])
+
+
+async def list_account_runs(limit: int = 200) -> list[AccountRunResponse]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM account_runs ORDER BY created_at DESC LIMIT ?", (limit,)
+    )
+    await db.close()
+    return [_row_to_account_run(row) for row in rows]
+
+
+async def get_account_run(run_id: str) -> AccountRunResponse | None:
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT * FROM account_runs WHERE id = ?", (run_id,))
+    await db.close()
+    return _row_to_account_run(rows[0]) if rows else None
+
+
+async def update_account_run(run_id: str, **values: object) -> None:
+    allowed = {
+        "status",
+        "started_at",
+        "completed_at",
+        "title",
+        "post_text",
+        "image_path",
+        "chatgpt_conversation_url",
+        "post_url",
+        "external_post_id",
+        "content_json",
+        "error_message",
+        "log_text",
+    }
+    fields = {key: value for key, value in values.items() if key in allowed}
+    if not fields:
+        return
+    sets: list[str] = []
+    parameters: list[object] = []
+    for key, value in fields.items():
+        if hasattr(value, "value"):
+            value = value.value
+        sets.append(f"{key} = ?")
+        parameters.append(value)
+    parameters.append(run_id)
+    db = await get_db()
+    await db.execute(
+        f"UPDATE account_runs SET {', '.join(sets)} WHERE id = ?", parameters
+    )
+    await db.commit()
+    await db.close()
+
+
+async def append_account_run_log(run_id: str, line: str) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE account_runs SET log_text = log_text || ? WHERE id = ?",
+        (line.rstrip() + "\n", run_id),
+    )
+    await db.commit()
+    await db.close()
+
+
+async def reset_orphaned_account_runs() -> int:
+    statuses = (
+        AccountRunStatus.PLANNING.value,
+        AccountRunStatus.GENERATING_IMAGE.value,
+        AccountRunStatus.PUBLISHING.value,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    placeholders = ", ".join("?" for _ in statuses)
+    cursor = await db.execute(
+        f"""UPDATE account_runs
+            SET status = ?, completed_at = ?, error_message = ?,
+                log_text = log_text || ?
+            WHERE status IN ({placeholders})""",
+        (
+            AccountRunStatus.FAILED.value,
+            now,
+            "Interrupted by a server restart.",
+            "Interrupted by a server restart.\n",
+            *statuses,
+        ),
+    )
+    await db.commit()
+    await db.close()
+    return cursor.rowcount

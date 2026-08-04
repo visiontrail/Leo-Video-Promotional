@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+import json
+import re
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from PIL import Image
+
+from backend import config, database
+from backend.account_ops.opencode import run_content_agent
+from backend.models import (
+    AccountAutomationExecutor,
+    AccountAutomationResponse,
+    AccountRunResponse,
+    AccountRunStatus,
+)
+from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("data", "items", "results", "rows"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+        return [value]
+    return []
+
+
+def _field(row: dict[str, Any], name: str) -> str:
+    for key, value in row.items():
+        if str(key).lower() == name.lower():
+            return str(value or "").strip().lstrip("📁🔗").strip()
+    return ""
+
+
+def _render_prompt(template: str, event_date: str) -> str:
+    parsed = date.fromisoformat(event_date)
+    replacements = {
+        "{date}": event_date,
+        "{year}": str(parsed.year),
+        "{month}": str(parsed.month),
+        "{month_name}": parsed.strftime("%B"),
+        "{day}": str(parsed.day),
+    }
+    result = template
+    for token, value in replacements.items():
+        result = result.replace(token, value)
+    return result
+
+
+def _content_object(value: str | dict[str, Any]) -> dict[str, Any]:
+    parsed = value if isinstance(value, dict) else first_json(value)
+    if not isinstance(parsed, dict):
+        raise OpenCLIError("Content planner did not return a JSON object")
+    required = (
+        "title",
+        "year",
+        "event_summary",
+        "historical_reflection",
+        "post_text",
+        "image_prompt",
+        "source_notes",
+    )
+    missing = [key for key in required if not parsed.get(key)]
+    if missing:
+        raise OpenCLIError(
+            "Content planner omitted required fields: " + ", ".join(missing)
+        )
+    post_text = str(parsed["post_text"]).strip()
+    if len(post_text) > 280:
+        raise OpenCLIError(
+            f"Planned X post is {len(post_text)} characters; maximum is 280"
+        )
+    if len(post_text) < 80:
+        raise OpenCLIError("Planned X post is too short to carry historical context")
+    sources = parsed.get("source_notes")
+    if not isinstance(sources, list) or len(sources) < 2:
+        raise OpenCLIError("Content planner must provide at least two source notes")
+    parsed["post_text"] = post_text
+    return parsed
+
+
+def _conversation_url(text: str) -> str:
+    match = re.search(r"https://chatgpt\.com/c/[a-zA-Z0-9-]+", text)
+    return match.group(0) if match else ""
+
+
+async def _plan_with_opencli(prompt: str) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    timeout = min(max(config.OPENCLI_TIMEOUT, 180), 480)
+    result = await run_opencli(
+        [
+            "chatgpt",
+            "ask",
+            prompt,
+            "--new",
+            "--timeout",
+            str(timeout),
+            "--window",
+            "background",
+            "--site-session",
+            "persistent",
+            "--keep-tab",
+            "false",
+            "-f",
+            "json",
+        ],
+        timeout=timeout + 45,
+    )
+    rows = _rows(first_json(result.stdout))
+    if not rows:
+        raise OpenCLIError("ChatGPT planning command returned no result row")
+    response = _field(rows[0], "response")
+    if not response:
+        raise OpenCLIError("ChatGPT planning command returned an empty response")
+    conversation_url = _field(rows[0], "conversationUrl")
+    return _content_object(response), conversation_url, {"opencli_stdout": result.stdout}
+
+
+async def _plan_content(
+    automation: AccountAutomationResponse,
+    run: AccountRunResponse,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    prompt = _render_prompt(automation.prompt_template, run.event_date)
+    prompt += (
+        f"\n\nThe operational date is {run.event_date}. Return the post in English. "
+        "Treat source_notes as provenance for the operator; do not append a source list "
+        "to the X post unless it fits naturally."
+    )
+    if automation.executor == AccountAutomationExecutor.OPENCODE:
+        result = await run_content_agent(
+            model=automation.opencode_model,
+            content_prompt=prompt,
+            event_date=run.event_date,
+        )
+        content = _content_object(result.text)
+        conversation_url = _conversation_url(result.stdout)
+        return content, conversation_url, {
+            "opencode_session_id": result.session_id,
+            "opencode_stdout": result.stdout,
+            "opencode_stderr": result.stderr,
+        }
+    return await _plan_with_opencli(prompt)
+
+
+def _new_images(image_dir: Path, before: set[Path]) -> list[Path]:
+    candidates = [
+        path.resolve()
+        for path in image_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in _IMAGE_SUFFIXES
+        and path.resolve() not in before
+        and path.stat().st_size > 32
+    ]
+    return sorted(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+
+def _prepare_publish_image(image_path: Path, output_dir: Path) -> Path:
+    """Create a compact upload copy for browser bridges with message-size limits."""
+    output_path = output_dir / "publish.jpg"
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
+        for quality in (88, 82, 76, 70):
+            image.save(
+                output_path,
+                format="JPEG",
+                quality=quality,
+                optimize=True,
+                progressive=True,
+            )
+            if output_path.stat().st_size <= 700_000:
+                break
+    return output_path
+
+
+async def _generate_image(
+    content: dict[str, Any], image_dir: Path
+) -> tuple[Path, str, str]:
+    image_dir.mkdir(parents=True, exist_ok=True)
+    before = {path.resolve() for path in image_dir.iterdir() if path.is_file()}
+    image_prompt = (
+        str(content["image_prompt"]).strip()
+        + "\nCreate one landscape 3:2 editorial image for a historically serious social "
+        "media post. Favor material detail, period-authentic clothing and architecture, "
+        "restrained color, and a documentary sensibility. No text anywhere in the image."
+    )
+    timeout = max(config.THUMBNAIL_CHATGPT_TIMEOUT, 300)
+    result = await run_opencli(
+        [
+            "chatgpt",
+            "image",
+            image_prompt,
+            "--op",
+            str(image_dir.resolve()),
+            "--timeout",
+            str(timeout),
+            "--window",
+            "background",
+            "--site-session",
+            "persistent",
+            "--keep-tab",
+            "false",
+            "-f",
+            "json",
+        ],
+        timeout=timeout + 60,
+    )
+    rows = _rows(first_json(result.stdout))
+    reported: list[Path] = []
+    root = image_dir.resolve()
+    for row in rows:
+        raw = _field(row, "file")
+        if not raw or raw == "-":
+            continue
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = config.PROJECT_ROOT / candidate
+        candidate = candidate.resolve()
+        if root in candidate.parents and candidate.is_file():
+            reported.append(candidate)
+    images = list(dict.fromkeys([*reported, *_new_images(image_dir, before)]))
+    if not images:
+        raise OpenCLIError("ChatGPT image generation produced no downloaded image")
+    link = next((_field(row, "link") for row in rows if _field(row, "link")), "")
+    return images[0], link, result.stdout
+
+
+async def _verify_account(expected_handle: str) -> dict[str, Any]:
+    result = await run_opencli(
+        [
+            "twitter",
+            "whoami",
+            "--window",
+            "background",
+            "--site-session",
+            "persistent",
+            "--keep-tab",
+            "false",
+            "-f",
+            "json",
+        ],
+        timeout=60,
+    )
+    rows = _rows(first_json(result.stdout))
+    if not rows:
+        raise OpenCLIError("X account check returned no result")
+    actual = _field(rows[0], "username").lstrip("@")
+    if actual.casefold() != expected_handle.lstrip("@").casefold():
+        raise OpenCLIError(
+            f"Refusing to publish: expected @{expected_handle}, browser is @{actual or 'unknown'}"
+        )
+    return rows[0]
+
+
+async def _publish(post_text: str, image_path: Path) -> tuple[str, str, str]:
+    result = await run_opencli(
+        [
+            "twitter",
+            "post",
+            post_text,
+            "--images",
+            str(image_path.resolve()),
+            "--window",
+            "background",
+            "--site-session",
+            "persistent",
+            "--keep-tab",
+            "false",
+            "-f",
+            "json",
+        ],
+        timeout=max(config.OPENCLI_TIMEOUT, 180),
+    )
+    rows = _rows(first_json(result.stdout))
+    if not rows:
+        raise OpenCLIError("X publish command returned no result row")
+    url = _field(rows[0], "url")
+    post_id = _field(rows[0], "id")
+    if not url:
+        raise OpenCLIError("X publish command did not return a post URL")
+    return url, post_id, result.stdout
+
+
+def _write_manifest(path: Path, data: dict[str, Any]) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+async def execute_run(run: AccountRunResponse) -> None:
+    automation = await database.get_account_automation(run.automation_id)
+    if automation is None:
+        raise RuntimeError(f"Automation {run.automation_id} no longer exists")
+    output_dir = config.OUTPUTS_DIR / "account-operations" / run.id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "manifest.json"
+    manifest: dict[str, Any] = {
+        "run_id": run.id,
+        "automation_id": automation.id,
+        "status": AccountRunStatus.PLANNING.value,
+        "event_date": run.event_date,
+        "executor": automation.executor.value,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    async def log(message: str) -> None:
+        timestamped = datetime.now(timezone.utc).isoformat(timespec="seconds") + " " + message
+        await database.append_account_run_log(run.id, timestamped)
+
+    try:
+        await log(f"Planning Today in History content via {automation.executor.value}")
+        content, conversation_url, planner_raw = await _plan_content(automation, run)
+        manifest.update({"content": content, "planner": planner_raw})
+        await database.update_account_run(
+            run.id,
+            title=str(content["title"]),
+            post_text=str(content["post_text"]),
+            content_json=json.dumps(content, ensure_ascii=False),
+            chatgpt_conversation_url=conversation_url or None,
+            status=AccountRunStatus.GENERATING_IMAGE.value,
+        )
+        await log("Generating the historically grounded image through ChatGPT Web")
+        image_path, image_link, image_raw = await _generate_image(
+            content, output_dir / "images"
+        )
+        publish_image_path = _prepare_publish_image(image_path, output_dir)
+        conversation_url = conversation_url or image_link
+        manifest.update(
+            {
+                "status": AccountRunStatus.PUBLISHING.value,
+                "image_path": str(image_path),
+                "publish_image_path": str(publish_image_path),
+                "image_opencli_stdout": image_raw,
+                "chatgpt_conversation_url": conversation_url,
+            }
+        )
+        await database.update_account_run(
+            run.id,
+            status=AccountRunStatus.PUBLISHING.value,
+            image_path=str(image_path),
+            chatgpt_conversation_url=conversation_url or None,
+        )
+        await log(f"Verifying the active X account is @{automation.account_handle}")
+        account = await _verify_account(automation.account_handle)
+        manifest["verified_account"] = account
+        await log("Publishing the post and image to X")
+        post_url, post_id, publish_raw = await _publish(
+            str(content["post_text"]), publish_image_path
+        )
+        completed_at = datetime.now(timezone.utc).isoformat()
+        manifest.update(
+            {
+                "status": AccountRunStatus.PUBLISHED.value,
+                "post_url": post_url,
+                "external_post_id": post_id,
+                "publish_opencli_stdout": publish_raw,
+                "completed_at": completed_at,
+            }
+        )
+        _write_manifest(manifest_path, manifest)
+        await database.update_account_run(
+            run.id,
+            status=AccountRunStatus.PUBLISHED.value,
+            completed_at=completed_at,
+            post_url=post_url,
+            external_post_id=post_id or None,
+            error_message=None,
+        )
+        await log(f"Published successfully: {post_url}")
+    except Exception as exc:
+        completed_at = datetime.now(timezone.utc).isoformat()
+        manifest.update(
+            {
+                "status": AccountRunStatus.FAILED.value,
+                "completed_at": completed_at,
+                "error": str(exc),
+            }
+        )
+        _write_manifest(manifest_path, manifest)
+        await database.update_account_run(
+            run.id,
+            status=AccountRunStatus.FAILED.value,
+            completed_at=completed_at,
+            error_message=str(exc),
+        )
+        await log(f"Run failed: {exc}")
+        raise

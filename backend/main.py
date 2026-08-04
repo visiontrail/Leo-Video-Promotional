@@ -5,10 +5,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from backend.database import init_db, reset_orphaned_tasks
+from backend.database import init_db, reset_orphaned_account_runs, reset_orphaned_tasks
 from backend.logging_setup import configure_logging
 from backend.worker import start_worker
-from backend.routers import tasks, settings, providers, prompts, skills, voices
+from backend.account_ops.worker import start_account_worker
+from backend.routers import account_operations, tasks, settings, providers, prompts, skills, voices
 from backend import config
 from backend import prompts_registry
 
@@ -47,7 +48,13 @@ async def lifespan(app: FastAPI):
         logging.getLogger("backend.main").warning(
             "Reset %d task(s) left in-progress by a previous run to FAILED", reset
         )
+    account_reset = await reset_orphaned_account_runs()
+    if account_reset:
+        logging.getLogger("backend.main").warning(
+            "Reset %d interrupted account-operation run(s) to FAILED", account_reset
+        )
     start_worker()
+    start_account_worker()
     yield
 
 
@@ -66,6 +73,7 @@ app.include_router(providers.router)
 app.include_router(prompts.router)
 app.include_router(skills.router)
 app.include_router(voices.router)
+app.include_router(account_operations.router)
 
 # Bound to the directory as it stands at startup — this is why OUTPUTS_DIR is
 # flagged "restart required" in the Admin console.

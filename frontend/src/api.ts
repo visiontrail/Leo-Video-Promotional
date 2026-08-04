@@ -200,6 +200,57 @@ export interface Skill {
   body?: string;
 }
 
+export type AccountAutomationExecutor = 'opencode' | 'pipeline';
+export type AccountRunStatus = 'queued' | 'planning' | 'generating_image' | 'publishing' | 'published' | 'failed';
+
+export interface AccountAutomation {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  name: string;
+  feature_type: 'today_in_history';
+  platform: 'x';
+  account_handle: string;
+  enabled: boolean;
+  schedule_time: string;
+  timezone: string;
+  prompt_template: string;
+  executor: AccountAutomationExecutor;
+  opencode_model: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+}
+
+export type AccountAutomationUpdate = Pick<
+  AccountAutomation,
+  'name' | 'account_handle' | 'enabled' | 'schedule_time' | 'timezone' | 'prompt_template' | 'executor' | 'opencode_model'
+>;
+
+export interface AccountRun {
+  id: string;
+  automation_id: string;
+  automation_name: string;
+  account_handle: string;
+  platform: 'x';
+  trigger: 'manual' | 'scheduled';
+  status: AccountRunStatus;
+  scheduled_for: string | null;
+  event_date: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  title: string | null;
+  post_text: string | null;
+  image_path: string | null;
+  chatgpt_conversation_url: string | null;
+  post_url: string | null;
+  external_post_id: string | null;
+  executor: AccountAutomationExecutor;
+  content: Record<string, unknown>;
+  error_message: string | null;
+  log_text: string;
+}
+
 export async function fetchTasks(): Promise<Task[]> {
   const res = await fetch(`${BASE}/api/tasks`);
   const data = await res.json();
@@ -407,6 +458,52 @@ export async function uploadSkill(file: File): Promise<Skill> {
     throw new Error(payload?.detail ?? `Skill upload failed (${res.status})`);
   }
   return res.json();
+}
+
+// ── Account operations ─────────────────────────────────────────────
+export async function fetchAccountAutomations(): Promise<AccountAutomation[]> {
+  const res = await fetch(`${BASE}/api/account-operations/automations`);
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json() as { automations: AccountAutomation[] };
+  return data.automations;
+}
+
+export async function updateAccountAutomation(
+  id: string,
+  input: Partial<AccountAutomationUpdate>,
+): Promise<AccountAutomation> {
+  const res = await fetch(`${BASE}/api/account-operations/automations/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function runAccountAutomation(id: string): Promise<AccountRun> {
+  const res = await fetch(`${BASE}/api/account-operations/automations/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchAccountRuns(): Promise<AccountRun[]> {
+  const res = await fetch(`${BASE}/api/account-operations/runs`);
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json() as { runs: AccountRun[] };
+  return data.runs;
+}
+
+export async function fetchAccountRun(id: string): Promise<AccountRun> {
+  const res = await fetch(`${BASE}/api/account-operations/runs/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error('Account-operation run not found');
+  return res.json();
+}
+
+export function accountRunImageUrl(id: string): string {
+  return `${BASE}/api/account-operations/runs/${encodeURIComponent(id)}/image`;
 }
 
 export async function fetchScript(taskId: string): Promise<string> {

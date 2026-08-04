@@ -2,7 +2,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from pydantic import BaseModel, Field, field_validator
 import uuid
 
 
@@ -265,8 +266,133 @@ class SkillUpdate(BaseModel):
     body: Optional[str] = None
 
 
+class AccountAutomationExecutor(str, Enum):
+    OPENCODE = "opencode"
+    PIPELINE = "pipeline"
+
+
+class AccountRunStatus(str, Enum):
+    QUEUED = "queued"
+    PLANNING = "planning"
+    GENERATING_IMAGE = "generating_image"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+DEFAULT_HISTORY_PROMPT = """Curate one consequential event that occurred on {month_name} {day}. Prefer an event whose consequences still illuminate public life, institutions, science, culture, or human judgment. Avoid trivia, anniversaries chosen only for fame, and presentism. Use only facts you can state with high confidence, and provide concise provenance so an editor can verify the date and core claims. Write for Quiet Atlas: calm, literate, historically serious, and accessible to a general English-speaking audience. The X post must stand on its own, stay under 260 characters, name the year, explain what happened, and end with a restrained reflection rather than a slogan. Do not invent quotations. Return only JSON with these keys: title, year, location, event_summary, historical_reflection, post_text, image_prompt, source_notes. source_notes must be an array of 2-4 short source labels or URLs. image_prompt must request a historically grounded editorial image with no lettering, captions, logos, watermarks, split panels, or modern anachronisms."""
+
+
+class _AccountAutomationFields(BaseModel):
+    name: str = Field(default="Today in History · Quiet Atlas", min_length=1, max_length=120)
+    feature_type: str = Field(default="today_in_history", pattern="^today_in_history$")
+    platform: str = Field(default="x", pattern="^x$")
+    account_handle: str = Field(default="AQuietAtlas", min_length=1, max_length=64)
+    enabled: bool = True
+    schedule_time: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(default="Asia/Singapore", min_length=1, max_length=64)
+    prompt_template: str = Field(default=DEFAULT_HISTORY_PROMPT, min_length=40, max_length=12000)
+    executor: AccountAutomationExecutor = AccountAutomationExecutor.OPENCODE
+    opencode_model: str = Field(default="oneapi/yinhe-chat", min_length=1, max_length=160)
+
+    @field_validator("account_handle")
+    @classmethod
+    def normalize_handle(cls, value: str) -> str:
+        return value.strip().lstrip("@")
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown IANA timezone: {value}") from exc
+        return value
+
+
+class AccountAutomationCreate(_AccountAutomationFields):
+    pass
+
+
+class AccountAutomationUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    account_handle: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    enabled: Optional[bool] = None
+    schedule_time: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    timezone: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    prompt_template: Optional[str] = Field(default=None, min_length=40, max_length=12000)
+    executor: Optional[AccountAutomationExecutor] = None
+    opencode_model: Optional[str] = Field(default=None, min_length=1, max_length=160)
+
+    @field_validator("account_handle")
+    @classmethod
+    def normalize_handle(cls, value: str | None) -> str | None:
+        return value.strip().lstrip("@") if value is not None else None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown IANA timezone: {value}") from exc
+        return value
+
+
+class AccountAutomationResponse(_AccountAutomationFields):
+    id: str
+    created_at: str
+    updated_at: str
+    next_run_at: Optional[str] = None
+    last_run_at: Optional[str] = None
+
+
+class AccountAutomationListResponse(BaseModel):
+    automations: list[AccountAutomationResponse]
+
+
+class AccountRunResponse(BaseModel):
+    id: str
+    automation_id: str
+    automation_name: str
+    account_handle: str
+    platform: str
+    trigger: str
+    status: AccountRunStatus
+    scheduled_for: Optional[str] = None
+    event_date: str
+    created_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    title: Optional[str] = None
+    post_text: Optional[str] = None
+    image_path: Optional[str] = None
+    chatgpt_conversation_url: Optional[str] = None
+    post_url: Optional[str] = None
+    external_post_id: Optional[str] = None
+    executor: AccountAutomationExecutor
+    content: dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    log_text: str = ""
+
+
+class AccountRunListResponse(BaseModel):
+    runs: list[AccountRunResponse]
+
+
 def new_task_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+
+
+def new_account_id(prefix: str) -> str:
+    return (
+        f"{prefix}-"
+        + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        + "-"
+        + uuid.uuid4().hex[:6]
+    )
 
 
 def normalize_schedule(value: str | None) -> str | None:

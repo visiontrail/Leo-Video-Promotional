@@ -42,6 +42,15 @@ export function IconAdmin(p: P) {
   )
 }
 
+export function IconAtlas(p: P) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3.5 9h17M3.5 15h17M12 3c2.2 2.4 3.3 5.4 3.3 9S14.2 18.6 12 21M12 3C9.8 5.4 8.7 8.4 8.7 12S9.8 18.6 12 21" />
+    </svg>
+  )
+}
+
 export function IconSun(p: P) {
   return (
     <svg {...base} {...p}>
