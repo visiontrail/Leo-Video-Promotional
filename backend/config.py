@@ -31,7 +31,10 @@ def resolve_project_path(raw: str | os.PathLike) -> Path:
 AI_ENDPOINT = os.getenv("AI_ENDPOINT", "http://oneapi.yhroot.com/v1/chat/completions")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_MODEL = os.getenv("AI_MODEL", "glm-4.6-chat")
-AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "120"))
+# HTTP-backend request ceiling. A reasoning model summarising a full transcript
+# spends minutes on one completion (measured: ~160s for 1.7k words through a
+# proxy gateway), so the old two-minute default aborted calls that were healthy.
+AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "600"))
 AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "2"))
 
 # Public-footage scouting. Wikimedia Commons needs no key, but asks API clients
@@ -87,6 +90,25 @@ ANTHROPIC_DEFAULT_HAIKU_MODEL = os.getenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "").s
 # Optional explicit path to the `claude` CLI. Blank = let the SDK locate it
 # (bundled with the wheel, else the first `claude` on PATH).
 CLAUDE_CLI_PATH = os.getenv("CLAUDE_CLI_PATH", "").strip()
+
+# The SDK spawns a CLI that owns its own retry ladder, so it needs two ceilings
+# rather than the single AI_TIMEOUT the HTTP client uses:
+#   AGENT_REQUEST_TIMEOUT bounds one /v1/messages call inside the CLI
+#     (API_TIMEOUT_MS). Reasoning models behind a slow gateway routinely need
+#     two minutes for a single digestion turn, and a stall of 30s mid-stream is
+#     normal there — set this too low and every request is aborted just before
+#     it would have finished.
+#   AGENT_TURN_TIMEOUT bounds the whole CLI process. This is the ceiling that
+#     matters operationally: when a request keeps timing out the CLI silently
+#     retries it, so a 120s request budget can and did burn 25 minutes per
+#     attempt before exiting 1.
+AGENT_REQUEST_TIMEOUT = int(os.getenv("AGENT_REQUEST_TIMEOUT", "600"))
+AGENT_TURN_TIMEOUT = int(os.getenv("AGENT_TURN_TIMEOUT", "900"))
+# When the Agent SDK transport fails outright (CLI missing, gateway with no
+# Anthropic route, process dying), fall back to the OpenAI-compatible client on
+# the same provider instead of failing the stage. Costs one extra call on a
+# genuine outage; saves a whole pipeline run when only the SDK path is broken.
+AI_HTTP_FALLBACK = _env_bool("AI_HTTP_FALLBACK", "1")
 
 # yt-dlp source extraction. start.sh exports sensible defaults for the first
 # two before launching (a node runtime it can find, and the browser to borrow

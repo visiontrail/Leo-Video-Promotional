@@ -259,14 +259,27 @@ async def _verify_account(expected_handle: str) -> dict[str, Any]:
     return rows[0]
 
 
-async def _publish(post_text: str, image_path: Path) -> tuple[str, str, str]:
+def _fingerprint(text: str) -> str:
+    """Normalised form used to recognise our own post on the timeline."""
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+async def _find_published_post(handle: str, post_text: str) -> dict[str, Any] | None:
+    """Look for ``post_text`` on the account's timeline.
+
+    A ``twitter post`` that dies mid-flight — the composer hanging behind a
+    native dialog is the one seen in production — says nothing about whether X
+    accepted the tweet. Recording that run as a clean failure is what invites a
+    duplicate on the operator's next retry, so the timeline is the tiebreaker.
+    Returns the matching row, or ``None`` when the post is provably absent;
+    raises when the timeline itself could not be read."""
     result = await run_opencli(
         [
             "twitter",
-            "post",
-            post_text,
-            "--images",
-            str(image_path.resolve()),
+            "tweets",
+            handle.lstrip("@"),
+            "--limit",
+            "5",
             "--window",
             "background",
             "--site-session",
@@ -276,8 +289,56 @@ async def _publish(post_text: str, image_path: Path) -> tuple[str, str, str]:
             "-f",
             "json",
         ],
-        timeout=max(config.OPENCLI_TIMEOUT, 180),
+        timeout=90,
     )
+    needle = _fingerprint(post_text)[:40]
+    for row in _rows(first_json(result.stdout)):
+        if needle and needle in _fingerprint(_field(row, "text")):
+            return row
+    return None
+
+
+async def _publish(post_text: str, image_path: Path, handle: str) -> tuple[str, str, str]:
+    try:
+        result = await run_opencli(
+            [
+                "twitter",
+                "post",
+                post_text,
+                "--images",
+                str(image_path.resolve()),
+                "--window",
+                "background",
+                "--site-session",
+                "persistent",
+                "--keep-tab",
+                "false",
+                "-f",
+                "json",
+            ],
+            timeout=max(config.OPENCLI_TIMEOUT, 180),
+        )
+    except OpenCLIError as exc:
+        try:
+            posted = await _find_published_post(handle, post_text)
+        except Exception as check_error:  # noqa: BLE001 - the browser is already unhealthy
+            raise OpenCLIError(
+                f"{exc}\n\nPublication state is UNKNOWN: the timeline check also failed "
+                f"({check_error}). Look at @{handle} before retrying — the post may have "
+                f"gone out before the browser stopped responding."
+            ) from exc
+        if posted is not None:
+            url = _field(posted, "url")
+            if url:
+                return url, _field(posted, "id"), json.dumps(
+                    {"recovered_from_error": str(exc), "timeline_row": posted},
+                    ensure_ascii=False,
+                )
+        raise OpenCLIError(
+            f"{exc}\n\nThe post is not on @{handle}'s timeline, so nothing was published "
+            f"and this run is safe to retry."
+        ) from exc
+
     rows = _rows(first_json(result.stdout))
     if not rows:
         raise OpenCLIError("X publish command returned no result row")
@@ -354,7 +415,7 @@ async def execute_run(run: AccountRunResponse) -> None:
         manifest["verified_account"] = account
         await log("Publishing the post and image to X")
         post_url, post_id, publish_raw = await _publish(
-            str(content["post_text"]), publish_image_path
+            str(content["post_text"]), publish_image_path, automation.account_handle
         )
         completed_at = datetime.now(timezone.utc).isoformat()
         manifest.update(

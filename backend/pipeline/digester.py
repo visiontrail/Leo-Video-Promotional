@@ -4,6 +4,7 @@ import re
 import time
 import httpx
 from collections.abc import Callable
+from urllib.parse import urlsplit, urlunsplit
 from backend import config
 from backend.pipeline.extractors.base import ExtractedContent
 
@@ -79,16 +80,30 @@ async def _chat(
     if config.AI_BACKEND == "agent_sdk":
         from backend.pipeline import agent
 
-        return await agent.agent_complete(
-            system_prompt,
-            user_content,
-            model=model or config.AI_MODEL,
-            endpoint=endpoint or config.AI_ENDPOINT,
-            api_key=api_key if api_key is not None else config.AI_API_KEY,
-            max_tokens=max_tokens,
-            log=log,
-            label=label,
-        )
+        try:
+            return await agent.agent_complete(
+                system_prompt,
+                user_content,
+                model=model or config.AI_MODEL,
+                endpoint=endpoint or config.AI_ENDPOINT,
+                api_key=api_key if api_key is not None else config.AI_API_KEY,
+                max_tokens=max_tokens,
+                log=log,
+                label=label,
+            )
+        except Exception as e:
+            # The SDK path has a failure mode the HTTP path does not: it depends
+            # on a `claude` CLI subprocess and on the gateway exposing a usable
+            # Anthropic route. Losing a whole extraction + digestion run to that
+            # is a worse outcome than spending one more call on the same
+            # provider's OpenAI-compatible route.
+            if not config.AI_HTTP_FALLBACK:
+                raise
+            _dwarn(
+                log,
+                f"{label}: Claude Agent SDK failed ({e}); falling back to the "
+                f"OpenAI-compatible HTTP client on the same provider",
+            )
 
     return await _chat_http(
         system_prompt,
@@ -102,6 +117,23 @@ async def _chat(
     )
 
 
+def _chat_completions_url(endpoint: str) -> str:
+    """Normalise a provider endpoint to an OpenAI chat-completions URL.
+
+    A provider row only has to carry the gateway host for the Agent SDK, which
+    reinterprets it as an Anthropic base URL. The HTTP client needs the actual
+    route, so a host-root (or bare ``/v1``) endpoint gets completed here rather
+    than POSTing to the gateway's front page."""
+    parts = urlsplit(endpoint.strip())
+    if not parts.scheme or not parts.netloc:
+        return endpoint
+    path = parts.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        return endpoint
+    suffix = "/chat/completions" if path.endswith("/v1") else "/v1/chat/completions"
+    return urlunsplit((parts.scheme, parts.netloc, path + suffix, parts.query, ""))
+
+
 async def _chat_http(
     system_prompt: str,
     user_content: str,
@@ -112,7 +144,7 @@ async def _chat_http(
     label: str = "AI call",
     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> str:
-    endpoint = endpoint or config.AI_ENDPOINT
+    endpoint = _chat_completions_url(endpoint or config.AI_ENDPOINT)
     model = model or config.AI_MODEL
     api_key = api_key if api_key is not None else config.AI_API_KEY
 
@@ -219,7 +251,7 @@ async def test_connection(endpoint: str, model: str, api_key: str) -> int:
     start = time.perf_counter()
     async with httpx.AsyncClient(timeout=config.AI_TIMEOUT) as client:
         resp = await client.post(
-            endpoint,
+            _chat_completions_url(endpoint),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
                 "model": model,

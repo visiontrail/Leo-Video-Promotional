@@ -15,9 +15,12 @@ retry-on-empty and CJK repair logic stays in ``digester.py`` unchanged.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 import time
+from collections import deque
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
@@ -25,6 +28,14 @@ from backend import config, skills_admin
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
+
+# The CLI only reports API failures, retries and streaming stalls at debug
+# level, so without --debug-to-stderr a failed turn arrives as a bare
+# "exit code 1" with an empty stderr — which is exactly how a 57-minute
+# digestion failure managed to leave no diagnosis behind. Debug output is
+# therefore always requested, and the routine chatter filtered back out.
+DIAGNOSTIC_STDERR_LINES = 20
+_NOISE_LEVELS = ("[DEBUG]", "[INFO]")
 
 
 def _log(log: LogCallback | None, message: str) -> None:
@@ -38,6 +49,23 @@ def _warn(log: LogCallback | None, message: str) -> None:
     logger.warning(message)
     if log is not None:
         log(message)
+
+
+def _keep_diagnostic(sink: deque[str], line: str) -> None:
+    """Retain the stderr lines worth reporting on a failure.
+
+    ``--debug-to-stderr`` emits a hundred lines of startup chatter per call, so
+    DEBUG/INFO is dropped; everything else — WARN and above, and any untagged
+    output such as a CLI crash — is kept."""
+    text = line.strip()
+    if text and not any(level in text for level in _NOISE_LEVELS):
+        sink.append(text)
+
+
+def _diagnostic_tail(sink: deque[str]) -> str:
+    if not sink:
+        return ""
+    return " | claude CLI: " + " ⏎ ".join(sink)[-1500:]
 
 
 def _derive_base_url(endpoint: str | None) -> str:
@@ -69,7 +97,7 @@ def build_agent_env(
     the provider gateway via ``ANTHROPIC_BASE_URL`` + auth token, and select the
     model. Explicit ``ANTHROPIC_*`` config always wins over the derived values."""
     env: dict[str, str] = {
-        "API_TIMEOUT_MS": str(config.AI_TIMEOUT * 1000),
+        "API_TIMEOUT_MS": str(config.AGENT_REQUEST_TIMEOUT * 1000),
         # Keep these one-shot text transforms off telemetry/update channels.
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     }
@@ -152,6 +180,7 @@ async def agent_complete(
         "cwd": config.PROJECT_ROOT,
         "permission_mode": "default",
         "env": env,
+        "extra_args": {"debug-to-stderr": None},
     }
     # Newer SDK releases support an initialize-time Skill context filter.
     # Keep compatibility with the vendored SDK while using the stronger filter
@@ -166,7 +195,8 @@ async def agent_complete(
         f"{label}: Claude Agent SDK (model={resolved_model or 'default'}, "
         f"base={env.get('ANTHROPIC_BASE_URL', 'default')}, "
         f"skills={len(enabled_skills)} enabled/{len(disabled_skills)} disabled, "
-        f"~{len(user_content.split())} words in)",
+        f"~{len(user_content.split())} words in, "
+        f"request/turn ceiling {config.AGENT_REQUEST_TIMEOUT}s/{config.AGENT_TURN_TIMEOUT}s)",
     )
 
     last_error: Exception | None = None
@@ -186,17 +216,29 @@ async def agent_complete(
         options = ClaudeAgentOptions(**base_options)
         text_parts: list[str] = []
         result: ResultMessage | None = None
-        stderr_lines: list[str] = []
-        options.stderr = stderr_lines.append
+        diagnostics: deque[str] = deque(maxlen=DIAGNOSTIC_STDERR_LINES)
+        options.stderr = lambda line: _keep_diagnostic(diagnostics, line)
 
         try:
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            text_parts.append(block.text)
-                elif isinstance(message, ResultMessage):
-                    result = message
+            # The CLI retries a failing request on its own, so the process can
+            # outlive AGENT_REQUEST_TIMEOUT many times over. Bound the whole
+            # turn here and close the generator on the way out — that tears the
+            # transport down and kills the CLI instead of leaking it.
+            stream = query(prompt=prompt, options=options)
+            try:
+                async with asyncio.timeout(config.AGENT_TURN_TIMEOUT):
+                    async for message in stream:
+                        if isinstance(message, AssistantMessage):
+                            for block in message.content:
+                                if isinstance(block, TextBlock):
+                                    text_parts.append(block.text)
+                        elif isinstance(message, ResultMessage):
+                            result = message
+            finally:
+                # Cleanup must not be able to hang the stage it is unwinding.
+                with contextlib.suppress(Exception):
+                    async with asyncio.timeout(30):
+                        await stream.aclose()
 
             content = "".join(text_parts).strip()
             if not content and result is not None and result.result:
@@ -219,16 +261,29 @@ async def agent_complete(
             if result is not None and result.is_error:
                 errs = result.errors or [result.result or "unknown SDK error"]
                 detail = f"Claude Agent SDK error: {'; '.join(str(e) for e in errs)}"
-            if stderr_lines:
-                detail += f" | stderr: {' '.join(stderr_lines)[:500]}"
+            detail += _diagnostic_tail(diagnostics)
             _warn(log, f"{label} attempt {attempt + 1} failed: {detail}")
             last_error = RuntimeError(detail)
-        except Exception as e:  # noqa: BLE001 - surface any SDK/transport failure
-            stderr_tail = f" | stderr: {' '.join(stderr_lines)[:500]}" if stderr_lines else ""
-            detail = f"{e.__class__.__name__}: {e}{stderr_tail}"
+        except TimeoutError:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            detail = (
+                f"the `claude` CLI ran past AGENT_TURN_TIMEOUT "
+                f"({config.AGENT_TURN_TIMEOUT}s, {elapsed_ms:.0f}ms elapsed) and was killed. "
+                f"The CLI retries a failing request internally, so this usually means the "
+                f"gateway kept timing out at AGENT_REQUEST_TIMEOUT "
+                f"({config.AGENT_REQUEST_TIMEOUT}s) rather than that one call was slow"
+            ) + _diagnostic_tail(diagnostics)
             _warn(log, f"{label} attempt {attempt + 1} failed: {detail}")
+            last_error = RuntimeError(detail)
+            # Retrying spends another full turn budget on the same wedged
+            # gateway. Hand over to the caller (and its HTTP fallback) instead
+            # of turning one exhausted ceiling into three.
+            break
+        except Exception as e:  # noqa: BLE001 - surface any SDK/transport failure
             # Preserve the SDK callback's stderr in the error returned by the
             # provider-test API instead of only writing it to container logs.
+            detail = f"{e.__class__.__name__}: {e}{_diagnostic_tail(diagnostics)}"
+            _warn(log, f"{label} attempt {attempt + 1} failed: {detail}")
             last_error = RuntimeError(detail)
 
     raise RuntimeError(f"AI request failed via Claude Agent SDK: {last_error}") from last_error

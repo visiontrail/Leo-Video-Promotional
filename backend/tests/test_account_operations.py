@@ -11,6 +11,7 @@ from backend.account_ops.opencode import OpenCodeError, _assistant_text
 from backend.account_ops.orchestrator import (
     _content_object,
     _prepare_publish_image,
+    _publish,
     _render_prompt,
     _verify_account,
 )
@@ -168,6 +169,52 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(OpenCLIError, "Refusing to publish"):
                 await _verify_account("AQuietAtlas")
+
+    async def test_a_publish_that_reached_x_before_dying_is_not_reported_failed(self):
+        post_text = "On 5 August 1858 the first transatlantic cable carried its first message."
+        timeline = OpenCLIResult(
+            args=("twitter", "tweets"),
+            returncode=0,
+            stdout=(
+                '[{"id":"1234","text":"On 5 August 1858 the first transatlantic cable '
+                'carried its first message.","url":"https://x.com/AQuietAtlas/status/1234"}]'
+            ),
+            stderr="",
+        )
+
+        async def opencli(args, **kwargs):
+            if args[1] == "post":
+                raise OpenCLIError("CDP command Runtime.evaluate timed out after 115s")
+            return timeline
+
+        with patch("backend.account_ops.orchestrator.run_opencli", opencli):
+            url, post_id, raw = await _publish(post_text, Path("image.jpg"), "AQuietAtlas")
+
+        self.assertEqual(url, "https://x.com/AQuietAtlas/status/1234")
+        self.assertEqual(post_id, "1234")
+        self.assertIn("recovered_from_error", raw)
+
+    async def test_a_publish_absent_from_the_timeline_is_declared_safe_to_retry(self):
+        empty = OpenCLIResult(
+            args=("twitter", "tweets"), returncode=0, stdout="[]", stderr=""
+        )
+
+        async def opencli(args, **kwargs):
+            if args[1] == "post":
+                raise OpenCLIError("CDP command Runtime.evaluate timed out after 115s")
+            return empty
+
+        with patch("backend.account_ops.orchestrator.run_opencli", opencli):
+            with self.assertRaisesRegex(OpenCLIError, "safe to retry"):
+                await _publish("Nothing went out.", Path("image.jpg"), "AQuietAtlas")
+
+    async def test_an_unreadable_timeline_leaves_the_publication_state_unknown(self):
+        async def opencli(args, **kwargs):
+            raise OpenCLIError(f"OpenCLI twitter {args[1]} failed with exit 1")
+
+        with patch("backend.account_ops.orchestrator.run_opencli", opencli):
+            with self.assertRaisesRegex(OpenCLIError, "UNKNOWN"):
+                await _publish("Ambiguous.", Path("image.jpg"), "AQuietAtlas")
 
 
 class OpenCodeOutputTests(unittest.TestCase):

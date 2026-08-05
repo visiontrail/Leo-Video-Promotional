@@ -166,12 +166,20 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "AI_TIMEOUT", "ai", "Request timeout", "int", unit="seconds",
         minimum=1, maximum=3600,
-        description="Per-request ceiling for both backends.",
+        description="Per-request ceiling for the http backend. The Agent SDK "
+                    "has its own two ceilings below, because the CLI it spawns "
+                    "retries requests on its own.",
     ),
     SettingSpec(
         "AI_MAX_RETRIES", "ai", "Max retries", "int", unit="attempts",
         minimum=0, maximum=10,
         description="Extra attempts after the first failure.",
+    ),
+    SettingSpec(
+        "AI_HTTP_FALLBACK", "ai", "Fall back to HTTP", "bool",
+        description="When the Agent SDK backend fails outright, retry the call "
+                    "on the same provider's OpenAI-compatible route instead of "
+                    "failing the stage.",
     ),
     # ── Claude Agent SDK ─────────────────────────────────────────────────
     SettingSpec(
@@ -198,6 +206,21 @@ SPECS: tuple[SettingSpec, ...] = (
         "CLAUDE_CLI_PATH", "agent_sdk", "claude CLI path", "string",
         placeholder="/usr/local/bin/claude",
         description="Blank lets the SDK locate the CLI (bundled, else on PATH).",
+    ),
+    SettingSpec(
+        "AGENT_REQUEST_TIMEOUT", "agent_sdk", "Request timeout", "int", unit="seconds",
+        minimum=30, maximum=3600,
+        description="Ceiling for one API call inside the CLI (API_TIMEOUT_MS). "
+                    "A reasoning model behind a slow gateway can need two "
+                    "minutes for a single digestion turn, so a tight value here "
+                    "makes the CLI abort requests that were about to succeed.",
+    ),
+    SettingSpec(
+        "AGENT_TURN_TIMEOUT", "agent_sdk", "Turn timeout", "int", unit="seconds",
+        minimum=60, maximum=7200,
+        description="Wall-clock ceiling for the whole `claude` process. The CLI "
+                    "retries failed requests on its own, so this is what stops "
+                    "one stage from silently burning half an hour.",
     ),
     # ── TTS ──────────────────────────────────────────────────────────────
     SettingSpec(

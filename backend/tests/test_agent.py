@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 import unittest
@@ -121,6 +122,69 @@ class AgentCompleteTests(unittest.IsolatedAsyncioTestCase):
                     endpoint="http://oneapi.example",
                     api_key="test-key",
                 )
+
+    async def test_cli_debug_chatter_is_dropped_from_the_failure_detail(self):
+        async def query(*, prompt, options):
+            options.stderr("2026-01-01T00:00:00Z [DEBUG] CA certs: system store returned empty")
+            options.stderr("2026-01-01T00:00:01Z [WARN] Streaming stall detected: 32.4s gap")
+            raise Exception("CLI failed")
+            yield  # pragma: no cover - keeps this an async generator
+
+        with (
+            patch.dict(sys.modules, {"claude_agent_sdk": fake_sdk(query)}),
+            patch.object(config, "AI_MAX_RETRIES", 0),
+            patch.object(config, "ANTHROPIC_BASE_URL", ""),
+            patch.object(config, "ANTHROPIC_AUTH_TOKEN", ""),
+            patch.object(config, "ANTHROPIC_MODEL", ""),
+            patch.object(skills_admin, "runtime_skill_names", return_value=([], [])),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await agent.agent_complete(
+                    "Reply pong.",
+                    "ping",
+                    model="yinhe-thinking",
+                    endpoint="http://oneapi.example",
+                    api_key="test-key",
+                )
+
+        self.assertIn("Streaming stall detected", str(caught.exception))
+        self.assertNotIn("CA certs", str(caught.exception))
+
+    async def test_a_hung_cli_is_cut_off_at_the_turn_timeout(self):
+        closed: list[bool] = []
+
+        async def query(*, prompt, options):
+            try:
+                await asyncio.sleep(3600)
+                yield FakeResultMessage("never")  # pragma: no cover - unreachable
+            finally:
+                closed.append(True)
+
+        with (
+            patch.dict(sys.modules, {"claude_agent_sdk": fake_sdk(query)}),
+            # A timeout must not be retried: the retries would each spend
+            # another full turn budget on the same wedged gateway.
+            patch.object(config, "AI_MAX_RETRIES", 2),
+            patch.object(config, "AGENT_TURN_TIMEOUT", 1),
+            patch.object(config, "ANTHROPIC_BASE_URL", ""),
+            patch.object(config, "ANTHROPIC_AUTH_TOKEN", ""),
+            patch.object(config, "ANTHROPIC_MODEL", ""),
+            patch.object(skills_admin, "runtime_skill_names", return_value=([], [])),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "AGENT_TURN_TIMEOUT"):
+                await asyncio.wait_for(
+                    agent.agent_complete(
+                        "Reply pong.",
+                        "ping",
+                        model="yinhe-thinking",
+                        endpoint="http://oneapi.example",
+                        api_key="test-key",
+                    ),
+                    timeout=30,
+                )
+
+        # The generator was closed, so the CLI subprocess is not left running.
+        self.assertEqual(closed, [True])
 
 
 class ConnectionTestTests(unittest.IsolatedAsyncioTestCase):

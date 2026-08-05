@@ -126,7 +126,19 @@ Two interchangeable transports, selected by `AI_BACKEND`:
 - `http` — the legacy OpenAI-compatible client in `digester.py`.
 
 `backend/pipeline/digester.py` dispatches between them; all chunking, JSON parsing, retry-on-empty
-and CJK repair logic is backend-agnostic and lives there, not in the transports.
+and CJK repair logic is backend-agnostic and lives there, not in the transports. When the SDK
+transport fails outright the dispatcher retries the same provider over HTTP (`AI_HTTP_FALLBACK`),
+so a broken CLI or a gateway without a usable Anthropic route costs one extra call rather than the
+whole run.
+
+The SDK backend needs **two** ceilings where the HTTP client needs one, and getting this wrong is
+expensive: `AGENT_REQUEST_TIMEOUT` is `API_TIMEOUT_MS` for a single call inside the CLI, but the
+CLI retries a timed-out request by itself, so a tight value there doesn't fail fast — it silently
+multiplies. `AGENT_TURN_TIMEOUT` bounds the CLI process and is what actually stops a stage from
+burning half an hour. Digestion of a full transcript by a reasoning model legitimately takes two to
+three minutes per call, so both default well above that. On failure the CLI's stderr is captured
+with `--debug-to-stderr` and filtered to non-DEBUG lines — without it a failed turn reports only
+"exit code 1" with an empty stderr.
 
 ### Compose stage: generated spine, model-authored scenes
 
