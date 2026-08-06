@@ -212,7 +212,15 @@ function AutomationEditor({
   )
 }
 
+type Tab = 'commission' | 'ledger'
+
+const TABS: { id: Tab; label: string; hint: string; index: string }[] = [
+  { id: 'commission', label: 'Commission', hint: 'Daily editorial setup', index: '01' },
+  { id: 'ledger', label: 'Ledger', hint: 'Publication record', index: '02' },
+]
+
 export default function AccountOperations() {
+  const [tab, setTab] = useState<Tab>('commission')
   const navigate = useNavigate()
   const { data: automations, isLoading: loadingAutomations } = useQuery({
     queryKey: ['account-automations'],
@@ -231,59 +239,105 @@ export default function AccountOperations() {
   const published = runs?.filter((run) => run.status === 'published').length ?? 0
   const active = runs?.filter((run) => ACTIVE.has(run.status)).length ?? 0
   const failed = runs?.filter((run) => run.status === 'failed').length ?? 0
+  const liveDesks = automations?.filter((item) => item.enabled).length ?? 0
+  const workerAlive = status?.worker_alive ?? false
+
+  let footDotClass = 'ops-status-dot--offline'
+  let footLabel = 'Scheduler offline'
+  if (workerAlive && liveDesks > 0) {
+    footDotClass = 'ops-status-dot--live'
+    footLabel = `${active} in flight · ${published} published`
+  } else if (workerAlive) {
+    footDotClass = 'ops-status-dot--idle'
+    footLabel = 'Paused'
+  }
 
   return (
-    <section className="ops-workspace">
-      <header className="ops-command">
-        <div className="ops-title-block">
+    <div className="ops-console">
+      <aside className="ops-nav">
+        <header className="ops-nav-heading">
           <span className="eyebrow">Quiet Atlas desk</span>
-          <h1>Account<br />Operations</h1>
+          <h1>Account Ops</h1>
           <p>Autonomous editions with a complete publishing record.</p>
-        </div>
-        <dl className="ops-totals">
-          <div><dt>Live desks</dt><dd>{automations?.filter((item) => item.enabled).length ?? 0}</dd></div>
-          <div><dt>In flight</dt><dd>{active}</dd></div>
-          <div><dt>Published</dt><dd>{published}</dd></div>
-          <div><dt>Failed</dt><dd>{failed}</dd></div>
-        </dl>
-      </header>
+        </header>
 
-      <div className="ops-layout">
-        {loadingAutomations ? <div className="table-message">Loading commission…</div> : automations?.[0] ? (
-          <AutomationEditor key={automations[0].updated_at} automation={automations[0]} status={status} />
-        ) : (
-          <div className="empty-state">No account automation configured.</div>
-        )}
+        <nav className="ops-tabs" role="tablist" aria-label="Account operations sections">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              aria-controls={`ops-panel-${t.id}`}
+              className={`ops-tab ${tab === t.id ? 'is-active' : ''}`}
+              onClick={() => setTab(t.id)}
+            >
+              <span className="ops-tab-index">{t.index}</span>
+              <span className="ops-tab-copy">
+                <span className="ops-tab-label">{t.label}</span>
+                <span className="ops-tab-hint">{t.hint}</span>
+              </span>
+              <span className="ops-tab-arrow" aria-hidden="true">→</span>
+            </button>
+          ))}
+        </nav>
 
-        <section className="ops-ledger">
-          <div className="ops-ledger-head">
-            <div><span className="eyebrow">Publication ledger</span><h2>Every edition</h2></div>
-            <span>{runs?.length ?? 0} records</span>
+        <footer className="ops-nav-foot">
+          <span className={`ops-status-dot ${footDotClass}`} />
+          <span>
+            <strong>{footLabel}</strong>
+            {failed > 0 && <small>{failed} failed</small>}
+          </span>
+        </footer>
+      </aside>
+
+      <section
+        className="ops-panel"
+        id={`ops-panel-${tab}`}
+        role="tabpanel"
+        aria-label={TABS.find((item) => item.id === tab)?.label}
+      >
+        <div className="ops-panel-scroll">
+          <div>
+            {tab === 'commission' && (
+              loadingAutomations ? <div className="table-message">Loading commission…</div> : automations?.[0] ? (
+                <AutomationEditor key={automations[0].updated_at} automation={automations[0]} status={status} />
+              ) : (
+                <div className="empty-state">No account automation configured.</div>
+              )
+            )}
+            {tab === 'ledger' && (
+              <section className="ops-ledger">
+                <div className="ops-ledger-head">
+                  <div><span className="eyebrow">Publication ledger</span><h2>Every edition</h2></div>
+                  <span>{runs?.length ?? 0} records</span>
+                </div>
+                {loadingRuns ? (
+                  <div className="table-message">Loading publication ledger…</div>
+                ) : !runs?.length ? (
+                  <div className="ops-ledger-empty"><strong>The atlas is blank.</strong><span>Run the commission to publish its first dated entry.</span></div>
+                ) : (
+                  <div className="ops-table-scroll">
+                    <table className="ops-table">
+                      <thead><tr><th>Edition</th><th>Status</th><th>Trigger</th><th>Account</th><th>Created</th><th /></tr></thead>
+                      <tbody>
+                        {runs.map((run) => (
+                          <tr key={run.id} tabIndex={0} onClick={() => navigate(`/account-operations/runs/${run.id}`)} onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') navigate(`/account-operations/runs/${run.id}`)
+                          }}>
+                            <td><strong>{runTitle(run)}</strong><small>{run.event_date} · {run.id.slice(-6)}</small></td>
+                            <td><span className={`badge ${run.status}`}>{run.status.replace('_', ' ')}</span></td>
+                            <td>{run.trigger}</td><td>@{run.account_handle}</td><td>{formatDateTime(run.created_at)}</td><td><span className="row-arrow">→</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )}
           </div>
-          {loadingRuns ? (
-            <div className="table-message">Loading publication ledger…</div>
-          ) : !runs?.length ? (
-            <div className="ops-ledger-empty"><strong>The atlas is blank.</strong><span>Run the commission to publish its first dated entry.</span></div>
-          ) : (
-            <div className="ops-table-scroll">
-              <table className="ops-table">
-                <thead><tr><th>Edition</th><th>Status</th><th>Trigger</th><th>Account</th><th>Created</th><th /></tr></thead>
-                <tbody>
-                  {runs.map((run) => (
-                    <tr key={run.id} tabIndex={0} onClick={() => navigate(`/account-operations/runs/${run.id}`)} onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') navigate(`/account-operations/runs/${run.id}`)
-                    }}>
-                      <td><strong>{runTitle(run)}</strong><small>{run.event_date} · {run.id.slice(-6)}</small></td>
-                      <td><span className={`badge ${run.status}`}>{run.status.replace('_', ' ')}</span></td>
-                      <td>{run.trigger}</td><td>@{run.account_handle}</td><td>{formatDateTime(run.created_at)}</td><td><span className="row-arrow">→</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </section>
+        </div>
+      </section>
+    </div>
   )
 }
