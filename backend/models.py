@@ -54,7 +54,7 @@ class TaskConfig(BaseModel):
     footage_enabled: bool = False
     footage_provider: str = "wikimedia"  # wikimedia | hybrid | opencli_web
     footage_license_policy: str = "open_only"
-    footage_clip_count: int = Field(default=3, ge=1, le=6)
+    footage_clip_count: int = Field(default=8, ge=1, le=30)
     footage_orientation: str = "landscape"
     footage_multimodal_analyzer: str = "gemini_web"
     # Generate a script-driven cover through the signed-in ChatGPT web app.

@@ -164,7 +164,7 @@ export default function TaskForm() {
   const [autoRender, setAutoRender] = useState(true)
   const [footageEnabled, setFootageEnabled] = useState(true)
   const [footageProvider, setFootageProvider] = useState<FootageProvider>('hybrid')
-  const [footageClipCount, setFootageClipCount] = useState(3)
+  const [footageClipCount, setFootageClipCount] = useState(8)
   const [footageOrientation, setFootageOrientation] = useState<'landscape' | 'portrait'>('landscape')
   const [providerId, setProviderId] = useState<number | null>(null)
   const [startMode, setStartMode] = useState<'now' | 'later'>('now')
@@ -818,6 +818,30 @@ export default function TaskForm() {
                         <option value={4}>4 clips</option>
                         <option value={5}>5 clips</option>
                         <option value={6}>6 clips</option>
+                        <option value={7}>7 clips</option>
+                        <option value={8}>8 clips</option>
+                        <option value={9}>9 clips</option>
+                        <option value={10}>10 clips</option>
+                        <option value={11}>11 clips</option>
+                        <option value={12}>12 clips</option>
+                        <option value={13}>13 clips</option>
+                        <option value={14}>14 clips</option>
+                        <option value={15}>15 clips</option>
+                        <option value={16}>16 clips</option>
+                        <option value={17}>17 clips</option>
+                        <option value={18}>18 clips</option>
+                        <option value={19}>19 clips</option>
+                        <option value={20}>20 clips</option>
+                        <option value={21}>21 clips</option>
+                        <option value={22}>22 clips</option>
+                        <option value={23}>23 clips</option>
+                        <option value={24}>24 clips</option>
+                        <option value={25}>25 clips</option>
+                        <option value={26}>26 clips</option>
+                        <option value={27}>27 clips</option>
+                        <option value={28}>28 clips</option>
+                        <option value={29}>29 clips</option>
+                        <option value={30}>30 clips</option>
                       </select>
                     </div>
                     <div>
