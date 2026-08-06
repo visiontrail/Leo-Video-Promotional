@@ -159,7 +159,7 @@ export default function TaskForm() {
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
   const [processingMode, setProcessingMode] = useState<'full_text' | 'curated_highlights'>('full_text')
   const [character, setCharacter] = useState(false)
-  const [captionsEnabled, setCaptionsEnabled] = useState(true)
+  const [captionsEnabled, setCaptionsEnabled] = useState(false)
   const [thumbnailEnabled, setThumbnailEnabled] = useState(true)
   const [autoRender, setAutoRender] = useState(true)
   const [footageEnabled, setFootageEnabled] = useState(true)

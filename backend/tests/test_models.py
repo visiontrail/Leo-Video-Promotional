@@ -1,8 +1,8 @@
 from backend.models import TaskConfig
 
 
-def test_existing_clients_keep_captions_enabled_by_default():
-    assert TaskConfig().captions_enabled is True
+def test_captions_are_off_by_default():
+    assert TaskConfig().captions_enabled is False
 
 
 def test_audio_review_is_skipped_by_default():

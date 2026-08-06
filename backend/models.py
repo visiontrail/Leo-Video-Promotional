@@ -40,9 +40,8 @@ class TaskConfig(BaseModel):
     voice_1: str = "Carter"
     voice_2: str = "Alice"
     include_character: bool = False
-    # Captions historically rendered for every task. Keep that behaviour for
-    # older clients while allowing new tasks to opt out explicitly.
-    captions_enabled: bool = True
+    # Captions are off by default; opt in explicitly when needed.
+    captions_enabled: bool = False
     tts_model: str = "vibevoice-0.5b"
     video_template: str = "podcast"
     processing_mode: str = "full_text"
