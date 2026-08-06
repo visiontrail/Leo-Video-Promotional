@@ -381,6 +381,12 @@ class AccountRunListResponse(BaseModel):
     runs: list[AccountRunResponse]
 
 
+class AccountOpsStatusResponse(BaseModel):
+    worker_alive: bool
+    last_tick_at: Optional[str] = None
+    poll_interval: int
+
+
 def new_task_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 

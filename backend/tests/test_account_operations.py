@@ -16,6 +16,7 @@ from backend.account_ops.orchestrator import (
     _verify_account,
 )
 from backend.account_ops.schedule import next_daily_run
+from backend.account_ops.worker import get_worker_status
 from backend.models import AccountRunStatus
 from backend.pipeline.opencli import OpenCLIError, OpenCLIResult
 
@@ -99,6 +100,69 @@ class AccountDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, 0)
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0].trigger, "scheduled")
+
+    async def test_pause_clears_next_run_and_prevents_enqueue(self):
+        automation = (await database.list_account_automations())[0]
+        self.assertIsNotNone(automation.next_run_at)
+
+        paused = await database.update_account_automation(
+            automation.id, {"enabled": False}
+        )
+
+        self.assertFalse(paused.enabled)
+        self.assertIsNone(paused.next_run_at)
+
+        enqueued = await database.enqueue_due_account_runs()
+        self.assertEqual(enqueued, 0)
+
+    async def test_resume_restores_next_run(self):
+        automation = (await database.list_account_automations())[0]
+        await database.update_account_automation(automation.id, {"enabled": False})
+
+        resumed = await database.update_account_automation(
+            automation.id, {"enabled": True}
+        )
+
+        self.assertTrue(resumed.enabled)
+        self.assertIsNotNone(resumed.next_run_at)
+
+
+class AccountWorkerStatusTests(unittest.TestCase):
+    def test_status_reports_alive_false_when_worker_not_started(self):
+        status = get_worker_status()
+
+        self.assertFalse(status["worker_alive"])
+        self.assertIn("poll_interval", status)
+
+    def test_status_reports_alive_true_when_task_is_active(self):
+        from unittest.mock import MagicMock
+
+        from backend.account_ops import worker
+
+        original_task = worker._worker_task
+        try:
+            mock_task = MagicMock()
+            mock_task.done.return_value = False
+            worker._worker_task = mock_task
+            status = get_worker_status()
+            self.assertTrue(status["worker_alive"])
+        finally:
+            worker._worker_task = original_task
+
+    def test_status_reports_alive_false_when_task_is_done(self):
+        from unittest.mock import MagicMock
+
+        from backend.account_ops import worker
+
+        original_task = worker._worker_task
+        try:
+            mock_task = MagicMock()
+            mock_task.done.return_value = True
+            worker._worker_task = mock_task
+            status = get_worker_status()
+            self.assertFalse(status["worker_alive"])
+        finally:
+            worker._worker_task = original_task
 
 
 class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):

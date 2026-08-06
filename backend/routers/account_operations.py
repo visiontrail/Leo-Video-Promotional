@@ -8,16 +8,24 @@ from fastapi.responses import FileResponse
 
 from backend import config, database
 from backend.account_ops.schedule import local_event_date
+from backend.account_ops.worker import get_worker_status
 from backend.models import (
     AccountAutomationCreate,
     AccountAutomationListResponse,
     AccountAutomationResponse,
     AccountAutomationUpdate,
+    AccountOpsStatusResponse,
     AccountRunListResponse,
     AccountRunResponse,
 )
 
 router = APIRouter(prefix="/api/account-operations", tags=["account-operations"])
+
+
+@router.get("/status", response_model=AccountOpsStatusResponse)
+async def get_status() -> AccountOpsStatusResponse:
+    status = get_worker_status()
+    return AccountOpsStatusResponse(**status)
 
 
 @router.get("/automations", response_model=AccountAutomationListResponse)
@@ -40,6 +48,32 @@ async def update_automation(
 ) -> AccountAutomationResponse:
     updated = await database.update_account_automation(
         automation_id, body.model_dump(exclude_unset=True)
+    )
+    if updated is None:
+        raise HTTPException(404, "Account automation not found")
+    return updated
+
+
+@router.post(
+    "/automations/{automation_id}/pause",
+    response_model=AccountAutomationResponse,
+)
+async def pause_automation(automation_id: str) -> AccountAutomationResponse:
+    updated = await database.update_account_automation(
+        automation_id, {"enabled": False}
+    )
+    if updated is None:
+        raise HTTPException(404, "Account automation not found")
+    return updated
+
+
+@router.post(
+    "/automations/{automation_id}/resume",
+    response_model=AccountAutomationResponse,
+)
+async def resume_automation(automation_id: str) -> AccountAutomationResponse:
+    updated = await database.update_account_automation(
+        automation_id, {"enabled": True}
     )
     if updated is None:
         raise HTTPException(404, "Account automation not found")

@@ -203,6 +203,12 @@ export interface Skill {
 export type AccountAutomationExecutor = 'opencode' | 'pipeline';
 export type AccountRunStatus = 'queued' | 'planning' | 'generating_image' | 'publishing' | 'published' | 'failed';
 
+export interface AccountOpsStatus {
+  worker_alive: boolean;
+  last_tick_at: string | null;
+  poll_interval: number;
+}
+
 export interface AccountAutomation {
   id: string;
   created_at: string;
@@ -461,6 +467,12 @@ export async function uploadSkill(file: File): Promise<Skill> {
 }
 
 // ── Account operations ─────────────────────────────────────────────
+export async function fetchAccountOpsStatus(): Promise<AccountOpsStatus> {
+  const res = await fetch(`${BASE}/api/account-operations/status`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function fetchAccountAutomations(): Promise<AccountAutomation[]> {
   const res = await fetch(`${BASE}/api/account-operations/automations`);
   if (!res.ok) throw new Error(await res.text());
@@ -483,6 +495,22 @@ export async function updateAccountAutomation(
 
 export async function runAccountAutomation(id: string): Promise<AccountRun> {
   const res = await fetch(`${BASE}/api/account-operations/automations/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function pauseAccountAutomation(id: string): Promise<AccountAutomation> {
+  const res = await fetch(`${BASE}/api/account-operations/automations/${encodeURIComponent(id)}/pause`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function resumeAccountAutomation(id: string): Promise<AccountAutomation> {
+  const res = await fetch(`${BASE}/api/account-operations/automations/${encodeURIComponent(id)}/resume`, {
     method: 'POST',
   });
   if (!res.ok) throw new Error(await res.text());

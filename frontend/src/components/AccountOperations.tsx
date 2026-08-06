@@ -3,11 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   fetchAccountAutomations,
+  fetchAccountOpsStatus,
   fetchAccountRuns,
+  pauseAccountAutomation,
+  resumeAccountAutomation,
   runAccountAutomation,
   updateAccountAutomation,
 } from '../api'
-import type { AccountAutomation, AccountAutomationUpdate, AccountRun } from '../api'
+import type { AccountAutomation, AccountAutomationUpdate, AccountOpsStatus, AccountRun } from '../api'
 
 const ACTIVE = new Set(['queued', 'planning', 'generating_image', 'publishing'])
 
@@ -16,6 +19,17 @@ function formatDateTime(value: string | null): string {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   }).format(new Date(value))
+}
+
+function countdown(target: string | null): string {
+  if (!target) return ''
+  const ms = new Date(target).getTime() - Date.now()
+  if (ms <= 0) return 'imminent'
+  const hours = Math.floor(ms / 3_600_000)
+  const minutes = Math.floor((ms % 3_600_000) / 60_000)
+  if (hours >= 1) return `in ${hours}h ${minutes}m`
+  if (minutes >= 1) return `in ${minutes}m`
+  return `in ${Math.floor(ms / 1_000)}s`
 }
 
 function runTitle(run: AccountRun): string {
@@ -35,7 +49,74 @@ function automationDraft(automation: AccountAutomation): AccountAutomationUpdate
   }
 }
 
-function AutomationEditor({ automation }: { automation: AccountAutomation }) {
+function AutomationStatusBar({
+  automation,
+  status,
+}: {
+  automation: AccountAutomation
+  status: AccountOpsStatus | undefined
+}) {
+  const queryClient = useQueryClient()
+  const pause = useMutation({
+    mutationFn: () => pauseAccountAutomation(automation.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['account-automations'] }),
+  })
+  const resume = useMutation({
+    mutationFn: () => resumeAccountAutomation(automation.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['account-automations'] }),
+  })
+
+  const workerAlive = status?.worker_alive ?? false
+  const isPaused = !automation.enabled
+
+  let dotClass = 'ops-status-dot--idle'
+  let label = 'Paused'
+  let detail = 'No scheduled editions'
+  if (!workerAlive) {
+    dotClass = 'ops-status-dot--offline'
+    label = 'Scheduler offline'
+    detail = 'Worker process is not running — restart the server'
+  } else if (!isPaused) {
+    dotClass = 'ops-status-dot--live'
+    label = 'Running'
+    detail = automation.next_run_at
+      ? `Next edition ${formatDateTime(automation.next_run_at)} (${countdown(automation.next_run_at)})`
+      : 'Calculating next run…'
+  }
+
+  return (
+    <div className="ops-status-bar">
+      <div className="ops-status-info">
+        <span className={`ops-status-dot ${dotClass}`} />
+        <div>
+          <strong>{label}</strong>
+          <span>{detail}</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        className={isPaused ? 'btn-primary' : 'btn-ghost'}
+        disabled={pause.isPending || resume.isPending || !workerAlive}
+        onClick={() => (isPaused ? resume.mutate() : pause.mutate())}
+      >
+        {isPaused
+          ? (resume.isPending ? 'Resuming…' : 'Resume')
+          : (pause.isPending ? 'Pausing…' : 'Pause')}
+      </button>
+      {(pause.isError || resume.isError) && (
+        <span className="ops-status-error">{((pause.error || resume.error) as Error).message}</span>
+      )}
+    </div>
+  )
+}
+
+function AutomationEditor({
+  automation,
+  status,
+}: {
+  automation: AccountAutomation
+  status: AccountOpsStatus | undefined
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<AccountAutomationUpdate>(() => automationDraft(automation))
@@ -73,6 +154,8 @@ function AutomationEditor({ automation }: { automation: AccountAutomation }) {
           <span>{draft.enabled ? 'Scheduled' : 'Paused'}</span>
         </label>
       </div>
+
+      <AutomationStatusBar automation={automation} status={status} />
 
       <div className="ops-route-line" aria-label="Operation route">
         <span>{draft.executor === 'opencode' ? 'OpenCode' : 'Pipeline'}</span><i>→</i><span>OpenCLI</span><i>→</i><span>ChatGPT</span><i>→</i><span>@{draft.account_handle}</span>
@@ -135,6 +218,11 @@ export default function AccountOperations() {
     queryKey: ['account-automations'],
     queryFn: fetchAccountAutomations,
   })
+  const { data: status } = useQuery({
+    queryKey: ['account-ops-status'],
+    queryFn: fetchAccountOpsStatus,
+    refetchInterval: 5_000,
+  })
   const { data: runs, isLoading: loadingRuns } = useQuery({
     queryKey: ['account-runs'],
     queryFn: fetchAccountRuns,
@@ -162,7 +250,7 @@ export default function AccountOperations() {
 
       <div className="ops-layout">
         {loadingAutomations ? <div className="table-message">Loading commission…</div> : automations?.[0] ? (
-          <AutomationEditor key={automations[0].updated_at} automation={automations[0]} />
+          <AutomationEditor key={automations[0].updated_at} automation={automations[0]} status={status} />
         ) : (
           <div className="empty-state">No account automation configured.</div>
         )}
