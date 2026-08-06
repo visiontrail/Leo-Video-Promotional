@@ -49,7 +49,7 @@ export default function PromptsPanel() {
   if (isLoading) return <p>Loading…</p>
 
   return (
-    <div>
+    <div className="split-panel">
       <div className="panel-head">
         <div>
           <h2 className="panel-title">Pipeline Prompts</h2>

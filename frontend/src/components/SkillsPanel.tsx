@@ -57,7 +57,7 @@ export default function SkillsPanel() {
   if (isLoading) return <p>Loading…</p>
 
   return (
-    <div className="skills-panel">
+    <div className="split-panel">
       <div className="panel-head">
         <div>
           <h2 className="panel-title">Skills</h2>

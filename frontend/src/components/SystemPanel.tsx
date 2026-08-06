@@ -168,7 +168,7 @@ export default function SystemPanel() {
   }
 
   return (
-    <div>
+    <div className="split-panel">
       <div className="panel-head">
         <div>
           <h2 className="panel-title">System &amp; Environment</h2>

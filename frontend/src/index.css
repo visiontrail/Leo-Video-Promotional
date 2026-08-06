@@ -3485,47 +3485,56 @@ video {
   gap: clamp(18px, 2.5vw, 34px);
 }
 
-/* Skills panel: full-height independent-scroll split.
+/* Split panel: full-height independent-scroll split.
    The left list and right detail each scroll on their own;
-   scrolling one never moves the other. */
-.admin-panel:has(.skills-panel) .admin-panel-scroll {
+   scrolling one never moves the other. Shared by Skills, Prompts, System. */
+.admin-panel:has(.split-panel) .admin-panel-scroll {
   overflow: hidden;
+  padding: clamp(14px, 1.5vw, 22px) clamp(16px, 2vw, 28px) clamp(14px, 1.5vw, 22px);
 }
-.admin-panel:has(.skills-panel) .admin-panel-scroll > div {
+.admin-panel:has(.split-panel) .admin-panel-scroll > div {
   height: 100%;
   min-height: 0;
+  width: 100%;
+  max-width: 100%;
 }
-.skills-panel {
+.split-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
 }
-.skills-panel .split-2 {
+.split-panel .split-2 {
   flex: 1;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr);
 }
-.skills-panel .split-list {
+.split-panel .split-list {
   overflow-y: auto;
   min-height: 0;
   overscroll-behavior: contain;
   padding-right: 4px;
 }
-.skills-panel .split-detail {
+.split-panel .split-detail {
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.skills-panel .skill-body {
+.split-panel .skill-body {
   flex: 1;
   min-height: 0;
   max-height: none;
 }
-.skills-panel .code-area {
+.split-panel .code-area {
   flex: 1;
   min-height: 0;
+}
+.split-panel .setting-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Runtime settings (System tab) */
@@ -3733,33 +3742,41 @@ video {
     padding: 30px 24px 52px;
   }
 
-  .admin-panel:has(.skills-panel) .admin-panel-scroll {
+  .admin-panel:has(.split-panel) .admin-panel-scroll {
     overflow: visible;
+    padding: 30px 24px 52px;
   }
-  .admin-panel:has(.skills-panel) .admin-panel-scroll > div {
+  .admin-panel:has(.split-panel) .admin-panel-scroll > div {
+    height: auto;
+    width: min(1160px, 100%);
+    max-width: none;
+    margin: 0 auto;
+  }
+  .split-panel {
     height: auto;
   }
-  .skills-panel {
-    height: auto;
-  }
-  .skills-panel .split-2 {
+  .split-panel .split-2 {
     flex: none;
     grid-template-rows: none;
   }
-  .skills-panel .split-list {
+  .split-panel .split-list {
     overflow-y: visible;
     padding-right: 0;
   }
-  .skills-panel .split-detail {
+  .split-panel .split-detail {
     overflow: visible;
   }
-  .skills-panel .skill-body {
+  .split-panel .skill-body {
     flex: none;
     max-height: 460px;
   }
-  .skills-panel .code-area {
+  .split-panel .code-area {
     flex: none;
     min-height: 380px;
+  }
+  .split-panel .setting-list {
+    flex: none;
+    overflow-y: visible;
   }
 }
 
