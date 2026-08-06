@@ -390,8 +390,14 @@ SPECS: tuple[SettingSpec, ...] = (
         minimum=15, maximum=600,
     ),
     SettingSpec(
-        "WEB_FOOTAGE_CLIP_SECONDS", "footage", "Web clip length", "int", unit="seconds",
-        minimum=2, maximum=30,
+        "WEB_FOOTAGE_CLIP_SECONDS", "footage", "Web clip max length", "int", unit="seconds",
+        minimum=5, maximum=60,
+        description="Maximum B-roll clip length downloaded from YouTube. Gemini is asked to aim for close to this duration.",
+    ),
+    SettingSpec(
+        "WEB_FOOTAGE_CLIP_MIN_SECONDS", "footage", "Web clip min length", "int", unit="seconds",
+        minimum=3, maximum=30,
+        description="Minimum B-roll clip length. Short Gemini intervals are extended to at least this many seconds.",
     ),
     SettingSpec(
         "WEB_FOOTAGE_DOWNLOAD_TIMEOUT", "footage", "Web download timeout", "int", unit="seconds",

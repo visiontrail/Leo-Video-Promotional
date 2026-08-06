@@ -175,14 +175,22 @@ def _fallback_analysis(candidate: dict, *, reason: str) -> dict:
 def _normalise_analysis(parsed: dict, candidate: dict) -> dict:
     duration = float(candidate.get("duration_seconds") or 0)
     maximum = float(config.WEB_FOOTAGE_CLIP_SECONDS)
+    minimum = float(config.WEB_FOOTAGE_CLIP_MIN_SECONDS)
     start = max(0.0, float(parsed.get("start_seconds") or 0))
     end = float(parsed.get("end_seconds") or (start + maximum))
     if end <= start:
         end = start + maximum
+    # Extend short intervals toward the target maximum so Gemini's tendency to
+    # return ~6-second fragments does not produce unusably brief B-roll.
+    target_length = max(minimum, min(maximum, end - start))
+    end = start + target_length
     end = min(end, start + maximum)
     if duration:
         start = min(start, max(0.0, duration - 1.0))
         end = min(duration, max(start + 1.0, end))
+        # Re-extend after duration clamping when there is room.
+        if end - start < minimum and duration > start + minimum:
+            end = min(duration, start + minimum)
     confidence = min(1.0, max(0.0, float(parsed.get("confidence") or 0.5)))
     return {
         "start_seconds": round(start, 3),
@@ -271,15 +279,20 @@ async def analyze_candidate_link(candidate: dict, script_excerpt: str) -> dict:
         raise WebFootageError("Web footage only accepts YouTube candidates")
 
     duration = float(candidate.get("duration_seconds") or 0)
+    max_seconds = int(config.WEB_FOOTAGE_CLIP_SECONDS)
+    min_seconds = int(config.WEB_FOOTAGE_CLIP_MIN_SECONDS)
     prompt = (
         "You are a film editor selecting B-roll for narration. Analyze the actual visuals in "
         f"this public YouTube video: {candidate['source_page_url']}\n"
         f"Candidate duration: {duration:.1f} seconds.\n"
         f"Narration excerpt:\n{script_excerpt}\n\n"
         "Return ONLY one compact JSON object with numeric start_seconds, end_seconds, "
-        "confidence (0 to 1), and a short reason. Select a visually coherent interval of at "
-        f"most {config.WEB_FOOTAGE_CLIP_SECONDS} seconds. Avoid intros, logos, subtitles, "
-        "talking-head filler, and end cards."
+        "confidence (0 to 1), and a short reason. "
+        f"Select a visually coherent interval of AT LEAST {min_seconds} seconds and AT MOST "
+        f"{max_seconds} seconds — aim for close to {max_seconds} seconds so the clip can "
+        "accompany the full narration excerpt. The interval must be long enough to cover the "
+        "spoken content meaningfully; do not return a short 5-6 second fragment. "
+        "Avoid intros, logos, subtitles, talking-head filler, and end cards."
     )
     try:
         result = await run_opencli(
@@ -383,9 +396,13 @@ async def _probe(path: Path) -> dict:
 def _fit_analysis_to_media(analysis: dict, duration: float) -> dict:
     enriched = dict(analysis)
     maximum = float(config.WEB_FOOTAGE_CLIP_SECONDS)
+    minimum = float(config.WEB_FOOTAGE_CLIP_MIN_SECONDS)
     requested_start = float(enriched.get("start_seconds") or 0)
     requested_end = float(enriched.get("end_seconds") or (requested_start + maximum))
-    requested_length = min(maximum, max(1.0, requested_end - requested_start))
+    requested_length = requested_end - requested_start
+    # Clamp to [minimum, maximum] so a short Gemini interval is extended and an
+    # over-long one is capped, rather than preserving whatever was returned.
+    requested_length = max(minimum, min(maximum, max(1.0, requested_length)))
     if (
         enriched.get("analyzer") == "deterministic-safe-offset"
         and requested_start == 0
@@ -396,6 +413,9 @@ def _fit_analysis_to_media(analysis: dict, duration: float) -> dict:
         requested_start = min(max(3.0, duration * 0.1), duration - maximum)
     start = max(0.0, min(requested_start, max(0.0, duration - 1.0)))
     end = min(duration, start + requested_length)
+    # Final guard: if the source is long enough, never ship a sub-minimum clip.
+    if end - start < minimum and duration >= start + minimum:
+        end = min(duration, start + minimum)
     enriched["start_seconds"] = round(start, 3)
     enriched["end_seconds"] = round(end, 3)
     return enriched

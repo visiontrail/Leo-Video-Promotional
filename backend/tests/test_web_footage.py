@@ -40,8 +40,12 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
             "",
         )
 
-        with patch.object(
-            web_footage, "run_opencli", AsyncMock(side_effect=[no_response, recovered])
+        with (
+            patch.object(config, "WEB_FOOTAGE_CLIP_SECONDS", 8),
+            patch.object(config, "WEB_FOOTAGE_CLIP_MIN_SECONDS", 5),
+            patch.object(
+                web_footage, "run_opencli", AsyncMock(side_effect=[no_response, recovered])
+            ),
         ):
             analysis = await web_footage.analyze_candidate_link(candidate, "narration")
 
@@ -81,14 +85,21 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
             "analyzer": "deterministic-safe-offset",
         }
 
-        fitted = web_footage._fit_analysis_to_media(analysis, 100)
+        with (
+            patch.object(config, "WEB_FOOTAGE_CLIP_SECONDS", 8),
+            patch.object(config, "WEB_FOOTAGE_CLIP_MIN_SECONDS", 5),
+        ):
+            fitted = web_footage._fit_analysis_to_media(analysis, 100)
 
         self.assertEqual(fitted["start_seconds"], 10)
         self.assertEqual(fitted["end_seconds"], 18)
 
     def test_model_interval_is_clamped_to_configured_clip_length(self):
         candidate = {"duration_seconds": 100}
-        with patch.object(config, "WEB_FOOTAGE_CLIP_SECONDS", 8):
+        with (
+            patch.object(config, "WEB_FOOTAGE_CLIP_SECONDS", 8),
+            patch.object(config, "WEB_FOOTAGE_CLIP_MIN_SECONDS", 5),
+        ):
             result = web_footage._normalise_analysis(
                 {
                     "start_seconds": 12,
@@ -102,6 +113,45 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["start_seconds"], 12)
         self.assertEqual(result["end_seconds"], 20)
         self.assertEqual(result["confidence"], 1)
+
+    def test_short_gemini_interval_is_extended_to_minimum(self):
+        """Gemini frequently returns ~6-second fragments; the normaliser must
+        extend them to at least WEB_FOOTAGE_CLIP_MIN_SECONDS."""
+        candidate = {"duration_seconds": 120}
+        with (
+            patch.object(config, "WEB_FOOTAGE_CLIP_SECONDS", 15),
+            patch.object(config, "WEB_FOOTAGE_CLIP_MIN_SECONDS", 10),
+        ):
+            result = web_footage._normalise_analysis(
+                {
+                    "start_seconds": 20,
+                    "end_seconds": 26,
+                    "confidence": 0.8,
+                    "reason": "city panorama",
+                },
+                candidate,
+            )
+
+        self.assertEqual(result["start_seconds"], 20)
+        self.assertEqual(result["end_seconds"], 30)
+        self.assertGreaterEqual(
+            result["end_seconds"] - result["start_seconds"], 10
+        )
+
+    def test_fit_analysis_extends_short_interval_to_minimum(self):
+        analysis = {
+            "start_seconds": 5,
+            "end_seconds": 8,
+            "analyzer": "gemini-web-via-opencli",
+        }
+        with (
+            patch.object(config, "WEB_FOOTAGE_CLIP_SECONDS", 15),
+            patch.object(config, "WEB_FOOTAGE_CLIP_MIN_SECONDS", 10),
+        ):
+            fitted = web_footage._fit_analysis_to_media(analysis, 100)
+
+        self.assertEqual(fitted["start_seconds"], 5)
+        self.assertEqual(fitted["end_seconds"], 15)
 
     async def test_trim_passes_recovered_source_interval_to_ffmpeg(self):
         runner = AsyncMock(return_value=(0, "", ""))
