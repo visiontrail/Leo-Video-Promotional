@@ -1605,7 +1605,7 @@ video {
 .ops-panel-scroll {
   height: 100%;
   overflow-y: auto;
-  padding: clamp(26px, 3.2vw, 52px) clamp(22px, 3.8vw, 64px) 56px;
+  padding: clamp(14px, 1.5vw, 22px) clamp(16px, 2vw, 28px) clamp(14px, 1.5vw, 22px);
   overscroll-behavior: contain;
 }
 
@@ -1617,7 +1617,7 @@ video {
 .ops-subtabs {
   display: flex;
   gap: 0;
-  margin-bottom: 28px;
+  margin-bottom: 22px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1626,12 +1626,11 @@ video {
   border: 0;
   background: transparent;
   color: var(--text-faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  padding: 12px 20px 14px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: -0.3px;
+  padding: 12px 22px 14px;
   cursor: pointer;
   transition: color 150ms ease;
 }
@@ -1710,7 +1709,7 @@ video {
   .ops-panel-scroll {
     height: auto;
     overflow: visible;
-    padding: 30px 24px 52px;
+    padding: 22px 20px 40px;
   }
 }
 
@@ -1753,7 +1752,7 @@ video {
   }
 
   .ops-panel-scroll {
-    padding: 26px 14px 46px;
+    padding: 18px 14px 36px;
   }
 }
 
