@@ -1614,6 +1614,46 @@ video {
   margin: 0 auto;
 }
 
+.ops-subtabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ops-subtab {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 12px 20px 14px;
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+
+.ops-subtab:hover {
+  color: var(--text-dim);
+}
+
+.ops-subtab.is-active {
+  color: var(--text);
+}
+
+.ops-subtab.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--ops-gold, #b28a2f);
+  content: '';
+}
+
 @media (max-width: 860px) {
   .ops-console {
     height: auto;

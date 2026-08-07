@@ -212,15 +212,22 @@ function AutomationEditor({
   )
 }
 
-type Tab = 'commission' | 'ledger'
+type Section = 'today-in-history'
 
-const TABS: { id: Tab; label: string; hint: string; index: string }[] = [
-  { id: 'commission', label: 'Commission', hint: 'Daily editorial setup', index: '01' },
-  { id: 'ledger', label: 'Ledger', hint: 'Publication record', index: '02' },
+const SECTIONS: { id: Section; label: string; hint: string; index: string }[] = [
+  { id: 'today-in-history', label: 'Today in History', hint: 'Daily editorial desk', index: '01' },
+]
+
+type SubTab = 'commission' | 'ledger'
+
+const SUBTABS: { id: SubTab; label: string }[] = [
+  { id: 'commission', label: 'Commission' },
+  { id: 'ledger', label: 'Ledger' },
 ]
 
 export default function AccountOperations() {
-  const [tab, setTab] = useState<Tab>('commission')
+  const [section, setSection] = useState<Section>('today-in-history')
+  const [subtab, setSubtab] = useState<SubTab>('commission')
   const navigate = useNavigate()
   const { data: automations, isLoading: loadingAutomations } = useQuery({
     queryKey: ['account-automations'],
@@ -262,19 +269,19 @@ export default function AccountOperations() {
         </header>
 
         <nav className="ops-tabs" role="tablist" aria-label="Account operations sections">
-          {TABS.map((t) => (
+          {SECTIONS.map((s) => (
             <button
-              key={t.id}
+              key={s.id}
               role="tab"
-              aria-selected={tab === t.id}
-              aria-controls={`ops-panel-${t.id}`}
-              className={`ops-tab ${tab === t.id ? 'is-active' : ''}`}
-              onClick={() => setTab(t.id)}
+              aria-selected={section === s.id}
+              aria-controls={`ops-panel-${s.id}`}
+              className={`ops-tab ${section === s.id ? 'is-active' : ''}`}
+              onClick={() => setSection(s.id)}
             >
-              <span className="ops-tab-index">{t.index}</span>
+              <span className="ops-tab-index">{s.index}</span>
               <span className="ops-tab-copy">
-                <span className="ops-tab-label">{t.label}</span>
-                <span className="ops-tab-hint">{t.hint}</span>
+                <span className="ops-tab-label">{s.label}</span>
+                <span className="ops-tab-hint">{s.hint}</span>
               </span>
               <span className="ops-tab-arrow" aria-hidden="true">→</span>
             </button>
@@ -292,48 +299,66 @@ export default function AccountOperations() {
 
       <section
         className="ops-panel"
-        id={`ops-panel-${tab}`}
+        id={`ops-panel-${section}`}
         role="tabpanel"
-        aria-label={TABS.find((item) => item.id === tab)?.label}
+        aria-label={SECTIONS.find((item) => item.id === section)?.label}
       >
         <div className="ops-panel-scroll">
           <div>
-            {tab === 'commission' && (
-              loadingAutomations ? <div className="table-message">Loading commission…</div> : automations?.[0] ? (
-                <AutomationEditor key={automations[0].updated_at} automation={automations[0]} status={status} />
-              ) : (
-                <div className="empty-state">No account automation configured.</div>
-              )
-            )}
-            {tab === 'ledger' && (
-              <section className="ops-ledger">
-                <div className="ops-ledger-head">
-                  <div><span className="eyebrow">Publication ledger</span><h2>Every edition</h2></div>
-                  <span>{runs?.length ?? 0} records</span>
-                </div>
-                {loadingRuns ? (
-                  <div className="table-message">Loading publication ledger…</div>
-                ) : !runs?.length ? (
-                  <div className="ops-ledger-empty"><strong>The atlas is blank.</strong><span>Run the commission to publish its first dated entry.</span></div>
-                ) : (
-                  <div className="ops-table-scroll">
-                    <table className="ops-table">
-                      <thead><tr><th>Edition</th><th>Status</th><th>Trigger</th><th>Account</th><th>Created</th><th /></tr></thead>
-                      <tbody>
-                        {runs.map((run) => (
-                          <tr key={run.id} tabIndex={0} onClick={() => navigate(`/account-operations/runs/${run.id}`)} onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') navigate(`/account-operations/runs/${run.id}`)
-                          }}>
-                            <td><strong>{runTitle(run)}</strong><small>{run.event_date} · {run.id.slice(-6)}</small></td>
-                            <td><span className={`badge ${run.status}`}>{run.status.replace('_', ' ')}</span></td>
-                            <td>{run.trigger}</td><td>@{run.account_handle}</td><td>{formatDateTime(run.created_at)}</td><td><span className="row-arrow">→</span></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+            {section === 'today-in-history' && (
+              <>
+                <nav className="ops-subtabs" role="tablist" aria-label="Today in History sections">
+                  {SUBTABS.map((st) => (
+                    <button
+                      key={st.id}
+                      role="tab"
+                      aria-selected={subtab === st.id}
+                      className={`ops-subtab ${subtab === st.id ? 'is-active' : ''}`}
+                      onClick={() => setSubtab(st.id)}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </nav>
+
+                {subtab === 'commission' && (
+                  loadingAutomations ? <div className="table-message">Loading commission…</div> : automations?.[0] ? (
+                    <AutomationEditor key={automations[0].updated_at} automation={automations[0]} status={status} />
+                  ) : (
+                    <div className="empty-state">No account automation configured.</div>
+                  )
                 )}
-              </section>
+                {subtab === 'ledger' && (
+                  <section className="ops-ledger">
+                    <div className="ops-ledger-head">
+                      <div><span className="eyebrow">Publication ledger</span><h2>Every edition</h2></div>
+                      <span>{runs?.length ?? 0} records</span>
+                    </div>
+                    {loadingRuns ? (
+                      <div className="table-message">Loading publication ledger…</div>
+                    ) : !runs?.length ? (
+                      <div className="ops-ledger-empty"><strong>The atlas is blank.</strong><span>Run the commission to publish its first dated entry.</span></div>
+                    ) : (
+                      <div className="ops-table-scroll">
+                        <table className="ops-table">
+                          <thead><tr><th>Edition</th><th>Status</th><th>Trigger</th><th>Account</th><th>Created</th><th /></tr></thead>
+                          <tbody>
+                            {runs.map((run) => (
+                              <tr key={run.id} tabIndex={0} onClick={() => navigate(`/account-operations/runs/${run.id}`)} onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') navigate(`/account-operations/runs/${run.id}`)
+                              }}>
+                                <td><strong>{runTitle(run)}</strong><small>{run.event_date} · {run.id.slice(-6)}</small></td>
+                                <td><span className={`badge ${run.status}`}>{run.status.replace('_', ' ')}</span></td>
+                                <td>{run.trigger}</td><td>@{run.account_handle}</td><td>{formatDateTime(run.created_at)}</td><td><span className="row-arrow">→</span></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                )}
+              </>
             )}
           </div>
         </div>
