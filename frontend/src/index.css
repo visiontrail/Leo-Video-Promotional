@@ -1333,6 +1333,14 @@ video {
 .ops-prompt-field { grid-column: 1 / -1; }
 .ops-prompt-field textarea { min-height: 142px; font-family: var(--font-mono); font-size: 11px; line-height: 1.55; resize: vertical; }
 .ops-prompt-field small { display: block; margin-top: 5px; font-family: var(--font-mono); font-size: 9px; }
+.ops-times-field { grid-column: 1 / -1; }
+.ops-field-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ops-field-label small { color: var(--text-faint); font-family: var(--font-mono); font-size: 8px; }
+.ops-time-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
+.ops-time-row { display: flex; align-items: center; border: 1px solid var(--border); background: var(--surface-muted); }
+.ops-time-row input { width: 112px; border: 0; background: transparent; }
+.ops-time-row .btn-ghost { min-width: 32px; height: 32px; border: 0; border-left: 1px solid var(--border); border-radius: 0; padding: 0; }
+.ops-add-time { min-height: 34px; border: 1px dashed var(--border-strong); background: transparent; color: var(--text-dim); padding: 6px 13px; font-family: var(--font-mono); font-size: 9px; }
 .ops-config-foot { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-top: 4px; }
 .ops-config-foot p { color: var(--text-faint); font-size: 11px; }
 .ops-config-foot p strong { color: var(--text); }
@@ -1401,6 +1409,16 @@ video {
 .ops-run-log > div { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 10px 13px; }
 .ops-run-log > div strong { color: var(--accent-green); font-family: var(--font-mono); font-size: 8px; letter-spacing: 1px; text-transform: uppercase; }
 .ops-run-log pre { max-height: 280px; overflow: auto; padding: 13px; color: var(--text-dim); font-family: var(--font-mono); font-size: 9px; line-height: 1.55; white-space: pre-wrap; }
+.ops-engagement-actions { overflow: hidden; border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-card); }
+.ops-engagement-actions > header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 13px 18px; }
+.ops-engagement-actions > header strong { color: var(--text); font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.6px; text-transform: uppercase; }
+.ops-action-card { border-bottom: 1px solid var(--border); padding: 18px 20px; }
+.ops-action-card:last-child { border-bottom: 0; }
+.ops-action-card > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-faint); font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.5px; text-transform: uppercase; }
+.ops-action-card a { color: var(--ops-gold); font-size: 9px; }
+.ops-action-card blockquote { margin: 10px 0; color: var(--text); font-family: 'Cormorant Garamond', var(--font-display); font-size: clamp(20px, 2vw, 28px); line-height: 1.25; }
+.ops-action-card p { margin: -2px 0 10px; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
+.ops-action-card--quote { background: color-mix(in srgb, var(--ops-gold) 6%, transparent); }
 
 @media (max-width: 980px) {
   .ops-command,

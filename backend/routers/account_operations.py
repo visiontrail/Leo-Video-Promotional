@@ -139,6 +139,7 @@ async def capabilities() -> dict[str, object]:
             "available": Path(config.OPENCLI_BIN).is_file(),
             "binary": str(config.OPENCLI_BIN),
         },
-        "supported_features": ["today_in_history"],
+        "supported_features": ["today_in_history", "x_engagement"],
+        "supported_executors": ["opencode", "claude_sdk", "pipeline"],
         "supported_platforms": ["x"],
     }

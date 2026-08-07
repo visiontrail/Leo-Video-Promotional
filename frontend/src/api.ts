@@ -200,7 +200,8 @@ export interface Skill {
   body?: string;
 }
 
-export type AccountAutomationExecutor = 'opencode' | 'pipeline';
+export type AccountAutomationExecutor = 'opencode' | 'claude_sdk' | 'pipeline';
+export type AccountAutomationFeature = 'today_in_history' | 'x_engagement';
 export type AccountRunStatus = 'queued' | 'planning' | 'generating_image' | 'publishing' | 'published' | 'failed';
 
 export interface AccountOpsStatus {
@@ -214,13 +215,18 @@ export interface AccountAutomation {
   created_at: string;
   updated_at: string;
   name: string;
-  feature_type: 'today_in_history';
+  feature_type: AccountAutomationFeature;
   platform: 'x';
   account_handle: string;
   enabled: boolean;
   schedule_time: string;
+  schedule_times: string[];
   timezone: string;
   prompt_template: string;
+  reply_style_prompt: string;
+  max_replies: number;
+  max_quote_reposts: number;
+  scan_limit: number;
   executor: AccountAutomationExecutor;
   opencode_model: string;
   next_run_at: string | null;
@@ -229,13 +235,14 @@ export interface AccountAutomation {
 
 export type AccountAutomationUpdate = Pick<
   AccountAutomation,
-  'name' | 'account_handle' | 'enabled' | 'schedule_time' | 'timezone' | 'prompt_template' | 'executor' | 'opencode_model'
+  'name' | 'account_handle' | 'enabled' | 'schedule_time' | 'schedule_times' | 'timezone' | 'prompt_template' | 'reply_style_prompt' | 'max_replies' | 'max_quote_reposts' | 'scan_limit' | 'executor' | 'opencode_model'
 >;
 
 export interface AccountRun {
   id: string;
   automation_id: string;
   automation_name: string;
+  feature_type: AccountAutomationFeature;
   account_handle: string;
   platform: 'x';
   trigger: 'manual' | 'scheduled';

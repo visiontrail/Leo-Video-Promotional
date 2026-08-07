@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 from backend import config
 from backend.models import (
     AccountAutomationCreate,
+    AccountAutomationFeature,
     AccountAutomationResponse,
     AccountRunResponse,
     AccountRunStatus,
+    DEFAULT_ENGAGEMENT_PROMPT,
+    DEFAULT_REPLY_STYLE_PROMPT,
     ProviderResponse,
     TaskConfig,
     TaskResponse,
@@ -55,8 +58,13 @@ CREATE TABLE IF NOT EXISTS account_automations (
     account_handle TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     schedule_time TEXT NOT NULL,
+    schedule_times_json TEXT NOT NULL DEFAULT '[]',
     timezone TEXT NOT NULL,
     prompt_template TEXT NOT NULL,
+    reply_style_prompt TEXT NOT NULL DEFAULT '',
+    max_replies INTEGER NOT NULL DEFAULT 3,
+    max_quote_reposts INTEGER NOT NULL DEFAULT 1,
+    scan_limit INTEGER NOT NULL DEFAULT 30,
     executor TEXT NOT NULL,
     opencode_model TEXT NOT NULL,
     next_run_at TEXT,
@@ -67,6 +75,7 @@ CREATE TABLE IF NOT EXISTS account_runs (
     id TEXT PRIMARY KEY,
     automation_id TEXT NOT NULL,
     automation_name TEXT NOT NULL,
+    feature_type TEXT NOT NULL DEFAULT 'today_in_history',
     account_handle TEXT NOT NULL,
     platform TEXT NOT NULL,
     trigger TEXT NOT NULL,
@@ -129,11 +138,68 @@ async def _migrate_tasks(db: aiosqlite.Connection):
         await db.commit()
 
 
+async def _migrate_account_operations(db: aiosqlite.Connection) -> None:
+    automation_rows = await db.execute_fetchall("PRAGMA table_info(account_automations)")
+    automation_columns = {row["name"] for row in automation_rows}
+    additions = {
+        "schedule_times_json": "TEXT NOT NULL DEFAULT '[]'",
+        "reply_style_prompt": "TEXT NOT NULL DEFAULT ''",
+        "max_replies": "INTEGER NOT NULL DEFAULT 3",
+        "max_quote_reposts": "INTEGER NOT NULL DEFAULT 1",
+        "scan_limit": "INTEGER NOT NULL DEFAULT 30",
+    }
+    for name, definition in additions.items():
+        if name not in automation_columns:
+            await db.execute(
+                f"ALTER TABLE account_automations ADD COLUMN {name} {definition}"
+            )
+
+    rows = await db.execute_fetchall(
+        "SELECT id, schedule_time, schedule_times_json, reply_style_prompt FROM account_automations"
+    )
+    for row in rows:
+        try:
+            schedule_times = json.loads(row["schedule_times_json"] or "[]")
+        except json.JSONDecodeError:
+            schedule_times = []
+        updates: list[str] = []
+        parameters: list[object] = []
+        if not isinstance(schedule_times, list) or not schedule_times:
+            updates.append("schedule_times_json = ?")
+            parameters.append(json.dumps([row["schedule_time"]]))
+        if not row["reply_style_prompt"]:
+            updates.append("reply_style_prompt = ?")
+            parameters.append(DEFAULT_REPLY_STYLE_PROMPT)
+        if updates:
+            parameters.append(row["id"])
+            await db.execute(
+                f"UPDATE account_automations SET {', '.join(updates)} WHERE id = ?",
+                parameters,
+            )
+
+    run_rows = await db.execute_fetchall("PRAGMA table_info(account_runs)")
+    run_columns = {row["name"] for row in run_rows}
+    if "feature_type" not in run_columns:
+        await db.execute(
+            "ALTER TABLE account_runs ADD COLUMN feature_type TEXT NOT NULL DEFAULT 'today_in_history'"
+        )
+        await db.execute(
+            """UPDATE account_runs
+               SET feature_type = COALESCE(
+                   (SELECT feature_type FROM account_automations
+                    WHERE account_automations.id = account_runs.automation_id),
+                   'today_in_history'
+               )"""
+        )
+    await db.commit()
+
+
 async def init_db():
     db = await get_db()
     await db.executescript(SCHEMA)
     await db.commit()
     await _migrate_tasks(db)
+    await _migrate_account_operations(db)
     # Seed the default provider from the AI engine settings if none exist yet.
     rows = await db.execute_fetchall("SELECT COUNT(*) AS c FROM providers")
     if rows[0]["c"] == 0 and config.AI_ENDPOINT:
@@ -144,12 +210,25 @@ async def init_db():
             ("Default (settings)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
         )
         await db.commit()
-    automation_count = await db.execute_fetchall(
-        "SELECT COUNT(*) AS c FROM account_automations"
+    automation_rows = await db.execute_fetchall(
+        "SELECT DISTINCT feature_type FROM account_automations"
     )
+    existing_features = {row["feature_type"] for row in automation_rows}
     await db.close()
-    if automation_count[0]["c"] == 0:
+    if AccountAutomationFeature.TODAY_IN_HISTORY.value not in existing_features:
         await create_account_automation(AccountAutomationCreate())
+    if AccountAutomationFeature.X_ENGAGEMENT.value not in existing_features:
+        await create_account_automation(
+            AccountAutomationCreate(
+                name="Replies & Reposts · Quiet Atlas",
+                feature_type=AccountAutomationFeature.X_ENGAGEMENT,
+                account_handle="AQuietAtlas",
+                schedule_time="01:00",
+                schedule_times=["01:00", "04:30", "23:00"],
+                prompt_template=DEFAULT_ENGAGEMENT_PROMPT,
+                reply_style_prompt=DEFAULT_REPLY_STYLE_PROMPT,
+            )
+        )
 
 
 def _row_to_provider(row: aiosqlite.Row) -> ProviderResponse:
@@ -364,6 +443,12 @@ async def get_next_queued_task() -> TaskResponse | None:
 
 
 def _row_to_account_automation(row: aiosqlite.Row) -> AccountAutomationResponse:
+    try:
+        schedule_times = json.loads(row["schedule_times_json"] or "[]")
+    except json.JSONDecodeError:
+        schedule_times = []
+    if not isinstance(schedule_times, list) or not schedule_times:
+        schedule_times = [row["schedule_time"]]
     return AccountAutomationResponse(
         id=row["id"],
         created_at=row["created_at"],
@@ -374,8 +459,13 @@ def _row_to_account_automation(row: aiosqlite.Row) -> AccountAutomationResponse:
         account_handle=row["account_handle"],
         enabled=bool(row["enabled"]),
         schedule_time=row["schedule_time"],
+        schedule_times=schedule_times,
         timezone=row["timezone"],
         prompt_template=row["prompt_template"],
+        reply_style_prompt=row["reply_style_prompt"],
+        max_replies=row["max_replies"],
+        max_quote_reposts=row["max_quote_reposts"],
+        scan_limit=row["scan_limit"],
         executor=row["executor"],
         opencode_model=row["opencode_model"],
         next_run_at=row["next_run_at"],
@@ -392,6 +482,7 @@ def _row_to_account_run(row: aiosqlite.Row) -> AccountRunResponse:
         id=row["id"],
         automation_id=row["automation_id"],
         automation_name=row["automation_name"],
+        feature_type=row["feature_type"],
         account_handle=row["account_handle"],
         platform=row["platform"],
         trigger=row["trigger"],
@@ -417,12 +508,12 @@ def _row_to_account_run(row: aiosqlite.Row) -> AccountRunResponse:
 async def create_account_automation(
     automation: AccountAutomationCreate,
 ) -> AccountAutomationResponse:
-    from backend.account_ops.schedule import next_daily_run
+    from backend.account_ops.schedule import next_scheduled_run
 
     automation_id = new_account_id("auto")
     now = datetime.now(timezone.utc).isoformat()
     next_run_at = (
-        next_daily_run(automation.schedule_time, automation.timezone)
+        next_scheduled_run(automation.schedule_times, automation.timezone)
         if automation.enabled
         else None
     )
@@ -430,21 +521,27 @@ async def create_account_automation(
     await db.execute(
         """INSERT INTO account_automations (
                id, created_at, updated_at, name, feature_type, platform,
-               account_handle, enabled, schedule_time, timezone, prompt_template,
-               executor, opencode_model, next_run_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               account_handle, enabled, schedule_time, schedule_times_json,
+               timezone, prompt_template, reply_style_prompt, max_replies,
+               max_quote_reposts, scan_limit, executor, opencode_model, next_run_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             automation_id,
             now,
             now,
             automation.name,
-            automation.feature_type,
+            automation.feature_type.value,
             automation.platform,
             automation.account_handle,
             int(automation.enabled),
             automation.schedule_time,
+            json.dumps(automation.schedule_times),
             automation.timezone,
             automation.prompt_template,
+            automation.reply_style_prompt,
+            automation.max_replies,
+            automation.max_quote_reposts,
+            automation.scan_limit,
             automation.executor.value,
             automation.opencode_model,
             next_run_at,
@@ -481,7 +578,7 @@ async def get_account_automation(
 async def update_account_automation(
     automation_id: str, values: dict[str, object]
 ) -> AccountAutomationResponse | None:
-    from backend.account_ops.schedule import next_daily_run
+    from backend.account_ops.schedule import next_scheduled_run
 
     current = await get_account_automation(automation_id)
     if current is None:
@@ -491,21 +588,36 @@ async def update_account_automation(
         "account_handle",
         "enabled",
         "schedule_time",
+        "schedule_times",
         "timezone",
         "prompt_template",
+        "reply_style_prompt",
+        "max_replies",
+        "max_quote_reposts",
+        "scan_limit",
         "executor",
         "opencode_model",
     }
     fields = {key: value for key, value in values.items() if key in allowed}
     if not fields:
         return current
-    schedule_changed = bool({"enabled", "schedule_time", "timezone"} & fields.keys())
+    if "schedule_times" in fields:
+        schedule_times = list(fields.pop("schedule_times"))
+        fields["schedule_times_json"] = json.dumps(schedule_times)
+        fields["schedule_time"] = schedule_times[0]
+    elif "schedule_time" in fields:
+        schedule_times = [str(fields["schedule_time"])]
+        fields["schedule_times_json"] = json.dumps(schedule_times)
+    else:
+        schedule_times = current.schedule_times
+    schedule_changed = bool(
+        {"enabled", "schedule_time", "schedule_times_json", "timezone"} & fields.keys()
+    )
     if schedule_changed:
         enabled = bool(fields.get("enabled", current.enabled))
-        schedule_time = str(fields.get("schedule_time", current.schedule_time))
         timezone_name = str(fields.get("timezone", current.timezone))
         fields["next_run_at"] = (
-            next_daily_run(schedule_time, timezone_name) if enabled else None
+            next_scheduled_run(schedule_times, timezone_name) if enabled else None
         )
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()
     sets: list[str] = []
@@ -548,14 +660,15 @@ async def create_account_run(
     await db.execute(
         """INSERT INTO account_runs (
                id, automation_id, automation_name, account_handle, platform,
-               trigger, status, scheduled_for, event_date, created_at, executor
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               feature_type, trigger, status, scheduled_for, event_date, created_at, executor
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             run_id,
             automation.id,
             automation.name,
             automation.account_handle,
             automation.platform,
+            automation.feature_type.value,
             trigger,
             AccountRunStatus.QUEUED.value,
             scheduled_for,
@@ -574,7 +687,7 @@ async def create_account_run(
 
 async def enqueue_due_account_runs() -> int:
     """Atomically enqueue each due automation once and advance its schedule."""
-    from backend.account_ops.schedule import local_event_date, next_daily_run
+    from backend.account_ops.schedule import local_event_date, next_scheduled_run
 
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -600,8 +713,8 @@ async def enqueue_due_account_runs() -> int:
                SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?""",
             (
                 automation.next_run_at,
-                next_daily_run(
-                    automation.schedule_time,
+                next_scheduled_run(
+                    automation.schedule_times,
                     automation.timezone,
                     after=now_dt,
                 ),

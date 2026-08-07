@@ -10,14 +10,20 @@ from backend import config, database
 from backend.account_ops.opencode import OpenCodeError, _assistant_text
 from backend.account_ops.orchestrator import (
     _content_object,
+    _ensure_account,
     _prepare_publish_image,
     _publish,
     _render_prompt,
     _verify_account,
 )
-from backend.account_ops.schedule import next_daily_run
+from backend.account_ops.schedule import next_daily_run, next_scheduled_run
 from backend.account_ops.worker import get_worker_status
-from backend.models import AccountRunStatus
+from backend.account_ops.x_engagement import (
+    OperationalAgentResult,
+    recover_action_urls,
+    validate_engagement_result,
+)
+from backend.models import AccountAutomationFeature, AccountRunStatus
 from backend.pipeline.opencli import OpenCLIError, OpenCLIResult
 
 
@@ -38,6 +44,18 @@ class AccountScheduleTests(unittest.TestCase):
             "2026-08-05T01:00:00+00:00",
         )
 
+    def test_multiple_daily_times_choose_the_next_local_occurrence(self):
+        after = datetime(2026, 8, 4, 2, 0, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            next_scheduled_run(
+                ["01:00", "11:00", "23:00"],
+                "Asia/Singapore",
+                after=after,
+            ),
+            "2026-08-04T03:00:00+00:00",
+        )
+
 
 class AccountDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -55,10 +73,31 @@ class AccountDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_init_seeds_the_quiet_atlas_commission(self):
         automations = await database.list_account_automations()
 
-        self.assertEqual(len(automations), 1)
-        self.assertEqual(automations[0].account_handle, "AQuietAtlas")
-        self.assertTrue(automations[0].enabled)
-        self.assertIsNotNone(automations[0].next_run_at)
+        self.assertEqual(len(automations), 2)
+        by_feature = {automation.feature_type: automation for automation in automations}
+        history = by_feature[AccountAutomationFeature.TODAY_IN_HISTORY]
+        engagement = by_feature[AccountAutomationFeature.X_ENGAGEMENT]
+        self.assertEqual(history.account_handle, "AQuietAtlas")
+        self.assertEqual(engagement.account_handle, "AQuietAtlas")
+        self.assertEqual(engagement.schedule_times, ["01:00", "04:30", "23:00"])
+        self.assertTrue(history.enabled)
+        self.assertIsNotNone(engagement.next_run_at)
+
+    async def test_multiple_schedule_update_recomputes_the_next_run(self):
+        automation = next(
+            item
+            for item in await database.list_account_automations()
+            if item.feature_type == AccountAutomationFeature.X_ENGAGEMENT
+        )
+
+        updated = await database.update_account_automation(
+            automation.id,
+            {"schedule_times": ["02:15", "18:45"]},
+        )
+
+        self.assertEqual(updated.schedule_times, ["02:15", "18:45"])
+        self.assertEqual(updated.schedule_time, "02:15")
+        self.assertNotEqual(updated.next_run_at, automation.next_run_at)
 
     async def test_prompt_edit_preserves_the_existing_schedule(self):
         automation = (await database.list_account_automations())[0]
@@ -230,9 +269,47 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "backend.account_ops.orchestrator.run_opencli",
             AsyncMock(return_value=result),
-        ):
+        ) as opencli:
             with self.assertRaisesRegex(OpenCLIError, "Refusing to publish"):
                 await _verify_account("AQuietAtlas")
+
+        self.assertIn("ephemeral", opencli.await_args.args[0])
+
+    async def test_account_guard_prompts_a_switch_then_rechecks(self):
+        automation = database.AccountAutomationResponse(
+            id="auto_test",
+            created_at="2026-08-07T00:00:00+00:00",
+            updated_at="2026-08-07T00:00:00+00:00",
+            account_handle="AQuietAtlas",
+        )
+        wrong = OpenCLIResult(
+            args=("twitter", "whoami"), returncode=0,
+            stdout='{"logged_in":true,"username":"SomeoneElse"}', stderr="",
+        )
+        right = OpenCLIResult(
+            args=("twitter", "whoami"), returncode=0,
+            stdout='{"logged_in":true,"username":"AQuietAtlas"}', stderr="",
+        )
+        switched = OperationalAgentResult(
+            text='{"account_handle":"AQuietAtlas","verified":true}',
+            session_id="session-1",
+            raw="raw",
+        )
+        with (
+            patch(
+                "backend.account_ops.orchestrator.run_opencli",
+                AsyncMock(side_effect=[wrong, right]),
+            ),
+            patch(
+                "backend.account_ops.orchestrator.run_x_operational_agent",
+                AsyncMock(return_value=switched),
+            ) as switch_agent,
+        ):
+            account, audit = await _ensure_account(automation, run_id="acct_test")
+
+        self.assertEqual(account["username"], "AQuietAtlas")
+        self.assertEqual(audit["agent_session_id"], "session-1")
+        switch_agent.assert_awaited_once()
 
     async def test_a_publish_that_reached_x_before_dying_is_not_reported_failed(self):
         post_text = "On 5 August 1858 the first transatlantic cable carried its first message."
@@ -257,6 +334,26 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(url, "https://x.com/AQuietAtlas/status/1234")
         self.assertEqual(post_id, "1234")
         self.assertIn("recovered_from_error", raw)
+
+    async def test_publish_result_from_the_wrong_account_is_rejected(self):
+        wrong_account = OpenCLIResult(
+            args=("twitter", "post"),
+            returncode=0,
+            stdout=(
+                '[{"status":"success","id":"1234","url":'
+                '"https://x.com/SomeoneElse/status/1234"}]'
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "backend.account_ops.orchestrator.run_opencli",
+            AsyncMock(return_value=wrong_account),
+        ) as opencli:
+            with self.assertRaisesRegex(OpenCLIError, "wrong account @SomeoneElse"):
+                await _publish("A commissioned post.", Path("image.jpg"), "AQuietAtlas")
+
+        self.assertIn("ephemeral", opencli.await_args.args[0])
 
     async def test_a_publish_absent_from_the_timeline_is_declared_safe_to_retry(self):
         empty = OpenCLIResult(
@@ -298,6 +395,120 @@ class OpenCodeOutputTests(unittest.TestCase):
     def test_empty_event_stream_is_an_error(self):
         with self.assertRaises(OpenCodeError):
             _assistant_text('{"type":"step_finish","sessionID":"ses_123"}')
+
+
+class EngagementResultTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addAsyncCleanup(self.temp.cleanup)
+        self.db_patch = patch.object(config, "DB_PATH", Path(self.temp.name) / "ops.db")
+        self.db_patch.start()
+        self.addAsyncCleanup(self.db_patch.stop)
+        await database.init_db()
+        self.automation = next(
+            item
+            for item in await database.list_account_automations()
+            if item.feature_type == AccountAutomationFeature.X_ENGAGEMENT
+        )
+
+    def result(self) -> dict:
+        return {
+            "account_handle": "AQuietAtlas",
+            "account_switched": False,
+            "following_feed_used": True,
+            "scanned_posts": 12,
+            "replies": [
+                {
+                    "target_url": "https://x.com/MapArchive/status/100",
+                    "target_author": "MapArchive",
+                    "reply_text": "The faded rail spur says more than the border line—the map still remembers how people actually moved.",
+                    "result_url": "https://x.com/AQuietAtlas/status/200",
+                    "has_media": True,
+                    "media_explanation": "Grok describes a 1912 railway map with a discontinued branch line.",
+                    "is_repost": False,
+                    "explained_original_url": None,
+                }
+            ],
+            "quote_reposts": [],
+            "skipped": [],
+            "notes": [],
+        }
+
+    async def test_media_reply_requires_and_preserves_grok_explanation(self):
+        validated = validate_engagement_result(self.result(), self.automation)
+
+        self.assertEqual(len(validated["replies"]), 1)
+        self.assertIn("railway map", validated["replies"][0]["media_explanation"])
+
+    async def test_media_reply_without_grok_explanation_is_rejected(self):
+        result = self.result()
+        result["replies"][0]["media_explanation"] = None
+
+        with self.assertRaisesRegex(OpenCLIError, "without preserving Grok"):
+            validate_engagement_result(result, self.automation)
+
+    async def test_recent_target_is_rejected_to_prevent_duplicate_engagement(self):
+        result = self.result()
+
+        with self.assertRaisesRegex(OpenCLIError, "duplicate or excluded"):
+            validate_engagement_result(
+                result,
+                self.automation,
+                excluded_urls={"https://x.com/MapArchive/status/100"},
+            )
+
+    async def test_result_url_must_belong_to_the_commissioned_account(self):
+        result = self.result()
+        result["replies"][0]["result_url"] = (
+            "https://x.com/SomeoneElse/status/200"
+        )
+
+        with self.assertRaisesRegex(OpenCLIError, "belongs to @SomeoneElse"):
+            validate_engagement_result(result, self.automation)
+
+    async def test_missing_reply_url_is_recovered_from_the_target_thread(self):
+        result = self.result()
+        result["replies"][0]["result_url"] = None
+        thread = OpenCLIResult(
+            args=("twitter", "thread"),
+            returncode=0,
+            stdout=(
+                '[{"author":"MapArchive","text":"Original","url":'
+                '"https://x.com/MapArchive/status/100"},'
+                '{"author":"AQuietAtlas","text":"@MapArchive The faded rail spur '
+                'says more than the border line—the map still remembers how people '
+                'actually moved.","url":"https://x.com/AQuietAtlas/status/200"}]'
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "backend.account_ops.x_engagement.run_opencli",
+            AsyncMock(return_value=thread),
+        ) as opencli:
+            recovered = await recover_action_urls(result, self.automation)
+
+        self.assertEqual(
+            recovered["replies"][0]["result_url"],
+            "https://x.com/AQuietAtlas/status/200",
+        )
+        self.assertIn("ephemeral", opencli.await_args.args[0])
+
+    async def test_wrong_account_result_stops_without_attempting_recovery(self):
+        result = self.result()
+        result["replies"][0]["result_url"] = (
+            "https://x.com/SomeoneElse/status/200"
+        )
+
+        with (
+            patch(
+                "backend.account_ops.x_engagement.run_opencli", AsyncMock()
+            ) as opencli,
+            self.assertRaisesRegex(OpenCLIError, "wrong X account @SomeoneElse"),
+        ):
+            await recover_action_urls(result, self.automation)
+
+        opencli.assert_not_awaited()
 
 
 if __name__ == "__main__":

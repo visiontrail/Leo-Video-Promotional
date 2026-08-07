@@ -10,8 +10,16 @@ from PIL import Image
 
 from backend import config, database
 from backend.account_ops.opencode import run_content_agent
+from backend.account_ops.x_engagement import (
+    account_switch_prompt,
+    engagement_prompt,
+    recover_action_urls,
+    run_x_operational_agent,
+    validate_engagement_result,
+)
 from backend.models import (
     AccountAutomationExecutor,
+    AccountAutomationFeature,
     AccountAutomationResponse,
     AccountRunResponse,
     AccountRunStatus,
@@ -240,7 +248,7 @@ async def _verify_account(expected_handle: str) -> dict[str, Any]:
             "--window",
             "background",
             "--site-session",
-            "persistent",
+            "ephemeral",
             "--keep-tab",
             "false",
             "-f",
@@ -257,6 +265,30 @@ async def _verify_account(expected_handle: str) -> dict[str, Any]:
             f"Refusing to publish: expected @{expected_handle}, browser is @{actual or 'unknown'}"
         )
     return rows[0]
+
+
+async def _ensure_account(
+    automation: AccountAutomationResponse,
+    *,
+    run_id: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Verify the commissioned account, prompting an agent to switch if needed."""
+    try:
+        return await _verify_account(automation.account_handle), None
+    except OpenCLIError as mismatch:
+        agent_result = await run_x_operational_agent(
+            automation.executor,
+            model=automation.opencode_model,
+            prompt=account_switch_prompt(automation.account_handle, run_id=run_id),
+            title=f"X account switch · @{automation.account_handle}",
+        )
+        account = await _verify_account(automation.account_handle)
+        return account, {
+            "initial_check_error": str(mismatch),
+            "agent_session_id": agent_result.session_id,
+            "agent_result": agent_result.text,
+            "agent_raw": agent_result.raw,
+        }
 
 
 def _fingerprint(text: str) -> str:
@@ -283,7 +315,7 @@ async def _find_published_post(handle: str, post_text: str) -> dict[str, Any] | 
             "--window",
             "background",
             "--site-session",
-            "persistent",
+            "ephemeral",
             "--keep-tab",
             "false",
             "-f",
@@ -310,7 +342,7 @@ async def _publish(post_text: str, image_path: Path, handle: str) -> tuple[str, 
                 "--window",
                 "background",
                 "--site-session",
-                "persistent",
+                "ephemeral",
                 "--keep-tab",
                 "false",
                 "-f",
@@ -346,6 +378,15 @@ async def _publish(post_text: str, image_path: Path, handle: str) -> tuple[str, 
     post_id = _field(rows[0], "id")
     if not url:
         raise OpenCLIError("X publish command did not return a post URL")
+    result_handle = re.search(
+        r"^https://(?:x\.com|twitter\.com)/([^/]+)/status/\d+", url
+    )
+    actual_handle = result_handle.group(1) if result_handle else ""
+    if actual_handle.casefold() != handle.lstrip("@").casefold():
+        raise OpenCLIError(
+            "X reported a successful publish from the wrong account "
+            f"@{actual_handle or 'unknown'}: {url}. No retry was attempted."
+        )
     return url, post_id, result.stdout
 
 
@@ -357,10 +398,163 @@ def _write_manifest(path: Path, data: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _recent_engaged_urls(runs: list[AccountRunResponse]) -> set[str]:
+    urls: set[str] = set()
+    for previous in runs:
+        if previous.feature_type != AccountAutomationFeature.X_ENGAGEMENT:
+            continue
+        for key in ("replies", "quote_reposts"):
+            rows = previous.content.get(key)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if isinstance(row, dict) and isinstance(row.get("target_url"), str):
+                    urls.add(row["target_url"].strip())
+    return urls
+
+
+def _status_id(url: str | None) -> str | None:
+    match = re.search(r"/status/(\d+)", url or "")
+    return match.group(1) if match else None
+
+
+async def _execute_engagement_run(
+    run: AccountRunResponse,
+    automation: AccountAutomationResponse,
+) -> None:
+    output_dir = config.OUTPUTS_DIR / "account-operations" / run.id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "manifest.json"
+    manifest: dict[str, Any] = {
+        "run_id": run.id,
+        "automation_id": automation.id,
+        "feature_type": automation.feature_type.value,
+        "status": AccountRunStatus.PLANNING.value,
+        "event_date": run.event_date,
+        "executor": automation.executor.value,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    async def log(message: str) -> None:
+        timestamped = datetime.now(timezone.utc).isoformat(timespec="seconds") + " " + message
+        await database.append_account_run_log(run.id, timestamped)
+
+    try:
+        await log(f"Verifying the active X account is @{automation.account_handle}")
+        account, switch_audit = await _ensure_account(automation, run_id=run.id)
+        manifest["verified_account"] = account
+        if switch_audit:
+            manifest["account_switch"] = switch_audit
+            await log(f"Switched X to @{automation.account_handle} and verified it")
+
+        previous_runs = await database.list_account_runs(limit=200)
+        exclusions = _recent_engaged_urls(previous_runs)
+        await database.update_account_run(
+            run.id,
+            status=AccountRunStatus.PUBLISHING.value,
+        )
+        manifest["status"] = AccountRunStatus.PUBLISHING.value
+        await log(
+            f"Starting {automation.executor.value} agent on Following; "
+            f"limits {automation.max_replies} replies/{automation.max_quote_reposts} quotes"
+        )
+        agent_result = await run_x_operational_agent(
+            automation.executor,
+            model=automation.opencode_model,
+            prompt=engagement_prompt(
+                automation,
+                run_id=run.id,
+                excluded_urls=exclusions,
+            ),
+            title=f"X engagement · {run.event_date} · @{automation.account_handle}",
+        )
+        manifest.update(
+            {
+                "agent_session_id": agent_result.session_id,
+                "agent_text": agent_result.text,
+                "agent_raw": agent_result.raw,
+            }
+        )
+        _write_manifest(manifest_path, manifest)
+        preliminary = first_json(agent_result.text)
+        manifest["agent_result"] = preliminary
+        _write_manifest(manifest_path, manifest)
+        if isinstance(preliminary, dict):
+            await database.update_account_run(
+                run.id,
+                title="Engagement · verifying published actions",
+                content_json=json.dumps(preliminary, ensure_ascii=False),
+            )
+        content = await recover_action_urls(
+            preliminary if isinstance(preliminary, dict) else agent_result.text,
+            automation,
+        )
+        content = validate_engagement_result(
+            content,
+            automation,
+            excluded_urls=exclusions,
+        )
+        final_account = await _verify_account(automation.account_handle)
+        replies = content["replies"]
+        quotes = content["quote_reposts"]
+        actions = [*replies, *quotes]
+        first_action = actions[0] if actions else {}
+        first_text = str(
+            first_action.get("reply_text") or first_action.get("quote_text") or ""
+        ).strip()
+        first_url = str(first_action.get("result_url") or "").strip() or None
+        title = f"Engagement · {len(replies)} replies · {len(quotes)} quotes"
+        completed_at = datetime.now(timezone.utc).isoformat()
+        manifest.update(
+            {
+                "status": AccountRunStatus.PUBLISHED.value,
+                "content": content,
+                "verified_account_after_run": final_account,
+                "completed_at": completed_at,
+            }
+        )
+        _write_manifest(manifest_path, manifest)
+        await database.update_account_run(
+            run.id,
+            status=AccountRunStatus.PUBLISHED.value,
+            completed_at=completed_at,
+            title=title,
+            post_text=first_text or None,
+            post_url=first_url,
+            external_post_id=_status_id(first_url),
+            content_json=json.dumps(content, ensure_ascii=False),
+            error_message=None,
+        )
+        await log(
+            f"Engagement completed: {len(replies)} replies and {len(quotes)} quote-reposts"
+        )
+    except Exception as exc:
+        completed_at = datetime.now(timezone.utc).isoformat()
+        manifest.update(
+            {
+                "status": AccountRunStatus.FAILED.value,
+                "completed_at": completed_at,
+                "error": str(exc),
+            }
+        )
+        _write_manifest(manifest_path, manifest)
+        await database.update_account_run(
+            run.id,
+            status=AccountRunStatus.FAILED.value,
+            completed_at=completed_at,
+            error_message=str(exc),
+        )
+        await log(f"Run failed: {exc}")
+        raise
+
+
 async def execute_run(run: AccountRunResponse) -> None:
     automation = await database.get_account_automation(run.automation_id)
     if automation is None:
         raise RuntimeError(f"Automation {run.automation_id} no longer exists")
+    if automation.feature_type == AccountAutomationFeature.X_ENGAGEMENT:
+        await _execute_engagement_run(run, automation)
+        return
     output_dir = config.OUTPUTS_DIR / "account-operations" / run.id
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
@@ -411,8 +605,11 @@ async def execute_run(run: AccountRunResponse) -> None:
             chatgpt_conversation_url=conversation_url or None,
         )
         await log(f"Verifying the active X account is @{automation.account_handle}")
-        account = await _verify_account(automation.account_handle)
+        account, switch_audit = await _ensure_account(automation, run_id=run.id)
         manifest["verified_account"] = account
+        if switch_audit:
+            manifest["account_switch"] = switch_audit
+            await log(f"Switched X to @{automation.account_handle} and verified it")
         await log("Publishing the post and image to X")
         post_url, post_id, publish_raw = await _publish(
             str(content["post_text"]), publish_image_path, automation.account_handle

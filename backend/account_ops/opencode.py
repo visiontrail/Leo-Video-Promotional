@@ -61,6 +61,42 @@ CONTENT PROMPT:
 """
     env = os.environ.copy()
     env["ACCOUNT_OPS_CONTENT_PROMPT"] = content_prompt
+    return await _run_agent(
+        model=model,
+        agent="account-operations",
+        title=f"Today in History · {event_date}",
+        prompt=agent_prompt,
+        env=env,
+        timeout=config.OPENCODE_TIMEOUT,
+    )
+
+
+async def run_operational_agent(
+    *,
+    model: str,
+    prompt: str,
+    title: str,
+) -> OpenCodeResult:
+    """Run the write-capable, OpenCLI-only X account operator once."""
+    return await _run_agent(
+        model=model,
+        agent="x-account-operator",
+        title=title,
+        prompt=prompt,
+        env=os.environ.copy(),
+        timeout=max(config.OPENCODE_TIMEOUT, 900),
+    )
+
+
+async def _run_agent(
+    *,
+    model: str,
+    agent: str,
+    title: str,
+    prompt: str,
+    env: dict[str, str],
+    timeout: int,
+) -> OpenCodeResult:
     process = await asyncio.create_subprocess_exec(
         config.OPENCODE_BIN,
         "run",
@@ -68,12 +104,12 @@ CONTENT PROMPT:
         "--model",
         model,
         "--agent",
-        "account-operations",
+        agent,
         "--format",
         "json",
         "--title",
-        f"Today in History · {event_date}",
-        agent_prompt,
+        title,
+        prompt,
         cwd=str(config.PROJECT_ROOT),
         env=env,
         stdout=asyncio.subprocess.PIPE,
@@ -81,13 +117,13 @@ CONTENT PROMPT:
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(), timeout=config.OPENCODE_TIMEOUT
+            process.communicate(), timeout=timeout
         )
     except TimeoutError as exc:
         process.kill()
         await process.communicate()
         raise OpenCodeError(
-            f"OpenCode timed out after {config.OPENCODE_TIMEOUT}s"
+            f"OpenCode timed out after {timeout}s"
         ) from exc
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
