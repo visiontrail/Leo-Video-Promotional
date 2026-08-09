@@ -62,7 +62,8 @@ export interface Task {
   source_type: 'youtube' | 'epub' | 'pdf';
   source_url: string | null;
   source_title: string | null;
-  status: 'queued' | 'extracting' | 'digesting' | 'sourcing' | 'tts' | 'awaiting_review' | 'composing' | 'complete' | 'failed';
+  generated_title: string | null;
+  status: 'queued' | 'extracting' | 'digesting' | 'titling' | 'sourcing' | 'tts' | 'awaiting_review' | 'composing' | 'complete' | 'failed';
   error_message: string | null;
   config: TaskConfig;
   /** UTC ISO-8601 start time; the worker holds the task until it passes. */

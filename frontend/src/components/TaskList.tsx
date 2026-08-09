@@ -9,6 +9,7 @@ const STATUS_LABELS: Record<string, string> = {
   scheduled: 'Scheduled',
   extracting: 'Extracting',
   digesting: 'Digesting',
+  titling: 'Generating Title',
   tts: 'Generating Audio',
   composing: 'Composing Video',
   complete: 'Complete',
@@ -29,6 +30,10 @@ function relativeTime(iso: string): string {
 
 function sourceName(task: Task): string {
   return task.source_title || task.source_url || `Untitled ${task.source_type.toUpperCase()} source`
+}
+
+function taskName(task: Task): string {
+  return task.generated_title || sourceName(task)
 }
 
 function formatCreated(iso: string): string {
@@ -95,7 +100,7 @@ export default function TaskList() {
             <table className="tasks-table">
               <thead>
                 <tr>
-                  <th scope="col">Source</th>
+                  <th scope="col">Title / Source</th>
                   <th scope="col">Status</th>
                   <th scope="col">Format</th>
                   <th scope="col">Target</th>
@@ -114,7 +119,7 @@ export default function TaskList() {
                     <tr
                       key={task.id}
                       tabIndex={0}
-                      aria-label={`Open ${sourceName(task)}`}
+                      aria-label={`Open ${taskName(task)}`}
                       onClick={open}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
@@ -129,8 +134,8 @@ export default function TaskList() {
                             {task.source_type === 'youtube' ? 'YT' : task.source_type.toUpperCase()}
                           </span>
                           <span className="task-source-copy">
-                            <strong title={sourceName(task)}>{sourceName(task)}</strong>
-                            <code>{task.id.slice(0, 8)}</code>
+                            <strong title={taskName(task)}>{taskName(task)}</strong>
+                            <code>{task.generated_title ? sourceName(task) : task.id.slice(0, 8)}</code>
                           </span>
                         </div>
                       </td>

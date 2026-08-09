@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from backend import config, prompts_registry
@@ -103,7 +104,7 @@ class ThumbnailGenerationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ThumbnailPipelineOrderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_thumbnail_runs_after_script_and_before_tts(self):
+    async def test_title_and_thumbnail_run_after_script_and_before_tts(self):
         with tempfile.TemporaryDirectory() as directory:
             events = []
             task = TaskResponse(
@@ -131,6 +132,11 @@ class ThumbnailPipelineOrderTests(unittest.IsolatedAsyncioTestCase):
 
             async def fake_thumbnail(*args, **kwargs):
                 events.append("thumbnail")
+                self.assertEqual(kwargs["title"], "A Better Video Title")
+
+            async def fake_title(*args, **kwargs):
+                events.append("title")
+                return SimpleNamespace(title="A Better Video Title")
 
             async def fake_tts(*args, **kwargs):
                 events.append("tts")
@@ -142,12 +148,13 @@ class ThumbnailPipelineOrderTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(orchestrator, "extract_youtube", AsyncMock(return_value=content)),
                 patch.object(orchestrator, "summarize", AsyncMock(return_value={"title": "Order Test"})),
                 patch.object(orchestrator, "generate_script", fake_script),
+                patch.object(orchestrator, "_generate_task_title", fake_title),
                 patch.object(orchestrator, "_generate_task_thumbnail", fake_thumbnail),
                 patch.object(orchestrator, "generate_tts", fake_tts),
             ):
                 await orchestrator.run_pipeline(task)
 
-            self.assertEqual(events, ["script", "thumbnail", "tts"])
+            self.assertEqual(events, ["script", "title", "thumbnail", "tts"])
 
 
 if __name__ == "__main__":

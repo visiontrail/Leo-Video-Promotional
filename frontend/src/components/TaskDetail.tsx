@@ -20,10 +20,11 @@ import FootagePanel from './FootagePanel'
 import { IconChevronLeft } from './Icons'
 import { countdown, formatStart, isPendingStart, localInputToIso, toLocalInputValue } from '../schedule'
 
-const STAGES = ['extracting', 'digesting', 'sourcing', 'tts', 'awaiting_review', 'composing', 'complete'] as const
+const STAGES = ['extracting', 'digesting', 'titling', 'sourcing', 'tts', 'awaiting_review', 'composing', 'complete'] as const
 const STAGE_LABELS: Record<string, string> = {
   extracting: 'Extract',
   digesting: 'Digest',
+  titling: 'Title',
   sourcing: 'Footage',
   tts: 'TTS',
   awaiting_review: 'Review',
@@ -67,6 +68,7 @@ export default function TaskDetail() {
   const dirty = draftOverride !== null && draftOverride !== scriptText
 
   const [startOverride, setStartOverride] = useState<string | null>(null)
+  const [titleCopied, setTitleCopied] = useState(false)
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteTask(id!),
@@ -135,7 +137,7 @@ export default function TaskDetail() {
           <span className="eyebrow">
             {task.source_type.toUpperCase()} &middot; {task.id.slice(0, 8)}
           </span>
-          <h1>{task.source_title || task.id}</h1>
+          <h1>{task.generated_title || task.source_title || task.id}</h1>
           {task.source_url && <p className="detail-source">{task.source_url}</p>}
         </div>
 
@@ -145,6 +147,8 @@ export default function TaskDetail() {
               ? 'Scheduled'
               : task.status === 'tts'
                 ? 'Generating Audio'
+                : task.status === 'titling'
+                  ? 'Generating Title'
                 : task.status === 'awaiting_review'
                   ? 'Awaiting Review'
                   : task.status}
@@ -249,6 +253,40 @@ export default function TaskDetail() {
 
           {task.status === 'failed' && task.error_message && (
             <div className="error-box">{task.error_message}</div>
+          )}
+
+          {task.generated_title && (
+            <section className="detail-panel title-result">
+              <div className="title-result-head">
+                <div>
+                  <span className="eyebrow">Independent Agent output</span>
+                  <h3>Publication title</h3>
+                </div>
+                <span className="title-result-mark">TITLE / READY</span>
+              </div>
+              <p className="title-result-copy">{task.generated_title}</p>
+              <div className="title-result-footer">
+                <div>
+                  <span>Source title</span>
+                  <strong>{task.source_title || 'Untitled source'}</strong>
+                </div>
+                <button
+                  className="btn-ghost"
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(task.generated_title!)
+                      setTitleCopied(true)
+                      window.setTimeout(() => setTitleCopied(false), 1600)
+                    } catch {
+                      setTitleCopied(false)
+                    }
+                  }}
+                >
+                  {titleCopied ? 'Copied' : 'Copy title'}
+                </button>
+              </div>
+            </section>
           )}
 
           {task.thumbnail_path && (

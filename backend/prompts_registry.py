@@ -71,6 +71,17 @@ PROMPT_REGISTRY: list[PromptSpec] = [
         variables=["word_count", "duration_minutes"],
     ),
     PromptSpec(
+        key="title",
+        file="title.txt",
+        label="Video Title Agent",
+        stage="Title",
+        description=(
+            "Guides the independent Agent SDK task that turns the final narration "
+            "and content brief into one publication-ready video title."
+        ),
+        variables=[],
+    ),
+    PromptSpec(
         key="footage_plan",
         file="footage_plan.txt",
         label="Public Footage Plan",

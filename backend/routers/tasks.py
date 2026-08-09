@@ -301,7 +301,14 @@ async def regenerate_task(task_id: str):
     task = await db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    if task.status in (TaskStatus.EXTRACTING, TaskStatus.DIGESTING, TaskStatus.TTS, TaskStatus.COMPOSING):
+    if task.status in (
+        TaskStatus.EXTRACTING,
+        TaskStatus.DIGESTING,
+        TaskStatus.TITLING,
+        TaskStatus.SOURCING,
+        TaskStatus.TTS,
+        TaskStatus.COMPOSING,
+    ):
         raise HTTPException(409, "Task is currently processing")
     if not task.script_path or not Path(task.script_path).exists():
         raise HTTPException(400, "No script available to regenerate from")

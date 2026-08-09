@@ -19,6 +19,7 @@ class TaskStatus(str, Enum):
     QUEUED = "queued"
     EXTRACTING = "extracting"
     DIGESTING = "digesting"
+    TITLING = "titling"
     SOURCING = "sourcing"
     TTS = "tts"
     AWAITING_REVIEW = "awaiting_review"
@@ -88,6 +89,7 @@ class TaskResponse(BaseModel):
     source_type: SourceType
     source_url: Optional[str] = None
     source_title: Optional[str] = None
+    generated_title: Optional[str] = None
     status: TaskStatus
     error_message: Optional[str] = None
     config: TaskConfig

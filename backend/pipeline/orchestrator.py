@@ -14,6 +14,7 @@ from backend.pipeline.tts import generate_tts
 from backend.pipeline.composer import compose_video
 from backend.pipeline.footage import acquire_footage
 from backend.pipeline.thumbnail import generate_thumbnail
+from backend.pipeline.title import generate_title
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ async def _acquire_task_footage(
         media_provider=task.config.footage_provider,
         task_id=task.id,
         task_dir=task_dir,
-        title=title or task.source_title or task.id,
+        title=title or task.generated_title or task.source_title or task.id,
         script_path=script_path,
         clip_count=task.config.footage_clip_count,
         orientation=task.config.footage_orientation,
@@ -91,6 +92,34 @@ async def _generate_task_thumbnail(
     )
     await update_task(task.id, thumbnail_path=artifact.image_path)
     task.thumbnail_path = artifact.image_path
+    return artifact
+
+
+async def _generate_task_title(
+    task: TaskResponse,
+    task_dir: Path,
+    task_log: LogCallback,
+    *,
+    source_title: str,
+    summary: dict | None = None,
+):
+    script_path = Path(task.script_path or task_dir / "script.txt")
+    script = script_path.read_text(encoding="utf-8").strip()
+    if not script:
+        raise RuntimeError(f"Title source script is empty at {script_path}")
+    artifact = await generate_title(
+        task_id=task.id,
+        task_dir=task_dir,
+        source_title=source_title,
+        summary=summary,
+        script=script,
+        provider_id=task.config.provider_id,
+        ai_endpoint=task.config.ai_endpoint,
+        ai_model=task.config.ai_model,
+        log=task_log,
+    )
+    await update_task(task.id, generated_title=artifact.title)
+    task.generated_title = artifact.title
     return artifact
 
 
@@ -171,41 +200,55 @@ async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     task.script_path = script_path
     task_log(f"Script saved to {script_path}")
 
-    # Stage 2.25: use the final narration (the exact TTS input) to derive one
+    # Stage 3: a dedicated Agent SDK session turns the completed narration into
+    # the publication title. It is persisted separately from the extracted
+    # source title and becomes the title consumed by every downstream stage.
+    task_log("Stage 3: Generating publication title with independent Agent")
+    await update_task(task.id, status=TaskStatus.TITLING.value)
+    title_artifact = await _generate_task_title(
+        task,
+        task_dir,
+        task_log,
+        source_title=content.title,
+        summary=summary,
+    )
+    publication_title = title_artifact.title
+
+    # Stage 4: use the final narration (the exact TTS input) to derive one
     # cover-art prompt, then generate/download the image through the signed-in
     # ChatGPT web session. Cover art is an enhancement, so a web/provider
     # outage is recorded in thumbnail/manifest.json but never discards a valid
     # script or forces a costly TTS retry.
     if task.config.thumbnail_enabled:
-        task_log("Stage 2.25: Generating script-driven viral thumbnail")
+        task_log("Stage 4: Generating script-driven viral thumbnail")
         try:
             await _generate_task_thumbnail(
                 task,
                 task_dir,
                 task_log,
-                title=content.title,
+                title=publication_title,
             )
         except Exception as exc:
             task_log(f"Thumbnail generation could not complete; continuing without cover art: {exc}")
 
-    # Stage 2.5: AI-planned public B-roll. Footage is a production enhancement,
+    # Stage 5: AI-planned public B-roll. Footage is a production enhancement,
     # not a reason to lose an otherwise valid narration, so provider/network
     # failures are logged and the audio pipeline continues.
     if task.config.footage_enabled:
-        task_log("Stage 2.5: Scouting open-license public footage")
+        task_log("Stage 5: Scouting open-license public footage")
         await update_task(task.id, status=TaskStatus.SOURCING.value)
         try:
             await _acquire_task_footage(
                 task,
                 task_dir,
                 task_log,
-                title=content.title,
+                title=publication_title,
             )
         except Exception as exc:
             task_log(f"Public footage scout could not complete; continuing without B-roll: {exc}")
 
-    # Stage 3: TTS
-    task_log(f"Stage 3: Generating TTS audio with {task.config.tts_model}")
+    # Stage 6: TTS
+    task_log(f"Stage 6: Generating TTS audio with {task.config.tts_model}")
     await update_task(task.id, status=TaskStatus.TTS.value)
 
     voices = [task.config.voice_1]
@@ -239,7 +282,24 @@ async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
     if not Path(script_path).exists():
         raise FileNotFoundError(f"No script to regenerate from at {script_path}")
 
-    title = task.source_title or task.id
+    summary_path = task_dir / "summary.json"
+    summary = None
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            task_log("Regenerate: Existing summary is unreadable; title Agent will use the script")
+
+    task_log("Regenerate: Updating publication title with independent Agent")
+    await update_task(task.id, status=TaskStatus.TITLING.value, error_message=None)
+    title_artifact = await _generate_task_title(
+        task,
+        task_dir,
+        task_log,
+        source_title=task.source_title or task.id,
+        summary=summary,
+    )
+    title = title_artifact.title
 
     # Keep cover art aligned with an edited script. This still precedes the TTS
     # subprocess, so a thumbnail failure consumes no model-synthesis memory.
@@ -255,7 +315,7 @@ async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
         except Exception as exc:
             task_log(f"Regenerate: Thumbnail update failed; retaining prior cover: {exc}")
 
-    # Stage 3: TTS
+    # Stage 6: TTS
     task_log(f"Regenerate: Generating TTS audio with {task.config.tts_model}")
     await update_task(task.id, status=TaskStatus.TTS.value, error_message=None)
 
@@ -321,7 +381,7 @@ async def run_compose(task: TaskResponse, log: LogCallback | None = None):
     if not Path(script_path).exists():
         raise FileNotFoundError(f"No script to compose from at {script_path}")
 
-    title = task.source_title or task.id
+    title = task.generated_title or task.source_title or task.id
 
     task_log(f"Render: Composing video with {task.config.video_template} template")
     await update_task(task.id, status=TaskStatus.COMPOSING.value, error_message=None)

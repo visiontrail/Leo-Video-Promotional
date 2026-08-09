@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_type TEXT NOT NULL,
     source_url TEXT,
     source_title TEXT,
+    generated_title TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     error_message TEXT,
     config_json TEXT NOT NULL,
@@ -135,6 +136,9 @@ async def _migrate_tasks(db: aiosqlite.Connection):
         await db.commit()
     if "thumbnail_path" not in existing:
         await db.execute("ALTER TABLE tasks ADD COLUMN thumbnail_path TEXT")
+        await db.commit()
+    if "generated_title" not in existing:
+        await db.execute("ALTER TABLE tasks ADD COLUMN generated_title TEXT")
         await db.commit()
 
 
@@ -321,6 +325,7 @@ def _row_to_response(row: aiosqlite.Row) -> TaskResponse:
         source_type=row["source_type"],
         source_url=row["source_url"],
         source_title=row["source_title"],
+        generated_title=row["generated_title"],
         status=row["status"],
         error_message=row["error_message"],
         config=TaskConfig(**json.loads(row["config_json"])),
@@ -406,6 +411,7 @@ async def reset_orphaned_tasks() -> int:
     in_progress = (
         TaskStatus.EXTRACTING.value,
         TaskStatus.DIGESTING.value,
+        TaskStatus.TITLING.value,
         TaskStatus.SOURCING.value,
         TaskStatus.TTS.value,
         TaskStatus.COMPOSING.value,
