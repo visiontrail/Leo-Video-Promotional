@@ -30,8 +30,6 @@ from backend.pipeline.process_logging import run_capture_logged, stream_subproce
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
 
-BRAND = "Video Promotional"
-
 # FFmpeg silence analysis is a quick pass; the HyperFrames render is the long
 # stage and is streamed live, so this ceiling only guards a genuine hang.
 SILENCE_TIMEOUT = 120
@@ -220,7 +218,7 @@ async def compose_video(
     plans = (
         [visual_plan.title_plan(board)]
         + scene_plans
-        + [visual_plan.outro_plan(board, brand=BRAND)]
+        + [visual_plan.outro_plan(board)]
     )
     (output_dir_path / "visual_plan.json").write_text(
         json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -284,7 +282,6 @@ async def compose_video(
         board,
         audio_src=audio_src,
         mounts=mounts,
-        brand=BRAND,
         theme=theme,
         character_src=character_src,
         captions_enabled=captions_enabled,

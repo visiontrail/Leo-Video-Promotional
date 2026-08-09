@@ -140,9 +140,9 @@ def test_missing_clip_files_are_skipped(tmp_path: Path):
 def test_title_and_outro_plans_are_spine_owned():
     data = board(1)
     title = visual_plan.title_plan(data)
-    outro = visual_plan.outro_plan(data, brand="Brand")
+    outro = visual_plan.outro_plan(data)
     assert title["id"] == visual_plan.TITLE_SCENE_ID
     assert title["archetype"] == "title"
     assert title["headline"] == "Episode"
     assert outro["archetype"] == "outro"
-    assert outro["body"] == "Brand"
+    assert outro["body"] == ""

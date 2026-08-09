@@ -46,6 +46,12 @@ def test_spine_has_no_remote_asset_references():
     assert "https://" not in html and "http://" not in html
 
 
+def test_spine_omits_brand_overlay_by_default():
+    html = assembler.build_spine(board([]), audio_src="audio/a.wav", mounts=[])
+
+    assert '<div class="brand">' not in html
+
+
 def test_adjacent_scenes_alternate_tracks_so_boundaries_cannot_overlap():
     mounts = [
         {"id": "scene-01", "start": 0.0, "duration": 10.0},
