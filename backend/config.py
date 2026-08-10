@@ -135,6 +135,38 @@ TTS_DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "vibevoice-0.5b")
 TTS_DEFAULT_VOICE_1 = os.getenv("TTS_DEFAULT_VOICE_1", "Carter")
 TTS_DEFAULT_VOICE_2 = os.getenv("TTS_DEFAULT_VOICE_2", "Alice")
 
+# Audio/visual alignment. The rendered TTS is transcribed back to word
+# timestamps, then the canonical script is force-aligned to that acoustic clock.
+# Required-by-default means the pipeline fails closed instead of knowingly
+# rendering a long video from estimated timing.
+AV_SYNC_REQUIRED = _env_bool("AV_SYNC_REQUIRED", "1")
+AV_SYNC_LANGUAGE = os.getenv("AV_SYNC_LANGUAGE", "en").strip() or "en"
+AV_SYNC_MLX_MODEL = os.getenv(
+    "AV_SYNC_MLX_MODEL", "mlx-community/whisper-large-v3-turbo-q4"
+).strip()
+AV_SYNC_WHISPER_MODEL = os.getenv("AV_SYNC_WHISPER_MODEL", "small.en").strip()
+AV_SYNC_MIN_WORD_COVERAGE_PERCENT = int(
+    os.getenv("AV_SYNC_MIN_WORD_COVERAGE_PERCENT", "65")
+)
+AV_SYNC_MAX_BOUNDARY_UNCERTAINTY_MS = int(
+    os.getenv("AV_SYNC_MAX_BOUNDARY_UNCERTAINTY_MS", "3000")
+)
+# Final rendered-pixel review. OpenCLI uploads labeled keyframe contact sheets
+# to the signed-in Gemini web app and compares them with the acoustic scene
+# excerpts. This is separate from lexical plan grounding: it judges the actual
+# MP4 after the renderer, including any authored HTML and placed B-roll.
+AV_SYNC_GEMINI_REVIEW_ENABLED = _env_bool("AV_SYNC_GEMINI_REVIEW_ENABLED", "1")
+AV_SYNC_GEMINI_REVIEW_REQUIRED = _env_bool("AV_SYNC_GEMINI_REVIEW_REQUIRED", "1")
+AV_SYNC_GEMINI_BATCH_SIZE = int(os.getenv("AV_SYNC_GEMINI_BATCH_SIZE", "8"))
+AV_SYNC_GEMINI_MIN_SCENE_SCORE = int(
+    os.getenv("AV_SYNC_GEMINI_MIN_SCENE_SCORE", "70")
+)
+AV_SYNC_GEMINI_MIN_AVERAGE_SCORE = int(
+    os.getenv("AV_SYNC_GEMINI_MIN_AVERAGE_SCORE", "82")
+)
+AV_SYNC_GEMINI_TIMEOUT = int(os.getenv("AV_SYNC_GEMINI_TIMEOUT", "180"))
+AV_SYNC_GEMINI_MAX_RETRIES = int(os.getenv("AV_SYNC_GEMINI_MAX_RETRIES", "1"))
+
 AVAILABLE_VOICES = {
     "Carter": {"gender": "male", "lang": "en"},
     "Frank": {"gender": "male", "lang": "en"},

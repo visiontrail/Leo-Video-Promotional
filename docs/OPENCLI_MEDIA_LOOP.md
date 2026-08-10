@@ -19,8 +19,11 @@ narration script
 ```
 
 OpenCLI is used where a real signed-in browser session matters. It connects to ChatGPT Web for
-script-driven cover generation and to Gemini Web for visual interval analysis. YouTube
-discovery/download stays on `yt-dlp`.
+script-driven cover generation and to Gemini Web for visual interval analysis. After HyperFrames
+renders the MP4, the pipeline also extracts a midpoint frame for every narration scene, combines
+them into labeled contact sheets, and uploads each sheet with the acoustic scene excerpts to
+Gemini. Missing uploads, omitted scene ids, low semantic scores, or malformed responses block the
+video when the A/V review gate is required. YouTube discovery/download stays on `yt-dlp`.
 
 ## Setup and isolation
 
@@ -30,6 +33,11 @@ discovery/download stays on `yt-dlp`.
 4. Run `./scripts/opencli.sh doctor`.
 5. Verify `./scripts/opencli.sh chatgpt status -f json` reports `Login: Yes`.
 6. In the New Task form leave Viral thumbnail enabled; select Hybrid or Web Platforms for web footage.
+
+The pinned OpenCLI install receives a project-local postinstall patch that adds `gemini ask --file`.
+It uses the same `File`/`DataTransfer` compatibility path as OpenCLI's other upload-capable adapters
+when Chrome rejects CDP `setFileInput`. The patch is stored under `tools/opencli/patches/`; it does
+not create a user adapter under `~/.opencli`.
 
 Project isolation can be audited with:
 
@@ -100,9 +108,9 @@ intentionally ignored by Git.
    Similar future narration can reuse proven sources without repeating browser work.
 4. **Beat-aware editing.** Derive energy and cut points from the final audio waveform, then align
    B-roll entrances and transitions without regenerating narration.
-5. **Evidence-first multimodal review.** Add a project OpenCLI adapter that uploads the three local
-   frames to Gemini when link access fails; upstream's generic upload command currently needs a
-   real file input exposed by the page.
+5. **Motion-aware multimodal review.** The shipped evidence-first pass judges one rendered midpoint
+   frame per scene. Add a second early/late frame only for scenes whose visual plan contains motion
+   or B-roll, so continuity can be checked without tripling every browser upload.
 6. **Rights inbox.** Present all web candidates in one approval queue with source snapshot, creator
    terms, intended use, and accept/replace controls; only approved clips can clear publication.
 7. **Self-healing web adapters.** Run the project copies of `opencli-browser-sitemap` and

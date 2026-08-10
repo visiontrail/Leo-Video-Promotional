@@ -98,6 +98,12 @@ GROUPS: tuple[SettingGroup, ...] = (
         "runs on, and the default model and voices for new tasks.",
     ),
     SettingGroup(
+        "av_sync",
+        "Audio / Visual Sync",
+        "Word-level acoustic alignment and the quality gate that prevents "
+        "estimated or drifting scene timing from reaching the renderer.",
+    ),
+    SettingGroup(
         "render",
         "Render",
         "HyperFrames capture settings. Frame count is duration x fps, so these "
@@ -263,6 +269,76 @@ SPECS: tuple[SettingSpec, ...] = (
         minimum=60, maximum=48 * 3600,
         description="Coarse ceiling on one synthesis run. A full-length script "
                     "legitimately decodes for hours.",
+    ),
+    # ── Audio / visual sync ──────────────────────────────────────────────
+    SettingSpec(
+        "AV_SYNC_REQUIRED", "av_sync", "Require verified alignment", "bool",
+        description="Fail the compose stage when no reliable word-level acoustic "
+                    "alignment can be produced. Keep this on to prevent drift.",
+    ),
+    SettingSpec(
+        "AV_SYNC_LANGUAGE", "av_sync", "Narration language", "string",
+        placeholder="en",
+        description="ISO language code passed to Whisper.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "AV_SYNC_MLX_MODEL", "av_sync", "Apple Silicon model", "string",
+        placeholder="mlx-community/whisper-large-v3-turbo-q4",
+        description="Preferred MLX Whisper model on Apple Silicon.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "AV_SYNC_WHISPER_MODEL", "av_sync", "Portable Whisper model", "choice",
+        options=("tiny.en", "base.en", "small.en", "medium.en", "large-v3"),
+        description="whisper.cpp fallback used through the pinned HyperFrames CLI.",
+    ),
+    SettingSpec(
+        "AV_SYNC_MIN_WORD_COVERAGE_PERCENT", "av_sync", "Minimum word coverage", "int",
+        unit="%", minimum=40, maximum=100,
+        description="Minimum share of canonical script words matched to the "
+                    "recognized acoustic timeline.",
+    ),
+    SettingSpec(
+        "AV_SYNC_MAX_BOUNDARY_UNCERTAINTY_MS", "av_sync", "Maximum boundary uncertainty", "int",
+        unit="ms", minimum=250, maximum=10000,
+        description="Reject alignment when a scene boundary is too far from the "
+                    "nearest acoustically matched word anchors.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_REVIEW_ENABLED", "av_sync", "Gemini rendered-frame review", "bool",
+        description="After rendering, upload labeled scene keyframe sheets and "
+                    "matching narration to Gemini Web through project-local OpenCLI.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_REVIEW_REQUIRED", "av_sync", "Require Gemini review", "bool",
+        description="Fail the compose stage if Gemini cannot see every sheet, omits "
+                    "a scene, or rejects the narration/visual match.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_BATCH_SIZE", "av_sync", "Scenes per Gemini sheet", "int",
+        unit="scenes", minimum=1, maximum=12,
+        description="Number of labeled keyframes combined into one browser upload.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_MIN_SCENE_SCORE", "av_sync", "Minimum scene match", "int",
+        unit="/100", minimum=40, maximum=100,
+        description="Every rendered scene must reach this semantic match score.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_MIN_AVERAGE_SCORE", "av_sync", "Minimum average match", "int",
+        unit="/100", minimum=40, maximum=100,
+        description="The mean match score across the full video must reach this value.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_TIMEOUT", "av_sync", "Gemini review timeout", "int",
+        unit="seconds", minimum=30, maximum=900,
+        description="Per-contact-sheet wait for the signed-in Gemini Web response.",
+    ),
+    SettingSpec(
+        "AV_SYNC_GEMINI_MAX_RETRIES", "av_sync", "Gemini review retries", "int",
+        minimum=0, maximum=3,
+        description="Bounded retries for a missing, late, or malformed Gemini Web response.",
     ),
     # ── Render ───────────────────────────────────────────────────────────
     SettingSpec(

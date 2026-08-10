@@ -13,6 +13,10 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 Pillow>=10.0.0
 
+# Fast word-level Whisper timestamps on Apple Silicon. Other platforms use the
+# pinned HyperFrames whisper.cpp fallback from hyperframe/node_modules.
+mlx-whisper>=0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
+
 # Claude Agent SDK — installed from the vendored submodule so the pinned
 # source is the single source of truth (see .gitmodules). The `claude` CLI it
 # drives is provided separately: on PATH locally, and via npm in the image.

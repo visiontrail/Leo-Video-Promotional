@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -37,6 +38,16 @@ _ACCENT_CYCLE = ("amber", "teal", "coral", "violet", "sky", "rose", "lime")
 _MOTIF_CYCLE = ("orbit", "waves", "grid", "arcs", "bloom", "prism", "skyline", "sunburst")
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_TERM_RE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?")
+_GROUNDING_STOPWORDS = frozenset(
+    "a an and are as at be been but by for from had has have he her his i if in into is it its "
+    "me my not of on or our she so than that the their them then there they this to was we were "
+    "what when which who will with would you your just really thing things".split()
+)
+_NEGATIVE_ANALYSIS = re.compile(
+    r"\b(?:no b-?roll|no visual depictions?|unrelated|does not (?:show|depict|match)|talking-head filler)\b",
+    re.IGNORECASE,
+)
 
 
 def _emit(log: LogCallback | None, message: str) -> None:
@@ -150,6 +161,7 @@ def fallback_plan(storyboard: dict) -> list[dict]:
                 "quote": headline if archetype == "quote" else "",
                 "accent": _ACCENT_CYCLE[i % len(_ACCENT_CYCLE)],
                 "motif": _MOTIF_CYCLE[i % len(_MOTIF_CYCLE)],
+                "grounding_source": "narration_fallback",
             }
         )
     return plans
@@ -186,7 +198,60 @@ def _normalise(raw: dict, scene: dict, index: int) -> dict:
     plan["body"] = str(plan.get("body") or "")[:260]
     plan["kicker"] = str(plan["kicker"])[:30]
     plan["items"] = [str(item)[:90] for item in (plan.get("items") or [])][:4]
+    for key, limit in (
+        ("quote", 260),
+        ("attribution", 90),
+        ("stat", 48),
+        ("stat_label", 120),
+        ("left_label", 48),
+        ("left_text", 150),
+        ("right_label", 48),
+        ("right_text", 150),
+    ):
+        plan[key] = str(plan.get(key) or "")[:limit]
+    plan["grounding_source"] = "model"
     return plan
+
+
+def _normal_term(value: str) -> str:
+    term = value.replace("’", "'").casefold()
+    if len(term) > 4 and term.endswith("ies"):
+        return term[:-3] + "y"
+    if len(term) > 4 and term.endswith("s") and not term.endswith("ss"):
+        return term[:-1]
+    return term
+
+
+def _terms(value: object) -> set[str]:
+    return {
+        normal
+        for token in _TERM_RE.findall(str(value or ""))
+        if (normal := _normal_term(token)) not in _GROUNDING_STOPWORDS and len(normal) >= 3
+    }
+
+
+def _plan_copy(plan: dict) -> str:
+    fields = [
+        plan.get("headline"),
+        plan.get("body"),
+        plan.get("quote"),
+        plan.get("stat"),
+        plan.get("stat_label"),
+        plan.get("left_text"),
+        plan.get("right_text"),
+        *(plan.get("items") or []),
+    ]
+    return " ".join(str(value or "") for value in fields)
+
+
+def _plan_grounding(plan: dict, scene: dict) -> tuple[bool, list[str]]:
+    scene_terms = _terms(scene.get("text", ""))
+    overlap = sorted(scene_terms & _terms(_plan_copy(plan)))
+    # Derived plans quote the narration and are therefore grounded by
+    # construction. Model plans need at least one concrete lexical anchor;
+    # otherwise a fluent but unrelated scene is replaced by the safe fallback.
+    grounded = plan.get("grounding_source") == "narration_fallback" or bool(overlap)
+    return grounded, overlap
 
 
 def _batch_prompt_payload(storyboard: dict, scenes: list[dict]) -> str:
@@ -255,7 +320,10 @@ async def plan_scene_visuals(
             raw = indexed.get(scene["id"])
             if raw is None:
                 continue
-            by_id[scene["id"]] = _normalise(raw, scene, scene["index"])
+            normalised = _normalise(raw, scene, scene["index"])
+            grounded, _ = _plan_grounding(normalised, scene)
+            if grounded:
+                by_id[scene["id"]] = normalised
 
     derived = {plan["id"]: plan for plan in fallback_plan(storyboard)}
     plans = [by_id.get(scene["id"]) or derived[scene["id"]] for scene in scenes]
@@ -292,6 +360,20 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
         return 0
 
     scenes_by_id = {scene["id"]: scene for scene in storyboard.get("scenes", [])}
+    scene_terms = {
+        scene_id: _terms(
+            f"{scene.get('text', '')} {' '.join(scene.get('keywords') or [])}"
+        )
+        for scene_id, scene in scenes_by_id.items()
+    }
+    document_frequency: dict[str, int] = {}
+    for terms in scene_terms.values():
+        for term in terms:
+            document_frequency[term] = document_frequency.get(term, 0) + 1
+    common_threshold = max(2, math.ceil(max(1, len(scene_terms)) * 0.35))
+    common_terms = {
+        term for term, frequency in document_frequency.items() if frequency >= common_threshold
+    }
     used: set[str] = set()
     attached = 0
 
@@ -309,21 +391,51 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
         except ValueError:
             continue
 
-        terms = {
-            word.lower()
-            for word in re.findall(r"[A-Za-z]{4,}", f"{clip.get('query', '')} {clip.get('title', '')}")
-        }
-        best_id, best_score = None, 0
+        analysis = clip.get("analysis") or {}
+        confidence = float(analysis.get("confidence") or 1.0)
+        if analysis and confidence < 0.65:
+            continue
+        if _NEGATIVE_ANALYSIS.search(str(analysis.get("reason") or "")):
+            continue
+
+        weighted_terms: dict[str, int] = {}
+        for value, weight in (
+            # The excerpt is the narration for which the clip/interval was
+            # actually selected. It is a stronger constraint than the broad
+            # discovery query: without it, a "fiat money" search result chosen
+            # for a history paragraph can be reassigned to an unrelated central
+            # bank paragraph that happens to share two query words.
+            (clip.get("script_excerpt", ""), 5),
+            (clip.get("query", ""), 3),
+            (clip.get("purpose", ""), 2),
+            (clip.get("title", ""), 1),
+        ):
+            for term in _terms(value):
+                weighted_terms[term] = max(weighted_terms.get(term, 0), weight)
+        distinctive = set(weighted_terms) - common_terms
+        excerpt_terms = _terms(clip.get("script_excerpt", "")) - common_terms
+        minimum_excerpt_matches = min(3, len(excerpt_terms))
+
+        best_id, best_score, best_matches, best_excerpt_matches = None, 0.0, [], []
         for plan in plans:
             if plan["id"] in used:
                 continue
             scene = scenes_by_id.get(plan["id"])
             if not scene:
                 continue
-            score = len(terms & set(scene.get("keywords") or []))
+            matches = sorted(distinctive & scene_terms[plan["id"]])
+            if len(matches) < 2:
+                continue
+            excerpt_matches = sorted(excerpt_terms & scene_terms[plan["id"]])
+            if excerpt_terms and len(excerpt_matches) < minimum_excerpt_matches:
+                continue
+            score = sum(weighted_terms[term] for term in matches)
             if score > best_score:
-                best_id, best_score = plan["id"], score
-        if best_id is None or best_score == 0:
+                best_id = plan["id"]
+                best_score = score
+                best_matches = matches
+                best_excerpt_matches = excerpt_matches
+        if best_id is None or best_score <= 0:
             continue
 
         plan = next(p for p in plans if p["id"] == best_id)
@@ -336,7 +448,59 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
             provider = str(clip.get("provider") or "Footage source")
             credit = f"{creator} · {provider}"
         plan["footage_credit"] = str(credit)[:90]
+        plan["footage_query"] = str(clip.get("query") or "")[:160]
+        plan["footage_match_terms"] = best_matches
+        plan["footage_script_match_terms"] = best_excerpt_matches
+        plan["footage_match_score"] = best_score
+        plan["footage_confidence"] = round(confidence, 3)
         used.add(best_id)
         attached += 1
 
     return attached
+
+
+def visual_grounding_report(plans: list[dict], storyboard: dict) -> dict:
+    """Machine-readable semantic audit consumed by the compose quality gate."""
+    by_id = {plan["id"]: plan for plan in plans}
+    results: list[dict] = []
+    for scene in storyboard.get("scenes", []):
+        plan = by_id.get(scene["id"])
+        if not plan:
+            results.append({"id": scene["id"], "grounded": False, "reason": "missing plan"})
+            continue
+        grounded, overlap = _plan_grounding(plan, scene)
+        reason = "copy grounded in narration"
+        if plan.get("archetype") == "footage":
+            match_terms = plan.get("footage_match_terms") or []
+            script_match_terms = plan.get("footage_script_match_terms")
+            script_grounded = script_match_terms is None or len(script_match_terms) >= 2
+            grounded = (
+                grounded
+                and len(match_terms) >= 2
+                and script_grounded
+                and float(plan.get("footage_confidence") or 0) >= 0.65
+            )
+            reason = (
+                f"footage matched on {', '.join(match_terms)}"
+                if grounded
+                else "footage lacked two distinctive narration matches"
+            )
+        results.append(
+            {
+                "id": scene["id"],
+                "grounded": grounded,
+                "reason": reason,
+                "copy_match_terms": overlap,
+                "grounding_source": plan.get("grounding_source", "unknown"),
+            }
+        )
+
+    grounded_count = sum(1 for result in results if result["grounded"])
+    rate = grounded_count / max(1, len(results))
+    return {
+        "scene_count": len(results),
+        "grounded_scenes": grounded_count,
+        "grounding_rate": round(rate, 4),
+        "passed": grounded_count == len(results),
+        "scenes": results,
+    }

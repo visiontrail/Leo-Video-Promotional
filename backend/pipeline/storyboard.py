@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import re
 import wave
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable
+from difflib import SequenceMatcher
 from pathlib import Path
 
 LogCallback = Callable[[str], None]
@@ -38,6 +40,8 @@ CONTENT_START = 0.0
 OUTRO_DURATION = 5.0
 
 SPEAKER_LABEL_RE = re.compile(r"^Speaker\s*(\d+)\s*[:：\-—–]\s*(.+)$", re.IGNORECASE)
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+")
+TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?|[\u3400-\u9fff]")
 
 # Words too generic to describe a scene visually. Used only for the keyword hint
 # that helps the visual planner and the footage matcher; not user-visible.
@@ -75,8 +79,107 @@ def parse_script_lines(script_path: str | Path, is_monologue: bool = False) -> l
             text = match.group(2)
         else:
             speaker = 1 if is_monologue else (len(lines) % 2) + 1
-        lines.append({"speaker": speaker, "text": text, "word_count": len(text.split())})
+        # A model occasionally emits an entire paragraph on one physical line.
+        # Treating that as one indivisible timing unit can leave the same visual
+        # on screen for a minute or more. Sentence-sized units remain faithful
+        # to the TTS input while giving the forced aligner useful cut points.
+        sentences = [part.strip() for part in SENTENCE_SPLIT_RE.split(text) if part.strip()]
+        for sentence in sentences or [text]:
+            token_count = len(_tokens(sentence))
+            lines.append(
+                {
+                    "speaker": speaker,
+                    "text": sentence,
+                    "word_count": token_count or 1,
+                }
+            )
     return lines
+
+
+def _tokens(value: object) -> list[str]:
+    """Comparable speech tokens for scripts and Whisper output."""
+    text = str(value or "").replace("’", "'").casefold()
+    return TOKEN_RE.findall(text)
+
+
+def _apply_boundaries(lines: list[dict], boundaries: list[float], audio_duration: float) -> list[dict]:
+    """Land monotonically increasing boundaries on line timing records."""
+    if not lines:
+        return lines
+
+    minimum = min(0.2, audio_duration / max(2, len(lines) * 2))
+    marks = [0.0]
+    for raw in boundaries[: len(lines) - 1]:
+        marks.append(max(marks[-1] + minimum, min(float(raw), audio_duration)))
+    marks.append(audio_duration)
+
+    # A pathological recognizer can put several boundaries at the very end.
+    # Repair from right to left so every line retains a positive interval.
+    for i in range(len(marks) - 2, 0, -1):
+        marks[i] = min(marks[i], marks[i + 1] - minimum)
+    marks[0], marks[-1] = 0.0, audio_duration
+
+    for i, line in enumerate(lines):
+        start, end = marks[i], marks[i + 1]
+        line["start"] = round(start, 3)
+        line["duration"] = round(max(minimum, end - start), 3)
+    return lines
+
+
+def _select_silence_boundaries(
+    lines: list[dict], audio_duration: float, candidates: list[float]
+) -> list[float]:
+    """Choose silence marks near expected line positions, not the first N.
+
+    VibeVoice can insert sentence-internal pauses longer than a second. The old
+    implementation consumed the first ``line_count - 1`` silence marks, which
+    pushed every later line early and left the final sentence holding the
+    remainder of the audio. This dynamic program finds the monotonic subset
+    closest to word-proportional boundary estimates.
+    """
+    needed = len(lines) - 1
+    usable = sorted({float(value) for value in candidates if 0 < value < audio_duration})
+    if needed <= 0 or len(usable) < needed:
+        return []
+
+    total = sum(max(1, int(line.get("word_count") or 1)) for line in lines)
+    running = 0
+    expected: list[float] = []
+    for line in lines[:-1]:
+        running += max(1, int(line.get("word_count") or 1))
+        expected.append(audio_duration * running / total)
+
+    infinity = float("inf")
+    previous = [(mark - expected[0]) ** 2 for mark in usable]
+    parents: list[list[int]] = []
+    for boundary_index in range(1, needed):
+        prefix_cost = infinity
+        prefix_index = -1
+        best_before: list[tuple[float, int]] = []
+        for candidate_index, cost in enumerate(previous):
+            best_before.append((prefix_cost, prefix_index))
+            if cost < prefix_cost:
+                prefix_cost, prefix_index = cost, candidate_index
+
+        current = [infinity] * len(usable)
+        parent = [-1] * len(usable)
+        for candidate_index, mark in enumerate(usable):
+            cost, prior = best_before[candidate_index]
+            if prior >= 0:
+                current[candidate_index] = cost + (mark - expected[boundary_index]) ** 2
+                parent[candidate_index] = prior
+        parents.append(parent)
+        previous = current
+
+    end_index = min(range(len(usable)), key=previous.__getitem__)
+    if previous[end_index] == infinity:
+        return []
+    chosen = [end_index]
+    for parent in reversed(parents):
+        end_index = parent[end_index]
+        chosen.append(end_index)
+    chosen.reverse()
+    return [usable[index] for index in chosen]
 
 
 def assign_line_timing(
@@ -96,13 +199,9 @@ def assign_line_timing(
     total_words = sum(line["word_count"] for line in lines) or len(lines)
     boundaries = silence_boundaries or []
 
-    if len(boundaries) >= len(lines) - 1 > 0:
-        marks = [0.0] + boundaries[: len(lines) - 1]
-        for i, line in enumerate(lines):
-            end = marks[i + 1] if i + 1 < len(marks) else audio_duration
-            line["start"] = round(marks[i], 3)
-            line["duration"] = round(max(0.2, end - marks[i]), 3)
-        return lines
+    selected = _select_silence_boundaries(lines, audio_duration, boundaries)
+    if selected:
+        return _apply_boundaries(lines, selected, audio_duration)
 
     elapsed = 0.0
     for line in lines:
@@ -112,6 +211,120 @@ def assign_line_timing(
         line["duration"] = round(duration, 3)
         elapsed += duration
     return lines
+
+
+def align_lines_to_transcript(
+    lines: list[dict],
+    word_transcript: list[dict],
+    audio_duration: float,
+    *,
+    minimum_word_coverage: float = 0.65,
+    maximum_boundary_uncertainty: float = 3.0,
+) -> tuple[list[dict], dict]:
+    """Force-align the canonical script to Whisper word timestamps.
+
+    Whisper supplies the acoustic clock; the script supplies the exact words.
+    ``SequenceMatcher`` tolerates recognizer substitutions while preserving
+    order. Line boundaries are interpolated between the nearest matched word
+    anchors, so an ASR error cannot create the catastrophic cumulative drift
+    caused by consuming silence marks by ordinal position.
+    """
+    expected: list[str] = []
+    line_starts: list[int] = []
+    for line in lines:
+        line_starts.append(len(expected))
+        expected.extend(_tokens(line.get("text", "")))
+
+    observed: list[str] = []
+    observed_words: list[dict] = []
+    for word in word_transcript or []:
+        tokens = _tokens(word.get("text", ""))
+        if not tokens:
+            continue
+        try:
+            start = max(0.0, float(word["start"]))
+            end = min(audio_duration, max(start, float(word["end"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        # Whisper normally emits one token per record. If punctuation/imported
+        # text expands into several tokens, share the acoustic span between them.
+        span = max(0.001, end - start)
+        for index, token in enumerate(tokens):
+            token_start = start + span * index / len(tokens)
+            token_end = start + span * (index + 1) / len(tokens)
+            observed.append(token)
+            observed_words.append({"start": token_start, "end": token_end})
+
+    matcher = SequenceMatcher(a=expected, b=observed, autojunk=False)
+    pairs: list[tuple[int, int]] = []
+    for block in matcher.get_matching_blocks():
+        pairs.extend((block.a + offset, block.b + offset) for offset in range(block.size))
+
+    anchors: list[tuple[float, float]] = [(0.0, 0.0)]
+    for expected_index, observed_index in pairs:
+        word = observed_words[observed_index]
+        anchors.append(
+            (expected_index + 0.5, (float(word["start"]) + float(word["end"])) / 2)
+        )
+    anchors.append((float(len(expected)), audio_duration))
+    anchors.sort()
+
+    positions = [position for position, _ in anchors]
+    internal_boundaries: list[float] = []
+    uncertainties: list[float] = []
+    for token_position in line_starts[1:]:
+        right_index = min(len(anchors) - 1, bisect_left(positions, token_position))
+        left_index = max(0, right_index - 1)
+        left_position, left_time = anchors[left_index]
+        right_position, right_time = anchors[right_index]
+        if right_position <= left_position:
+            boundary = left_time
+        else:
+            fraction = (token_position - left_position) / (right_position - left_position)
+            boundary = left_time + fraction * (right_time - left_time)
+        internal_boundaries.append(boundary)
+        uncertainties.append(min(abs(boundary - left_time), abs(right_time - boundary)))
+
+    _apply_boundaries(lines, internal_boundaries, audio_duration)
+
+    matched_lines = {
+        max(0, bisect_right(line_starts, expected_index) - 1)
+        for expected_index, _ in pairs
+    }
+    word_coverage = len(pairs) / max(1, len(expected))
+    line_coverage = len(matched_lines) / max(1, len(lines))
+    speech_end = max((float(word["end"]) for word in observed_words), default=0.0)
+    audio_coverage = speech_end / max(0.001, audio_duration)
+    max_uncertainty = max(uncertainties, default=0.0)
+
+    failures: list[str] = []
+    if word_coverage < minimum_word_coverage:
+        failures.append(
+            f"matched-word coverage {word_coverage:.1%} is below {minimum_word_coverage:.1%}"
+        )
+    if line_coverage < 0.75:
+        failures.append(f"matched-line coverage {line_coverage:.1%} is below 75.0%")
+    if audio_coverage < 0.80:
+        failures.append(f"transcript covers only {audio_coverage:.1%} of the audio")
+    if max_uncertainty > maximum_boundary_uncertainty:
+        failures.append(
+            f"maximum boundary uncertainty {max_uncertainty:.2f}s exceeds "
+            f"{maximum_boundary_uncertainty:.2f}s"
+        )
+
+    report = {
+        "method": "whisper_script_forced_alignment",
+        "script_words": len(expected),
+        "transcript_words": len(observed),
+        "matched_words": len(pairs),
+        "word_coverage": round(word_coverage, 4),
+        "line_coverage": round(line_coverage, 4),
+        "audio_coverage": round(audio_coverage, 4),
+        "max_boundary_uncertainty_seconds": round(max_uncertainty, 3),
+        "passed": not failures,
+        "failure_reasons": failures,
+    }
+    return lines, report
 
 
 def _keywords(text: str, limit: int = 8) -> list[str]:
@@ -200,13 +413,30 @@ def build_storyboard(
     audio_duration: float,
     title: str,
     silence_boundaries: list[float] | None = None,
+    word_transcript: list[dict] | None = None,
+    minimum_word_coverage: float = 0.65,
+    maximum_boundary_uncertainty: float = 3.0,
     is_monologue: bool = True,
     summary: dict | None = None,
     log: LogCallback | None = None,
 ) -> dict:
     """Assemble the full storyboard document for one task."""
     lines = parse_script_lines(script_path, is_monologue=is_monologue)
-    lines = assign_line_timing(lines, audio_duration, silence_boundaries)
+    if word_transcript:
+        lines, alignment = align_lines_to_transcript(
+            lines,
+            word_transcript,
+            audio_duration,
+            minimum_word_coverage=minimum_word_coverage,
+            maximum_boundary_uncertainty=maximum_boundary_uncertainty,
+        )
+    else:
+        lines = assign_line_timing(lines, audio_duration, silence_boundaries)
+        alignment = {
+            "method": "silence_guided_estimate" if silence_boundaries else "word_count_estimate",
+            "passed": False,
+            "failure_reasons": ["word-level transcript unavailable"],
+        }
     scenes = group_lines_into_scenes(lines, offset=CONTENT_START)
 
     if log:
@@ -226,6 +456,7 @@ def build_storyboard(
         "total_duration": round(CONTENT_START + audio_duration + OUTRO_DURATION, 2),
         "scene_count": len(scenes),
         "scenes": scenes,
+        "alignment": alignment,
     }
 
 

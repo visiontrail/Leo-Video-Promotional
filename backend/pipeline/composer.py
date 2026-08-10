@@ -24,7 +24,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 from backend import config
-from backend.pipeline import assembler, director, footage, scene_kit, storyboard as sb, visual_plan
+from backend.pipeline import (
+    av_sync,
+    assembler,
+    director,
+    footage,
+    multimodal_review,
+    scene_kit,
+    storyboard as sb,
+    visual_plan,
+)
 from backend.pipeline.process_logging import run_capture_logged, stream_subprocess
 
 logger = logging.getLogger(__name__)
@@ -174,6 +183,12 @@ async def compose_video(
 
     # --- 1. Storyboard -----------------------------------------------------
     audio_duration = sb.get_audio_duration(audio_path)
+    word_transcript, transcription = await av_sync.ensure_word_transcript(
+        audio_path,
+        output_dir_path,
+        required=config.AV_SYNC_REQUIRED,
+        log=emit,
+    )
     boundaries = _detect_silence_boundaries(audio_path, log)
     emit(f"Audio duration: {audio_duration:.1f}s; {len(boundaries)} silence boundaries detected")
 
@@ -185,11 +200,24 @@ async def compose_video(
         audio_duration=audio_duration,
         title=title,
         silence_boundaries=boundaries,
+        word_transcript=word_transcript,
+        minimum_word_coverage=config.AV_SYNC_MIN_WORD_COVERAGE_PERCENT / 100,
+        maximum_boundary_uncertainty=config.AV_SYNC_MAX_BOUNDARY_UNCERTAINTY_MS / 1000,
         is_monologue=is_monologue,
         summary=summary,
         log=emit,
     )
+    board["alignment"]["transcription_backend"] = transcription.get("backend", "unavailable")
     sb.write_storyboard(output_dir_path, board)
+    if config.AV_SYNC_REQUIRED and not board["alignment"].get("passed"):
+        reasons = "; ".join(board["alignment"].get("failure_reasons") or ["unknown failure"])
+        raise RuntimeError(f"A/V sync quality gate rejected the storyboard: {reasons}")
+    emit(
+        "A/V sync timing: "
+        f"{float(board['alignment'].get('word_coverage') or 0):.1%} word coverage; "
+        f"max boundary uncertainty "
+        f"{float(board['alignment'].get('max_boundary_uncertainty_seconds') or 0):.2f}s"
+    )
     emit(f"Composition {board['total_duration']:.1f}s over {board['scene_count']} scenes")
 
     # --- 2. Direction ------------------------------------------------------
@@ -207,6 +235,26 @@ async def compose_video(
         emit(f"Footage: {attached} manifest clip(s) placed as full-bleed scenes")
 
     scene_plans = list(plans)
+    visual_grounding = visual_plan.visual_grounding_report(scene_plans, board)
+    quality_report = {
+        "passed": bool(board["alignment"].get("passed")) and visual_grounding["passed"],
+        "timing": board["alignment"],
+        "visual_grounding": visual_grounding,
+        "multimodal": {"status": "pending", "passed": False},
+    }
+    (output_dir_path / "av_sync_report.json").write_text(
+        json.dumps(quality_report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    if not visual_grounding["passed"]:
+        failed = [scene["id"] for scene in visual_grounding["scenes"] if not scene["grounded"]]
+        raise RuntimeError(
+            "A/V sync quality gate rejected ungrounded visual plans: " + ", ".join(failed)
+        )
+    emit(
+        f"A/V sync semantics: {visual_grounding['grounded_scenes']}/"
+        f"{visual_grounding['scene_count']} scene plans grounded in their narration"
+    )
+
     plans = scene_plans + [visual_plan.outro_plan(board)]
     (output_dir_path / "visual_plan.json").write_text(
         json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -359,4 +407,45 @@ async def compose_video(
         raise RuntimeError("Video render produced no output file")
 
     emit(f"Video rendered: {video_path} ({video_path.stat().st_size / 1024 / 1024:.1f} MB)")
+    if config.AV_SYNC_GEMINI_REVIEW_ENABLED:
+        gemini_review = await multimodal_review.review_video(
+            video_path,
+            board,
+            output_dir_path,
+            log=emit,
+        )
+    else:
+        gemini_review = {
+            "status": "disabled",
+            "passed": False,
+            "analyzer": "gemini-web-via-opencli",
+            "scenes": [],
+        }
+    quality_report["multimodal"] = gemini_review
+    quality_report["passed"] = (
+        bool(board["alignment"].get("passed"))
+        and visual_grounding["passed"]
+        and (
+            gemini_review["passed"]
+            or not config.AV_SYNC_GEMINI_REVIEW_REQUIRED
+        )
+    )
+    (output_dir_path / "av_sync_report.json").write_text(
+        json.dumps(quality_report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    if (
+        config.AV_SYNC_GEMINI_REVIEW_ENABLED
+        and config.AV_SYNC_GEMINI_REVIEW_REQUIRED
+        and not gemini_review["passed"]
+    ):
+        failed = ", ".join(gemini_review.get("failed_scene_ids") or [])
+        errors = "; ".join(gemini_review.get("errors") or [])
+        detail = failed or errors or "review thresholds were not met"
+        raise RuntimeError(f"Gemini A/V match gate rejected the rendered video: {detail}")
+    if gemini_review["passed"]:
+        emit(
+            "Gemini A/V match: "
+            f"{gemini_review['reviewed_scenes']}/{gemini_review['scene_count']} scenes passed; "
+            f"average {gemini_review['average_score']:.1f}/100"
+        )
     return str(video_path)

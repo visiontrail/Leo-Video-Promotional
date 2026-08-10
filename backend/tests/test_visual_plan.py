@@ -145,6 +145,109 @@ def test_missing_clip_files_are_skipped(tmp_path: Path):
     assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 0
 
 
+def test_low_confidence_or_weakly_grounded_footage_is_not_attached(tmp_path: Path):
+    data = board(2)
+    data["scenes"][0]["text"] = "Central banks are hoarding reserves in secure vaults."
+    data["scenes"][1]["text"] = "A supernova forged the gold inside neutron stars."
+    plans = visual_plan.fallback_plan(data)
+    (tmp_path / "footage").mkdir()
+    (tmp_path / "footage" / "bad.mp4").write_bytes(b"x")
+    manifest = {
+        "clips": [
+            {
+                "local_path": "footage/bad.mp4",
+                "query": "gold market",
+                "purpose": "generic gold imagery",
+                "analysis": {
+                    "confidence": 0.5,
+                    "reason": "Talking-head filler with no visual depiction of the requested subject.",
+                },
+            }
+        ]
+    }
+
+    assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 0
+
+
+def test_footage_uses_purpose_and_two_distinctive_narration_terms(tmp_path: Path):
+    data = board(2)
+    data["scenes"][0]["text"] = "Gold prices rose, and fear spread through markets."
+    data["scenes"][1]["text"] = "Central banks accumulated reserves and hoarded bullion."
+    data["scenes"][0]["keywords"] = ["gold", "fear"]
+    data["scenes"][1]["keywords"] = ["central", "banks", "reserves", "bullion"]
+    plans = visual_plan.fallback_plan(data)
+    (tmp_path / "footage").mkdir()
+    (tmp_path / "footage" / "vault.mp4").write_bytes(b"x")
+    manifest = {
+        "clips": [
+            {
+                "local_path": "footage/vault.mp4",
+                "query": "gold bars vault",
+                "purpose": "central bank reserves and bullion hoarding",
+                "title": "Inside a gold vault",
+                "analysis": {"confidence": 0.9, "reason": "Bullion bars in a central bank vault."},
+            }
+        ]
+    }
+
+    assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 1
+    assert plans[1]["archetype"] == "footage"
+    assert len(plans[1]["footage_match_terms"]) >= 2
+
+
+def test_footage_script_excerpt_prevents_query_based_reassignment(tmp_path: Path):
+    data = board(2)
+    data["scenes"][0]["text"] = (
+        "Central banks say fiat money does not need gold backing."
+    )
+    data["scenes"][1]["text"] = (
+        "Gold survived every empire, every war, and every currency collapse in history."
+    )
+    plans = visual_plan.fallback_plan(data)
+    (tmp_path / "footage").mkdir()
+    (tmp_path / "footage" / "history.mp4").write_bytes(b"x")
+    manifest = {
+        "clips": [
+            {
+                "local_path": "footage/history.mp4",
+                "query": "fiat money gold backing",
+                "purpose": "paper currency history",
+                "script_excerpt": (
+                    "They choose the thing that survived every empire, every war, "
+                    "and every currency collapse in human history."
+                ),
+                "analysis": {
+                    "confidence": 0.92,
+                    "reason": "Historical commodity trading across ancient civilizations.",
+                },
+            }
+        ]
+    }
+
+    assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 1
+    assert plans[0]["archetype"] != "footage"
+    assert plans[1]["archetype"] == "footage"
+    assert len(plans[1]["footage_script_match_terms"]) >= 3
+
+
+def test_visual_grounding_report_requires_every_scene_and_grounded_footage():
+    data = board(1)
+    plans = visual_plan.fallback_plan(data)
+    report = visual_plan.visual_grounding_report(plans, data)
+    assert report["passed"] is True
+
+    plans[0].update(
+        {
+            "archetype": "footage",
+            "footage_src": "footage/x.mp4",
+            "footage_match_terms": ["sunflower"],
+            "footage_confidence": 0.9,
+        }
+    )
+    report = visual_plan.visual_grounding_report(plans, data)
+    assert report["passed"] is False
+
+
 def test_outro_plan_is_spine_owned():
     data = board(1)
     outro = visual_plan.outro_plan(data)

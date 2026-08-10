@@ -25,6 +25,13 @@ def test_parse_script_lines_reads_speaker_labels(tmp_path):
     assert [line["text"] for line in lines] == ["Hello.", "Hi back."]
 
 
+def test_parse_script_lines_splits_multi_sentence_paragraphs(tmp_path):
+    path = write_script(tmp_path, ["First idea. Second idea! Third idea?"])
+    lines = sb.parse_script_lines(path, is_monologue=True)
+    assert [line["text"] for line in lines] == ["First idea.", "Second idea!", "Third idea?"]
+    assert {line["speaker"] for line in lines} == {1}
+
+
 def test_line_timing_falls_back_to_word_count_and_fills_the_audio(tmp_path):
     lines = sb.parse_script_lines(write_script(tmp_path, ["one two", "three four five six"]))
     timed = sb.assign_line_timing(lines, audio_duration=60.0, silence_boundaries=[])
@@ -40,6 +47,57 @@ def test_line_timing_prefers_the_silence_map_when_it_is_dense_enough(tmp_path):
     timed = sb.assign_line_timing(lines, audio_duration=30.0, silence_boundaries=[8.0, 21.0])
     assert [line["start"] for line in timed] == [0.0, 8.0, 21.0]
     assert timed[-1]["duration"] == pytest.approx(9.0)
+
+
+def test_silence_map_selects_marks_near_expected_positions_instead_of_first_marks(tmp_path):
+    lines = sb.parse_script_lines(write_script(tmp_path, ["one two", "three four", "five six"]))
+    timed = sb.assign_line_timing(
+        lines,
+        audio_duration=30.0,
+        silence_boundaries=[1.0, 2.0, 9.5, 20.5, 28.0],
+    )
+    assert [line["start"] for line in timed] == pytest.approx([0.0, 9.5, 20.5])
+    assert timed[-1]["duration"] == pytest.approx(9.5)
+
+
+def test_transcript_forced_alignment_tracks_actual_delivery_not_word_proportions(tmp_path):
+    lines = sb.parse_script_lines(
+        write_script(tmp_path, ["alpha beta gamma.", "delta epsilon.", "zeta eta theta."]),
+        is_monologue=True,
+    )
+    transcript = [
+        {"text": "alpha", "start": 0.2, "end": 0.6},
+        {"text": "beta", "start": 0.7, "end": 1.1},
+        {"text": "gamma", "start": 1.2, "end": 1.7},
+        # A long rhetorical pause makes word-proportional timing wrong.
+        {"text": "delta", "start": 5.0, "end": 5.4},
+        {"text": "epsilon", "start": 5.5, "end": 6.0},
+        {"text": "zeta", "start": 7.0, "end": 7.4},
+        {"text": "eta", "start": 7.5, "end": 7.8},
+        {"text": "theta", "start": 7.9, "end": 8.4},
+    ]
+
+    timed, report = sb.align_lines_to_transcript(lines, transcript, audio_duration=9.0)
+
+    assert report["passed"] is True
+    assert report["word_coverage"] == 1.0
+    assert timed[1]["start"] == pytest.approx(3.325, abs=0.01)
+    assert timed[2]["start"] == pytest.approx(6.475, abs=0.01)
+    assert timed[-1]["start"] + timed[-1]["duration"] == pytest.approx(9.0)
+
+
+def test_transcript_alignment_fails_closed_when_words_do_not_match(tmp_path):
+    lines = sb.parse_script_lines(write_script(tmp_path, ["alpha beta.", "gamma delta."]))
+    transcript = [
+        {"text": f"unrelated{i}", "start": i * 0.5, "end": i * 0.5 + 0.4}
+        for i in range(12)
+    ]
+
+    _, report = sb.align_lines_to_transcript(lines, transcript, audio_duration=6.0)
+
+    assert report["passed"] is False
+    assert report["word_coverage"] == 0.0
+    assert report["failure_reasons"]
 
 
 def test_scenes_and_audio_start_immediately_with_no_title_card_gap(tmp_path):
