@@ -144,7 +144,7 @@ def fallback_plan(storyboard: dict) -> list[dict]:
             {
                 "id": scene["id"],
                 "archetype": archetype,
-                "kicker": (keywords[0] if keywords else "chapter").upper()[:28],
+                "kicker": (keywords[0].upper()[:28] if keywords else ""),
                 "headline": headline,
                 "body": body,
                 "quote": headline if archetype == "quote" else "",
@@ -173,7 +173,7 @@ def _normalise(raw: dict, scene: dict, index: int) -> dict:
         plan["headline"] = _headline_from(scene.get("text", ""))
     if not str(plan.get("kicker") or "").strip():
         keywords = scene.get("keywords") or []
-        plan["kicker"] = (keywords[0] if keywords else "chapter").upper()[:28]
+        plan["kicker"] = keywords[0].upper()[:28] if keywords else ""
 
     accent = str(plan.get("accent") or "").lower()
     plan["accent"] = accent if accent in scene_kit.ACCENTS else _ACCENT_CYCLE[index % len(_ACCENT_CYCLE)]
@@ -191,7 +191,6 @@ def _normalise(raw: dict, scene: dict, index: int) -> dict:
 
 def _batch_prompt_payload(storyboard: dict, scenes: list[dict]) -> str:
     payload = {
-        "episode_title": storyboard.get("title", ""),
         "thesis": storyboard.get("thesis", ""),
         "scenes": [
             {
@@ -265,21 +264,7 @@ async def plan_scene_visuals(
     return plans
 
 
-TITLE_SCENE_ID = "scene-00-title"
 OUTRO_SCENE_ID = "scene-99-outro"
-
-
-def title_plan(storyboard: dict, *, subtitle: str = "") -> dict:
-    """Opening card. Mounted at t=0, before the narration starts."""
-    return {
-        "id": TITLE_SCENE_ID,
-        "archetype": "title",
-        "kicker": "",
-        "headline": storyboard.get("title", "") or "Untitled Episode",
-        "body": subtitle or _headline_from(storyboard.get("thesis", ""), limit=150),
-        "accent": "amber",
-        "motif": "sunburst",
-    }
 
 
 def outro_plan(storyboard: dict, *, brand: str = "") -> dict:

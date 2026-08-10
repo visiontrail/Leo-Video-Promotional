@@ -51,6 +51,14 @@ scene's exact `id`. No prose, no markdown fences, no explanation.
 
 - On-screen copy is NOT a transcript. Never paste the narration back. Compress
   it into something a viewer can read in the seconds the scene is on screen.
+- `scene-01` is the video's actual opening. When it is present, start with a
+  concrete image, claim, question, quote, fact, or tension from that scene's
+  narration that foreshadows the argument to come. It may feel like an opening,
+  but it must be content — never a separate title card or information slate.
+- Never show a video/episode number, filename, task identifier, production
+  label, generic "episode"/"chapter" heading, or any other metadata. Do not use
+  the working title as on-screen copy unless the same wording is spoken in the
+  supplied narration.
 - `headline`: max 70 characters. Sentence case. No trailing period.
 - `body`: max 200 characters, one or two sentences. Omit it when the headline
   carries the scene alone.

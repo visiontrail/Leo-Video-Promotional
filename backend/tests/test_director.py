@@ -101,6 +101,25 @@ def test_shanshui_director_prompt_preserves_the_selected_style():
     assert "Avoid neon" in prompt
 
 
+def test_director_brief_uses_content_context_without_exposing_working_title():
+    storyboard = {
+        "title": "VIDEO 042",
+        "thesis": "A content-specific thesis",
+    }
+    scene = {"id": "scene-01", "duration": 8.0, "text": "The actual opening idea."}
+    prompt = director._batch_prompt(
+        storyboard,
+        [(scene, {"headline": "The actual opening idea"})],
+        batch_no=1,
+        batch_total=1,
+        theme=scene_kit.DEFAULT_THEME,
+    )
+
+    assert "VIDEO 042" not in prompt
+    assert "Overall thesis: A content-specific thesis" in prompt
+    assert "narration spoken over this scene" in prompt
+
+
 def test_revert_restores_the_deterministic_draft(tmp_path):
     plan = scene_kit.ScenePlan(id="scene-01", duration=8.0, headline="Kept")
     assembler.write_scene_files(tmp_path, [plan])

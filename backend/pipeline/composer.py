@@ -119,18 +119,10 @@ def _build_render_command(project_dir: Path, video_path: Path) -> list[str]:
 def _mount_list(board: dict) -> list[dict]:
     """Every mount needed to cover the timeline with no gaps.
 
-    A hole here renders as a black frame, which is how the first five seconds of
-    the previous pipeline came out blank: the title card was styled but never
-    mounted as a clip.
+    The first narrated scene begins at zero; there is no separate title-card
+    mount before the subject starts.
     """
     mounts = [
-        {
-            "id": visual_plan.TITLE_SCENE_ID,
-            "start": 0.0,
-            "duration": float(board["content_start"]),
-        }
-    ]
-    mounts += [
         {"id": scene["id"], "start": scene["start"], "duration": scene["duration"]}
         for scene in board["scenes"]
     ]
@@ -215,11 +207,7 @@ async def compose_video(
         emit(f"Footage: {attached} manifest clip(s) placed as full-bleed scenes")
 
     scene_plans = list(plans)
-    plans = (
-        [visual_plan.title_plan(board)]
-        + scene_plans
-        + [visual_plan.outro_plan(board)]
-    )
+    plans = scene_plans + [visual_plan.outro_plan(board)]
     (output_dir_path / "visual_plan.json").write_text(
         json.dumps(plans, indent=2, ensure_ascii=False), encoding="utf-8"
     )

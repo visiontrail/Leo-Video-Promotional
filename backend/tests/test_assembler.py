@@ -129,11 +129,12 @@ def test_unspaced_cjk_captions_are_split_to_the_character_limit():
     assert all(len(chunk) <= assembler.CAPTION_MAX_CJK_CHARS for chunk in chunks)
 
 
-def test_audio_starts_after_the_title_card():
+def test_audio_starts_immediately_with_the_first_content_scene():
     data = board([], audio_duration=100.0)
+    data["content_start"] = 0.0
     html = assembler.build_spine(data, audio_src="audio/n.wav", mounts=[])
     audio = re.search(r"<audio[^>]*>", html).group(0)
-    assert 'data-start="5.0"' in audio
+    assert 'data-start="0.0"' in audio
     assert 'data-duration="100.0"' in audio
     assert 'src="audio/n.wav"' in audio
 

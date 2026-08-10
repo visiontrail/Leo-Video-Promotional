@@ -311,8 +311,8 @@ def build_spine(
 ) -> str:
     """The root composition: mounts, captions, audio, progress chrome.
 
-    ``mounts`` is the full cover of the timeline — title card, every storyboard
-    scene, and the outro — as ``{"id", "start", "duration"}`` records. Any gap
+    ``mounts`` is the full cover of the timeline — every storyboard scene from
+    zero, then the outro — as ``{"id", "start", "duration"}`` records. Any gap
     left here renders as a black frame, so the composer builds the list to span
     0 to ``total_duration`` with no holes.
     """

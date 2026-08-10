@@ -80,6 +80,14 @@ def test_normalise_fills_missing_copy_from_the_narration():
     assert plan["kicker"]
 
 
+def test_missing_keywords_do_not_create_a_generic_chapter_label():
+    scene = board(1)["scenes"][0]
+    scene["keywords"] = []
+
+    assert visual_plan._normalise({}, scene, 0)["kicker"] == ""
+    assert visual_plan.fallback_plan({"scenes": [scene]})[0]["kicker"] == ""
+
+
 def test_normalise_clamps_copy_to_what_fits_a_frame():
     scene = board(1)["scenes"][0]
     plan = visual_plan._normalise(
@@ -137,12 +145,17 @@ def test_missing_clip_files_are_skipped(tmp_path: Path):
     assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 0
 
 
-def test_title_and_outro_plans_are_spine_owned():
+def test_outro_plan_is_spine_owned():
     data = board(1)
-    title = visual_plan.title_plan(data)
     outro = visual_plan.outro_plan(data)
-    assert title["id"] == visual_plan.TITLE_SCENE_ID
-    assert title["archetype"] == "title"
-    assert title["headline"] == "Episode"
     assert outro["archetype"] == "outro"
     assert outro["body"] == ""
+
+
+def test_visual_plan_payload_does_not_expose_the_working_title_as_scene_copy():
+    data = board(1)
+    data["title"] = "VIDEO 042"
+    payload = json.loads(visual_plan._batch_prompt_payload(data, data["scenes"]))
+
+    assert "episode_title" not in payload
+    assert "VIDEO 042" not in json.dumps(payload)

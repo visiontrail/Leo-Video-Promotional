@@ -42,19 +42,21 @@ def test_line_timing_prefers_the_silence_map_when_it_is_dense_enough(tmp_path):
     assert timed[-1]["duration"] == pytest.approx(9.0)
 
 
-def test_scenes_cover_the_audio_with_no_gaps_and_carry_the_title_offset(tmp_path):
+def test_scenes_and_audio_start_immediately_with_no_title_card_gap(tmp_path):
     path = write_script(tmp_path, [f"Sentence number {i} with several words in it." for i in range(30)])
     board = sb.build_storyboard(
         script_path=path, audio_duration=300.0, title="T", is_monologue=True
     )
     scenes = board["scenes"]
-    assert scenes[0]["start"] == sb.TITLE_DURATION
+    assert scenes[0]["start"] == 0.0
+    assert board["content_start"] == 0.0
+    assert board["title_duration"] == 0.0
     for earlier, later in zip(scenes, scenes[1:]):
         assert earlier["start"] + earlier["duration"] == pytest.approx(later["start"], abs=0.05)
     last = scenes[-1]
     assert last["start"] + last["duration"] == pytest.approx(board["outro_start"], abs=0.05)
     assert board["total_duration"] == pytest.approx(
-        sb.TITLE_DURATION + 300.0 + sb.OUTRO_DURATION, abs=0.05
+        300.0 + sb.OUTRO_DURATION, abs=0.05
     )
 
 

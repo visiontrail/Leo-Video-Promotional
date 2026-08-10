@@ -154,6 +154,10 @@ video, which is the exact bug this system was built to fix.
   element absolutely, keep it clear of the text column.
 - On-screen copy is not the transcript. Compress. A viewer reads roughly three
   words per second.
+- `scene-01` is the opening: enter through a concrete image, claim, question,
+  quote, or tension drawn from its narration, and make it foreshadow the later
+  argument. Never turn it into a title slate. Never show a video/episode number,
+  filename, task identifier, production label, or other metadata.
 - Palette: background #0B0D17, ink #F5F2EA, muted #98A1BA. Use the accent colour
   given in each scene's brief for emphasis, rules, and artwork.
 - Draw with SVG, CSS gradients, and shapes. Abstract artwork that echoes the
@@ -227,8 +231,7 @@ def _batch_prompt(
 ) -> str:
     briefs = "\n\n".join(_scene_brief(scene, plan, theme) for scene, plan in batch)
     ids = ", ".join(scene["id"] for scene, _ in batch)
-    return f"""Episode: {storyboard.get('title', '')}
-Thesis: {storyboard.get('thesis', '')}
+    return f"""Overall thesis: {storyboard.get('thesis', '')}
 
 You are crew {batch_no} of {batch_total}. Author these scenes and only these: {ids}
 

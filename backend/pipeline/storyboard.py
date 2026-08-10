@@ -31,10 +31,10 @@ SCENE_TARGET_SECONDS = 14.0
 SCENE_MIN_SECONDS = 7.0
 SCENE_MAX_SECONDS = 24.0
 
-# Lead-in title card and closing card, in seconds. Kept here (rather than in the
-# composer) so scene start times in storyboard.json are already absolute
-# composition times and no consumer has to re-apply the offset.
-TITLE_DURATION = 5.0
+# The narration and its first content-led scene start immediately. Older
+# versions reserved five seconds for a metadata-style title card, which delayed
+# the actual subject and made every video open the same way.
+CONTENT_START = 0.0
 OUTRO_DURATION = 5.0
 
 SPEAKER_LABEL_RE = re.compile(r"^Speaker\s*(\d+)\s*[:：\-—–]\s*(.+)$", re.IGNORECASE)
@@ -130,8 +130,7 @@ def group_lines_into_scenes(lines: list[dict], offset: float = 0.0) -> list[dict
 
     A scene closes once it has reached the target length; a line that would push
     it past ``SCENE_MAX_SECONDS`` starts a new scene instead. ``offset`` shifts
-    every time by the title-card length so scene times are absolute composition
-    times.
+    every time into absolute composition time when a caller needs a lead-in.
     """
     scenes: list[dict] = []
     current: list[dict] = []
@@ -208,7 +207,7 @@ def build_storyboard(
     """Assemble the full storyboard document for one task."""
     lines = parse_script_lines(script_path, is_monologue=is_monologue)
     lines = assign_line_timing(lines, audio_duration, silence_boundaries)
-    scenes = group_lines_into_scenes(lines, offset=TITLE_DURATION)
+    scenes = group_lines_into_scenes(lines, offset=CONTENT_START)
 
     if log:
         log(
@@ -220,11 +219,11 @@ def build_storyboard(
         "title": title,
         "thesis": (summary or {}).get("thesis", ""),
         "audio_duration": round(audio_duration, 2),
-        "title_duration": TITLE_DURATION,
+        "title_duration": 0.0,
         "outro_duration": OUTRO_DURATION,
-        "content_start": TITLE_DURATION,
-        "outro_start": round(TITLE_DURATION + audio_duration, 2),
-        "total_duration": round(TITLE_DURATION + audio_duration + OUTRO_DURATION, 2),
+        "content_start": CONTENT_START,
+        "outro_start": round(CONTENT_START + audio_duration, 2),
+        "total_duration": round(CONTENT_START + audio_duration + OUTRO_DURATION, 2),
         "scene_count": len(scenes),
         "scenes": scenes,
     }
