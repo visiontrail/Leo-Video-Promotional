@@ -145,6 +145,94 @@ def _mount_list(board: dict) -> list[dict]:
     return mounts
 
 
+def _quality_warnings(
+    alignment: dict,
+    visual_grounding: dict,
+    multimodal: dict | None = None,
+) -> list[str]:
+    """Summarize advisory A/V findings for the final delivery report."""
+    warnings: list[str] = []
+    if not alignment.get("passed"):
+        detail = "; ".join(
+            [
+                *[str(value) for value in alignment.get("failure_reasons") or []],
+                *[str(value) for value in alignment.get("transcription_failures") or []],
+            ]
+        )
+        warnings.append(
+            "Audio timing could not be fully verified"
+            + (f": {detail}" if detail else "")
+            + "; estimated timing was used."
+        )
+
+    if not visual_grounding.get("passed"):
+        failed = [
+            str(scene.get("id"))
+            for scene in visual_grounding.get("scenes") or []
+            if not scene.get("grounded")
+        ]
+        warnings.append(
+            "Visual grounding was uncertain"
+            + (f" for {', '.join(failed)}" if failed else "")
+            + "; rendering continued with the available scene plans."
+        )
+
+    if multimodal and multimodal.get("status") not in {"pending", "disabled"}:
+        if not multimodal.get("passed"):
+            details: list[str] = []
+            if multimodal.get("failed_scene_ids"):
+                details.append(
+                    "low-match scenes "
+                    + ", ".join(str(value) for value in multimodal["failed_scene_ids"])
+                )
+            details.extend(str(value) for value in multimodal.get("errors") or [])
+            if not details:
+                average = multimodal.get("average_score")
+                details.append(
+                    f"average score {average} did not meet the configured threshold"
+                    if average is not None
+                    else "review thresholds were not met"
+                )
+            warnings.append(
+                "Gemini rendered-frame review did not fully pass after retries: "
+                + "; ".join(details)
+                + "."
+            )
+    return warnings
+
+
+def _finalize_quality_report(
+    report: dict,
+    alignment: dict,
+    visual_grounding: dict,
+    multimodal: dict,
+    *,
+    multimodal_enabled: bool,
+) -> dict:
+    """Mark quality truthfully without turning an advisory miss into no delivery."""
+    multimodal_passed = (
+        bool(multimodal.get("passed")) if multimodal_enabled else True
+    )
+    quality_passed = (
+        bool(alignment.get("passed"))
+        and bool(visual_grounding.get("passed"))
+        and multimodal_passed
+    )
+    warnings = _quality_warnings(alignment, visual_grounding, multimodal)
+    report.update(
+        {
+            "passed": quality_passed,
+            "quality_status": "passed" if quality_passed else "warning",
+            "delivery_status": (
+                "completed_with_warnings" if warnings else "completed"
+            ),
+            "warnings": warnings,
+            "multimodal": multimodal,
+        }
+    )
+    return report
+
+
 def _kit_plans(
     plans: list[dict], mounts: list[dict], theme: scene_kit.Theme
 ) -> list[scene_kit.ScenePlan]:
@@ -172,6 +260,7 @@ async def compose_video(
     ai_endpoint: str | None = None,
     ai_model: str | None = None,
     provider_id: int | None = None,
+    tts_model: str | None = None,
     log: LogCallback | None = None,
 ) -> str:
     output_dir_path = Path(output_dir)
@@ -186,7 +275,6 @@ async def compose_video(
     word_transcript, transcription = await av_sync.ensure_word_transcript(
         audio_path,
         output_dir_path,
-        required=config.AV_SYNC_REQUIRED,
         log=emit,
     )
     boundaries = _detect_silence_boundaries(audio_path, log)
@@ -208,16 +296,19 @@ async def compose_video(
         log=emit,
     )
     board["alignment"]["transcription_backend"] = transcription.get("backend", "unavailable")
+    board["alignment"]["transcription_attempts"] = transcription.get("attempts", 0)
+    if transcription.get("failure_reasons"):
+        board["alignment"]["transcription_failures"] = transcription["failure_reasons"]
     sb.write_storyboard(output_dir_path, board)
-    if config.AV_SYNC_REQUIRED and not board["alignment"].get("passed"):
-        reasons = "; ".join(board["alignment"].get("failure_reasons") or ["unknown failure"])
-        raise RuntimeError(f"A/V sync quality gate rejected the storyboard: {reasons}")
-    emit(
-        "A/V sync timing: "
-        f"{float(board['alignment'].get('word_coverage') or 0):.1%} word coverage; "
-        f"max boundary uncertainty "
-        f"{float(board['alignment'].get('max_boundary_uncertainty_seconds') or 0):.2f}s"
-    )
+    if board["alignment"].get("passed"):
+        emit(
+            "A/V sync timing: "
+            f"{float(board['alignment'].get('word_coverage') or 0):.1%} word coverage; "
+            f"max boundary uncertainty "
+            f"{float(board['alignment'].get('max_boundary_uncertainty_seconds') or 0):.2f}s"
+        )
+    else:
+        emit("A/V sync warning: acoustic timing is unverified; rendering will continue")
     emit(f"Composition {board['total_duration']:.1f}s over {board['scene_count']} scenes")
 
     # --- 2. Direction ------------------------------------------------------
@@ -238,6 +329,20 @@ async def compose_video(
     visual_grounding = visual_plan.visual_grounding_report(scene_plans, board)
     quality_report = {
         "passed": bool(board["alignment"].get("passed")) and visual_grounding["passed"],
+        "quality_status": "pending",
+        "delivery_status": "pending",
+        "warnings": _quality_warnings(board["alignment"], visual_grounding),
+        "narration": {
+            "provider": "Microsoft VibeVoice",
+            "model": tts_model or config.TTS_DEFAULT_MODEL,
+            "audio_path": str(Path(audio_path).resolve()),
+        },
+        "alignment_analyzer": {
+            "provider": "MLX Whisper",
+            "role": "post-TTS word timestamps only; does not generate narration",
+            "backend": transcription.get("backend", "unavailable"),
+            "attempts": transcription.get("attempts", 0),
+        },
         "timing": board["alignment"],
         "visual_grounding": visual_grounding,
         "multimodal": {"status": "pending", "passed": False},
@@ -245,15 +350,17 @@ async def compose_video(
     (output_dir_path / "av_sync_report.json").write_text(
         json.dumps(quality_report, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    if not visual_grounding["passed"]:
-        failed = [scene["id"] for scene in visual_grounding["scenes"] if not scene["grounded"]]
-        raise RuntimeError(
-            "A/V sync quality gate rejected ungrounded visual plans: " + ", ".join(failed)
+    if visual_grounding["passed"]:
+        emit(
+            f"A/V sync semantics: {visual_grounding['grounded_scenes']}/"
+            f"{visual_grounding['scene_count']} scene plans grounded in their narration"
         )
-    emit(
-        f"A/V sync semantics: {visual_grounding['grounded_scenes']}/"
-        f"{visual_grounding['scene_count']} scene plans grounded in their narration"
-    )
+    else:
+        failed = [scene["id"] for scene in visual_grounding["scenes"] if not scene["grounded"]]
+        emit(
+            "A/V sync warning: visual grounding was uncertain for "
+            f"{', '.join(failed)}; rendering will continue"
+        )
 
     plans = scene_plans + [visual_plan.outro_plan(board)]
     (output_dir_path / "visual_plan.json").write_text(
@@ -417,35 +524,34 @@ async def compose_video(
     else:
         gemini_review = {
             "status": "disabled",
-            "passed": False,
+            "passed": None,
             "analyzer": "gemini-web-via-opencli",
             "scenes": [],
         }
-    quality_report["multimodal"] = gemini_review
-    quality_report["passed"] = (
-        bool(board["alignment"].get("passed"))
-        and visual_grounding["passed"]
-        and (
-            gemini_review["passed"]
-            or not config.AV_SYNC_GEMINI_REVIEW_REQUIRED
-        )
+    _finalize_quality_report(
+        quality_report,
+        board["alignment"],
+        visual_grounding,
+        gemini_review,
+        multimodal_enabled=config.AV_SYNC_GEMINI_REVIEW_ENABLED,
     )
     (output_dir_path / "av_sync_report.json").write_text(
         json.dumps(quality_report, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    if (
-        config.AV_SYNC_GEMINI_REVIEW_ENABLED
-        and config.AV_SYNC_GEMINI_REVIEW_REQUIRED
-        and not gemini_review["passed"]
-    ):
-        failed = ", ".join(gemini_review.get("failed_scene_ids") or [])
-        errors = "; ".join(gemini_review.get("errors") or [])
-        detail = failed or errors or "review thresholds were not met"
-        raise RuntimeError(f"Gemini A/V match gate rejected the rendered video: {detail}")
-    if gemini_review["passed"]:
+    if gemini_review.get("passed"):
         emit(
             "Gemini A/V match: "
             f"{gemini_review['reviewed_scenes']}/{gemini_review['scene_count']} scenes passed; "
             f"average {gemini_review['average_score']:.1f}/100"
+        )
+    elif config.AV_SYNC_GEMINI_REVIEW_ENABLED:
+        emit(
+            "A/V sync warning: Gemini review did not fully pass after retries; "
+            "video delivery continues and details are recorded in av_sync_report.json"
+        )
+    if quality_report["warnings"]:
+        emit(
+            f"Video completed with {len(quality_report['warnings'])} A/V quality "
+            "warning(s); see av_sync_report.json"
         )
     return str(video_path)

@@ -272,11 +272,6 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     # ── Audio / visual sync ──────────────────────────────────────────────
     SettingSpec(
-        "AV_SYNC_REQUIRED", "av_sync", "Require verified alignment", "bool",
-        description="Fail the compose stage when no reliable word-level acoustic "
-                    "alignment can be produced. Keep this on to prevent drift.",
-    ),
-    SettingSpec(
         "AV_SYNC_LANGUAGE", "av_sync", "Narration language", "string",
         placeholder="en",
         description="ISO language code passed to Whisper.",
@@ -285,13 +280,15 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "AV_SYNC_MLX_MODEL", "av_sync", "Apple Silicon model", "string",
         placeholder="mlx-community/whisper-large-v3-turbo-q4",
-        description="Preferred MLX Whisper model on Apple Silicon.",
+        description="Post-TTS transcription model. It reads the finished VibeVoice "
+                    "WAV and never generates or replaces narration.",
         allow_blank=False,
     ),
     SettingSpec(
-        "AV_SYNC_WHISPER_MODEL", "av_sync", "Portable Whisper model", "choice",
-        options=("tiny.en", "base.en", "small.en", "medium.en", "large-v3"),
-        description="whisper.cpp fallback used through the pinned HyperFrames CLI.",
+        "AV_SYNC_TRANSCRIBE_MAX_RETRIES", "av_sync", "Transcription retries", "int",
+        minimum=0, maximum=5,
+        description="Retry MLX Whisper this many times before continuing with "
+                    "estimated timing and a final quality warning.",
     ),
     SettingSpec(
         "AV_SYNC_MIN_WORD_COVERAGE_PERCENT", "av_sync", "Minimum word coverage", "int",
@@ -302,8 +299,8 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "AV_SYNC_MAX_BOUNDARY_UNCERTAINTY_MS", "av_sync", "Maximum boundary uncertainty", "int",
         unit="ms", minimum=250, maximum=10000,
-        description="Reject alignment when a scene boundary is too far from the "
-                    "nearest acoustically matched word anchors.",
+        description="Mark alignment uncertain when a scene boundary is too far "
+                    "from the nearest acoustically matched word anchors.",
     ),
     SettingSpec(
         "AV_SYNC_GEMINI_REVIEW_ENABLED", "av_sync", "Gemini rendered-frame review", "bool",
@@ -311,9 +308,10 @@ SPECS: tuple[SettingSpec, ...] = (
                     "matching narration to Gemini Web through project-local OpenCLI.",
     ),
     SettingSpec(
-        "AV_SYNC_GEMINI_REVIEW_REQUIRED", "av_sync", "Require Gemini review", "bool",
-        description="Fail the compose stage if Gemini cannot see every sheet, omits "
-                    "a scene, or rejects the narration/visual match.",
+        "AV_SYNC_FRAME_MAX_RETRIES", "av_sync", "Keyframe extraction retries", "int",
+        minimum=0, maximum=5,
+        description="Retry failed final-MP4 keyframe extraction before recording "
+                    "a review warning and continuing delivery.",
     ),
     SettingSpec(
         "AV_SYNC_GEMINI_BATCH_SIZE", "av_sync", "Scenes per Gemini sheet", "int",
@@ -337,8 +335,9 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         "AV_SYNC_GEMINI_MAX_RETRIES", "av_sync", "Gemini review retries", "int",
-        minimum=0, maximum=3,
-        description="Bounded retries for a missing, late, or malformed Gemini Web response.",
+        minimum=0, maximum=5,
+        description="Bounded retries for a missing, late, or malformed Gemini Web "
+                    "response. Exhausted retries become a final warning, not a render block.",
     ),
     # ── Render ───────────────────────────────────────────────────────────
     SettingSpec(

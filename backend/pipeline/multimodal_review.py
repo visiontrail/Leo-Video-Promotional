@@ -8,8 +8,9 @@ narration excerpts to the signed-in Gemini web product through the repository's
 project-local OpenCLI wrapper.
 
 The result is an auditable, per-scene semantic score. Missing images, malformed
-JSON, omitted scenes, weak scores, and OpenCLI/browser failures all fail closed
-when the composer has the review gate enabled and required.
+JSON, omitted scenes, and OpenCLI/browser failures are retried here. The report
+still marks exhausted or weak results as failed, but the composer treats that
+as a delivery warning rather than discarding an otherwise rendered video.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def _scene_timestamp(scene: dict) -> float:
     return round(start + duration * 0.5, 3)
 
 
-async def _extract_frame(video_path: Path, output_path: Path, timestamp: float) -> None:
+async def _extract_frame_once(video_path: Path, output_path: Path, timestamp: float) -> None:
     command = [
         "ffmpeg",
         "-y",
@@ -92,6 +93,22 @@ async def _extract_frame(video_path: Path, output_path: Path, timestamp: float) 
         raise RuntimeError(
             f"keyframe extraction failed at {timestamp:.3f}s: {detail or 'no frame written'}"
         )
+
+
+async def _extract_frame(video_path: Path, output_path: Path, timestamp: float) -> None:
+    """Extract a frame with bounded retries for transient FFmpeg failures."""
+    maximum_attempts = max(1, int(config.AV_SYNC_FRAME_MAX_RETRIES) + 1)
+    last_error: Exception | None = None
+    for _attempt in range(1, maximum_attempts + 1):
+        try:
+            await _extract_frame_once(video_path, output_path, timestamp)
+            return
+        except Exception as exc:  # noqa: BLE001 - retry the exact bounded operation
+            last_error = exc
+    raise RuntimeError(
+        f"keyframe extraction exhausted {maximum_attempts} attempt(s) at "
+        f"{timestamp:.3f}s: {last_error}"
+    ) from last_error
 
 
 async def extract_scene_frames(

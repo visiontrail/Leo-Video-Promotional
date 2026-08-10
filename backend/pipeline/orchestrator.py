@@ -401,6 +401,7 @@ async def run_compose(task: TaskResponse, log: LogCallback | None = None):
         ai_endpoint=task.config.ai_endpoint,
         ai_model=task.config.ai_model,
         provider_id=task.config.provider_id,
+        tts_model=task.config.tts_model,
         log=task_log,
     )
     await update_task(task.id, video_path=video_path, status=TaskStatus.COMPLETE.value)

@@ -22,8 +22,15 @@ OpenCLI is used where a real signed-in browser session matters. It connects to C
 script-driven cover generation and to Gemini Web for visual interval analysis. After HyperFrames
 renders the MP4, the pipeline also extracts a midpoint frame for every narration scene, combines
 them into labeled contact sheets, and uploads each sheet with the acoustic scene excerpts to
-Gemini. Missing uploads, omitted scene ids, low semantic scores, or malformed responses block the
-video when the A/V review gate is required. YouTube discovery/download stays on `yt-dlp`.
+Gemini. Missing uploads, omitted scene ids, and malformed responses are retried. Low semantic
+scores are quality findings rather than transport failures, so they are retained as warnings. In
+both cases the video is still delivered and the final `av_sync_report.json` records the detail.
+YouTube discovery/download stays on `yt-dlp`.
+
+Microsoft VibeVoice remains the only narration generator. MLX Whisper is a read-only, post-TTS
+analyzer used to place word timestamps on the finished VibeVoice WAV. HyperFrames is not used for
+speech generation or transcription. If MLX transcription retries are exhausted, scene timing falls
+back to the existing silence/word estimate and delivery continues with an explicit warning.
 
 ## Setup and isolation
 

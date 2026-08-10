@@ -84,6 +84,18 @@ def test_missing_or_unsubstantiated_gemini_rows_fail_closed(tmp_path: Path):
 
 
 class ReviewVideoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_keyframe_extraction_retries_transient_failure(self):
+        extract_once = AsyncMock(side_effect=[RuntimeError("busy"), None])
+        with (
+            patch.object(multimodal_review, "_extract_frame_once", extract_once),
+            patch.object(config, "AV_SYNC_FRAME_MAX_RETRIES", 1),
+        ):
+            await multimodal_review._extract_frame(
+                Path("video.mp4"), Path("frame.jpg"), 12.5
+            )
+
+        self.assertEqual(extract_once.await_count, 2)
+
     async def test_complete_gemini_review_passes_and_uses_file_upload(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

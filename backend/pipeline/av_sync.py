@@ -6,10 +6,11 @@ raw silence list both drift on long narration. This module transcribes the
 rendered WAV to word timestamps, caches the result next to the task, and lets
 ``storyboard`` force-align the canonical script to that acoustic clock.
 
-MLX Whisper is preferred on Apple Silicon because it is fast and can reuse the
-operator's Hugging Face cache. HyperFrames' whisper.cpp command is the portable
-fallback. A render configured to require alignment fails closed if neither
-backend can produce a trustworthy transcript.
+MLX Whisper is used on Apple Silicon because it is fast and can reuse the
+operator's Hugging Face cache. It is a post-TTS analyzer only: Microsoft
+VibeVoice remains the narration source. If bounded transcription retries are
+exhausted, the caller receives a warning result and continues with estimated
+timing; HyperFrames is not used for transcription.
 """
 
 from __future__ import annotations
@@ -144,32 +145,13 @@ def _mlx_command(audio_path: Path, task_dir: Path) -> list[str] | None:
     ]
 
 
-def _hyperframes_command(audio_path: Path, task_dir: Path) -> list[str] | None:
-    binary = config.HYPERFRAME_DIR / "node_modules" / ".bin" / "hyperframes"
-    if not binary.is_file():
-        return None
-    return [
-        str(binary),
-        "transcribe",
-        str(audio_path),
-        "--dir",
-        str(task_dir),
-        "--model",
-        config.AV_SYNC_WHISPER_MODEL,
-        "--language",
-        config.AV_SYNC_LANGUAGE,
-        "--json",
-    ]
-
-
 async def ensure_word_transcript(
     audio_path: str | Path,
     task_dir: str | Path,
     *,
-    required: bool = True,
     log: LogCallback | None = None,
 ) -> tuple[list[dict], dict]:
-    """Return a current, quality-checked word transcript for ``audio_path``."""
+    """Return MLX word timestamps or a non-fatal warning result."""
     audio = Path(audio_path).resolve()
     directory = Path(task_dir).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -183,20 +165,32 @@ async def ensure_word_transcript(
             return words, {"backend": "cache", "word_count": len(words), "passed": True}
         _emit(log, f"A/V sync: cached transcript rejected ({reason}); regenerating")
 
-    attempts: list[tuple[str, list[str] | None]] = [
-        ("mlx-whisper", _mlx_command(audio, directory)),
-        ("hyperframes-whisper.cpp", _hyperframes_command(audio, directory)),
-    ]
+    command = _mlx_command(audio, directory)
     failures: list[str] = []
-    backend_used = ""
-    for backend, command in attempts:
-        if command is None:
-            failures.append(f"{backend}: runtime unavailable")
-            continue
-        _emit(log, f"A/V sync: transcribing narration with {backend}")
+    if command is None:
+        failures.append("mlx-whisper: runtime unavailable")
+        _emit(
+            log,
+            "A/V sync warning: MLX Whisper is unavailable; continuing with "
+            "estimated timing. VibeVoice narration is unchanged.",
+        )
+        return [], {
+            "backend": "unavailable",
+            "passed": False,
+            "attempts": 0,
+            "failure_reasons": failures,
+        }
+
+    maximum_attempts = max(1, int(config.AV_SYNC_TRANSCRIBE_MAX_RETRIES) + 1)
+    for attempt in range(1, maximum_attempts + 1):
+        _emit(
+            log,
+            f"A/V sync: transcribing finished VibeVoice narration with MLX Whisper "
+            f"(attempt {attempt}/{maximum_attempts})",
+        )
         try:
             returncode, output = await stream_subprocess(
-                name=f"A/V transcription ({backend})",
+                name="A/V transcription (mlx-whisper)",
                 command=command,
                 logger=logger,
                 log=log,
@@ -204,44 +198,44 @@ async def ensure_word_transcript(
                 timeout=TRANSCRIBE_TIMEOUT,
                 stall_timeout=TRANSCRIBE_STALL_TIMEOUT,
             )
-        except Exception as exc:  # noqa: BLE001 - try the portable backend next
-            failures.append(f"{backend}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - retry, then continue with warning
+            failures.append(f"mlx-whisper attempt {attempt}: {exc}")
             continue
         if returncode != 0:
-            failures.append(f"{backend}: exit {returncode}: {output[-300:]}")
+            failures.append(
+                f"mlx-whisper attempt {attempt}: exit {returncode}: {output[-300:]}"
+            )
             continue
         words = _load_words(transcript_path)
         good, reason = _transcript_quality(words)
         if not good:
-            failures.append(f"{backend}: {reason}")
+            failures.append(f"mlx-whisper attempt {attempt}: {reason}")
             continue
-        backend_used = backend
-        break
-
-    if backend_used:
         meta = {
             **_audio_signature(audio),
-            "backend": backend_used,
+            "backend": "mlx-whisper",
             "word_count": len(words),
-            "model": (
-                config.AV_SYNC_MLX_MODEL
-                if backend_used == "mlx-whisper"
-                else config.AV_SYNC_WHISPER_MODEL
-            ),
+            "model": config.AV_SYNC_MLX_MODEL,
+            "attempts": attempt,
         }
         (directory / TRANSCRIPT_META_NAME).write_text(
             json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        _emit(log, f"A/V sync: {len(words)} word timestamps ready via {backend_used}")
+        _emit(log, f"A/V sync: {len(words)} word timestamps ready via mlx-whisper")
         return words, {**meta, "passed": True}
 
     detail = "; ".join(failures)
-    if required:
-        raise RuntimeError(
-            "A/V sync quality gate: no reliable word-level transcript was produced. " + detail
-        )
-    _emit(log, "A/V sync unavailable; falling back to estimated timing: " + detail)
-    return [], {"passed": False, "failure_reasons": failures}
+    _emit(
+        log,
+        "A/V sync warning: MLX Whisper retries were exhausted; continuing with "
+        "estimated timing. VibeVoice narration is unchanged. " + detail,
+    )
+    return [], {
+        "backend": "unavailable",
+        "passed": False,
+        "attempts": maximum_attempts,
+        "failure_reasons": failures,
+    }
 
 
 def _write_mlx_transcript(audio_path: Path, output_path: Path, model: str, language: str) -> None:
