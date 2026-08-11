@@ -16,6 +16,15 @@ from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
 _STATUS_URL = re.compile(
     r"^https://(?:x\.com|twitter\.com)/(?P<handle>[^/]+)/status/\d+(?:\?.*)?$"
 )
+_ENGAGEMENT_RESULT_KEYS = frozenset(
+    {
+        "account_handle",
+        "following_feed_used",
+        "scanned_posts",
+        "replies",
+        "quote_reposts",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -84,14 +93,45 @@ async def _opencli_rows(args: list[str], *, timeout: int = 90) -> list[dict[str,
     return _result_rows(first_json(result.stdout))
 
 
+def parse_engagement_result(value: str | dict[str, Any]) -> dict[str, Any]:
+    """Select the audit object from a possibly verbose operational-agent response.
+
+    Operational agents can emit progress prose containing browser element references
+    such as ``[86]`` before their final JSON audit. The generic ``first_json`` helper
+    correctly treats those references as JSON arrays, so it cannot identify the
+    semantic result on its own. Rank every object by the engagement audit keys it
+    contains and prefer the latest equally complete candidate.
+    """
+    if isinstance(value, dict):
+        return value
+
+    decoder = json.JSONDecoder()
+    best: tuple[int, int, dict[str, Any]] | None = None
+    for index, character in enumerate(value):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(value[index:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        score = len(_ENGAGEMENT_RESULT_KEYS.intersection(parsed))
+        candidate = (score, index, parsed)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+
+    if best is None:
+        raise OpenCLIError("Engagement agent did not return a JSON object")
+    return best[2]
+
+
 async def recover_action_urls(
     value: str | dict[str, Any],
     automation: AccountAutomationResponse,
 ) -> dict[str, Any]:
     """Recover adapter-omitted URLs without ever repeating a social write."""
-    parsed = value if isinstance(value, dict) else first_json(value)
-    if not isinstance(parsed, dict):
-        raise OpenCLIError("Engagement agent did not return a JSON object")
+    parsed = parse_engagement_result(value)
 
     expected_handle = automation.account_handle.lstrip("@").casefold()
     for row in _action_rows(parsed.get("replies"), "replies"):
@@ -178,9 +218,7 @@ def validate_engagement_result(
     *,
     excluded_urls: set[str] | None = None,
 ) -> dict[str, Any]:
-    parsed = value if isinstance(value, dict) else first_json(value)
-    if not isinstance(parsed, dict):
-        raise OpenCLIError("Engagement agent did not return a JSON object")
+    parsed = parse_engagement_result(value)
     actual = str(parsed.get("account_handle") or "").strip().lstrip("@")
     if actual.casefold() != automation.account_handle.casefold():
         raise OpenCLIError(

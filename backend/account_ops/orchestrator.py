@@ -13,6 +13,7 @@ from backend.account_ops.opencode import run_content_agent
 from backend.account_ops.x_engagement import (
     account_switch_prompt,
     engagement_prompt,
+    parse_engagement_result,
     recover_action_urls,
     run_x_operational_agent,
     validate_engagement_result,
@@ -476,19 +477,15 @@ async def _execute_engagement_run(
             }
         )
         _write_manifest(manifest_path, manifest)
-        preliminary = first_json(agent_result.text)
+        preliminary = parse_engagement_result(agent_result.text)
         manifest["agent_result"] = preliminary
         _write_manifest(manifest_path, manifest)
-        if isinstance(preliminary, dict):
-            await database.update_account_run(
-                run.id,
-                title="Engagement · verifying published actions",
-                content_json=json.dumps(preliminary, ensure_ascii=False),
-            )
-        content = await recover_action_urls(
-            preliminary if isinstance(preliminary, dict) else agent_result.text,
-            automation,
+        await database.update_account_run(
+            run.id,
+            title="Engagement · verifying published actions",
+            content_json=json.dumps(preliminary, ensure_ascii=False),
         )
+        content = await recover_action_urls(preliminary, automation)
         content = validate_engagement_result(
             content,
             automation,

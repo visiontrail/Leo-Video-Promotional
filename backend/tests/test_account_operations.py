@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from backend.account_ops.schedule import next_daily_run, next_scheduled_run
 from backend.account_ops.worker import get_worker_status
 from backend.account_ops.x_engagement import (
     OperationalAgentResult,
+    parse_engagement_result,
     recover_action_urls,
     validate_engagement_result,
 )
@@ -439,6 +441,23 @@ class EngagementResultTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(validated["replies"]), 1)
         self.assertIn("railway map", validated["replies"][0]["media_explanation"])
+
+    async def test_browser_element_array_before_final_audit_is_ignored(self):
+        verbose_output = (
+            "The Grok actions button is [86].\n"
+            'Intermediate state: {"status":"working"}\n'
+            "All writes are verified. Returning the final audit:\n"
+            + json.dumps(self.result())
+        )
+
+        parsed = parse_engagement_result(verbose_output)
+        recovered = await recover_action_urls(verbose_output, self.automation)
+
+        self.assertEqual(parsed["account_handle"], "AQuietAtlas")
+        self.assertEqual(
+            recovered["replies"][0]["result_url"],
+            "https://x.com/AQuietAtlas/status/200",
+        )
 
     async def test_media_reply_without_grok_explanation_is_rejected(self):
         result = self.result()
