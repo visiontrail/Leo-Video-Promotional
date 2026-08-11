@@ -19,6 +19,8 @@ import html
 import math
 from dataclasses import dataclass
 
+from backend.pipeline.video_format import FrameSpec, LANDSCAPE
+
 # --- Design system ---------------------------------------------------------
 # Dark editorial palette. Accents carry the emotional arc of an episode: the
 # planner assigns one per scene, so consecutive scenes read as deliberate colour
@@ -393,11 +395,19 @@ class ScenePlan:
     footage_src: str = ""
     footage_kind: str = ""
     footage_credit: str = ""
+    collage_broll: bool = False
     theme: Theme = DEFAULT_THEME
+    frame: FrameSpec = LANDSCAPE
 
     @classmethod
     def from_dict(
-        cls, data: dict, *, duration: float, scene_id: str, theme: Theme = DEFAULT_THEME
+        cls,
+        data: dict,
+        *,
+        duration: float,
+        scene_id: str,
+        theme: Theme = DEFAULT_THEME,
+        frame: FrameSpec = LANDSCAPE,
     ) -> "ScenePlan":
         left = data.get("left") or {}
         right = data.get("right") or {}
@@ -429,14 +439,16 @@ class ScenePlan:
             footage_src=str(data.get("footage_src") or ""),
             footage_kind=str(data.get("footage_kind") or ""),
             footage_credit=str(data.get("footage_credit") or ""),
+            collage_broll=bool(data.get("collage_broll")),
             theme=theme,
+            frame=frame,
         )
 
 
 # --- Scene rendering -------------------------------------------------------
 
 _BASE_CSS = """
-  #{sid} {{ position:relative; width:1920px; height:1080px; overflow:hidden; background:{bg}; }}
+  #{sid} {{ position:relative; width:{width}px; height:{height}px; overflow:hidden; background:{bg}; }}
   #{sid} .plate {{ position:absolute; inset:0; }}
   #{sid} .wash {{ position:absolute; inset:0;
       background: radial-gradient(1500px 1000px at {wx}% {wy}%, {glow} 0%, {bg} 70%); }}
@@ -452,6 +464,36 @@ _BASE_CSS = """
       color:{ink}; letter-spacing:-0.015em; }}
   #{sid} .body {{ font-family:{sans}; font-weight:400; line-height:1.5; color:{muted}; }}
   #{sid} .motif {{ position:absolute; pointer-events:none; }}
+"""
+
+
+def _portrait_css(plan: ScenePlan) -> str:
+    """Keep deterministic layouts inside a 9:16 safe area.
+
+    Full-bleed generated footage needs no special casing; the rules below only
+    reflow the typography-heavy fallback archetypes when a portrait task is
+    requested.
+    """
+    if not plan.frame.is_portrait:
+        return ""
+    sid = plan.id
+    return f"""
+  #{sid} .stage {{ padding:190px 92px 330px; gap:34px; }}
+  #{sid} .headline {{ max-width:896px; font-size:min(92px, 9.2vw); line-height:1.08; }}
+  #{sid} .body {{ max-width:850px; font-size:min(42px, 4.2vw); }}
+  #{sid} .kicker {{ font-size:25px; }}
+  #{sid} .motif {{ opacity:.24 !important; }}
+  #{sid} .cols {{ flex-direction:column; gap:26px; }}
+  #{sid} .col {{ padding:34px 36px; }}
+  #{sid} .col-text {{ font-size:34px; }}
+  #{sid} .vs {{ align-self:flex-start; }}
+  #{sid} .rows {{ gap:28px; }}
+  #{sid} .row-text {{ max-width:760px; font-size:39px; }}
+  #{sid} .figure {{ font-size:min(210px, 21vw); }}
+  #{sid} .stat-label {{ max-width:820px; font-size:38px; }}
+  #{sid} .quote {{ max-width:850px; font-size:min(68px, 6.8vw); }}
+  #{sid} .frame, #{sid} .media {{ width:100%; height:100%; }}
+  #{sid} .credit {{ right:34px; top:42px; max-width:820px; }}
 """
 
 
@@ -532,6 +574,8 @@ def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple
     theme = plan.theme
     base = _BASE_CSS.format(
         sid=plan.id,
+        width=plan.frame.width,
+        height=plan.frame.height,
         bg=theme.bg,
         ink=theme.ink,
         muted=theme.muted,
@@ -542,6 +586,7 @@ def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple
         wy=wash[1],
     )
     themed_css = _shanshui_css(plan)
+    portrait_css = _portrait_css(plan)
     themed_backdrop = _shanshui_backdrop(plan) if theme.name == "shanshui" else ""
     themed_timeline = ""
     if theme.name == "shanshui":
@@ -552,9 +597,9 @@ def _shell(plan: ScenePlan, *, css: str, markup: str, timeline: str, wash: tuple
         inAt("#{plan.id} .shanshui-nodes circle", {{ scale: .25, opacity: 0 }}, {{ scale: 1, opacity: 1, duration: .58, ease: "back.out(1.8)", stagger: 0.17, transformOrigin: "50% 50%" }}, 0.72);
 '''
     return f"""<template id="{plan.id}-template">
-  <div id="{plan.id}" data-composition-id="{plan.id}" data-width="1920" data-height="1080">
+  <div id="{plan.id}" data-composition-id="{plan.id}" data-width="{plan.frame.width}" data-height="{plan.frame.height}">
     <style>
-{base}{css}{themed_css}
+{base}{css}{themed_css}{portrait_css}
     </style>
 {themed_backdrop}
 {markup}
@@ -782,13 +827,14 @@ def _render_quote(plan: ScenePlan) -> str:
 
 
 def _render_footage(plan: ScenePlan) -> str:
-    """Full-bleed public-domain plate with a Ken Burns push and a caption bar."""
+    """Full-bleed media plate; generated collage keeps its locked-off camera."""
     accent = accent_hex(plan.accent, plan.theme)
     if plan.footage_kind == "video":
+        loop_attr = "" if plan.collage_broll else " loop"
         media = (
             f'      <video id="{plan.id}-media" class="clip media" src="{_esc(plan.footage_src)}" '
             f'data-start="0" data-duration="{plan.duration:.2f}" data-track-index="0" '
-            f'muted playsinline loop crossorigin="anonymous"></video>\n'
+            f'muted playsinline{loop_attr} crossorigin="anonymous"></video>\n'
         )
     else:
         media = f'      <img id="{plan.id}-media" class="media" src="{_esc(plan.footage_src)}" alt="">\n'
@@ -806,6 +852,12 @@ def _render_footage(plan: ScenePlan) -> str:
       background:{_rgba(plan.theme.bg, .5)}; padding:9px 16px; border-radius:999px;
       border:1px solid {_rgba(accent, 0.3)}; }}
 """
+    if plan.collage_broll:
+        markup = f'    <div class="frame collage-frame" id="{plan.id}-frame">\n' + media + '    </div>\n'
+        timeline = f"""        inAt("#{plan.id}-media", {{ opacity: 0 }}, {{ opacity: 1, duration: .12, ease: "power1.out" }}, 0.1);
+"""
+        return _shell(plan, css=css, markup=markup, timeline=timeline, wash=(50, 50))
+
     markup = (
         f'    <div class="frame" id="{plan.id}-frame">\n'
         + media

@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 import re
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -47,6 +47,11 @@ class TaskConfig(BaseModel):
     captions_enabled: bool = False
     tts_model: str = "vibevoice-0.5b"
     video_template: str = "podcast"
+    # The final composition owns orientation. Every generated/downloaded visual
+    # reads this value; footage_orientation remains only as a serialized alias
+    # for older clients and is synchronized below.
+    video_orientation: Literal["landscape", "portrait"] = "landscape"
+    opening_style: Literal["editorial_motion", "paper_collage"] = "editorial_motion"
     processing_mode: str = "full_text"
     ai_endpoint: Optional[str] = None
     ai_model: Optional[str] = None
@@ -58,14 +63,31 @@ class TaskConfig(BaseModel):
     footage_provider: str = "wikimedia"  # wikimedia | hybrid | opencli_web
     footage_license_policy: str = "open_only"
     footage_clip_count: int = Field(default=8, ge=1, le=30)
-    footage_orientation: str = "landscape"
+    footage_orientation: Literal["landscape", "portrait"] = "landscape"
     footage_multimodal_analyzer: str = "gemini_web"
+    # Generated editorial paper-collage B-roll. Four gives a multi-minute video
+    # a visible recurring motif without making every scene visually identical.
+    collage_broll_enabled: bool = False
+    collage_broll_count: int = Field(default=4, ge=2, le=10)
     # Generate a script-driven cover through the signed-in ChatGPT web app.
     # This runs before TTS and can therefore be tested independently.
     thumbnail_enabled: bool = True
     # Skip the audio review pause and go straight from TTS into compose by
     # default. Clients can still opt into a manual review explicitly.
     auto_render: bool = True
+
+    @model_validator(mode="after")
+    def sync_media_orientation(self) -> "TaskConfig":
+        """Prevent a task from asking final video and its media for two ratios."""
+        if (
+            "video_orientation" not in self.model_fields_set
+            and "footage_orientation" in self.model_fields_set
+        ):
+            # Existing persisted tasks only have footage_orientation. Promote
+            # that value once so their portrait choice survives this migration.
+            self.video_orientation = self.footage_orientation
+        self.footage_orientation = self.video_orientation
+        return self
 
 
 class TaskCreate(BaseModel):

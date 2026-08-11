@@ -27,6 +27,7 @@ from backend import config
 from backend.pipeline import (
     av_sync,
     assembler,
+    collage_broll,
     director,
     footage,
     multimodal_review,
@@ -35,6 +36,7 @@ from backend.pipeline import (
     visual_plan,
 )
 from backend.pipeline.process_logging import run_capture_logged, stream_subprocess
+from backend.pipeline.video_format import FrameSpec, LANDSCAPE, resolve_frame_spec
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
@@ -101,7 +103,11 @@ def _project_relative(path: str | Path, project_dir: Path) -> str:
         return str(resolved)
 
 
-def _build_render_command(project_dir: Path, video_path: Path) -> list[str]:
+def _build_render_command(
+    project_dir: Path,
+    video_path: Path,
+    frame: FrameSpec = LANDSCAPE,
+) -> list[str]:
     """Build the render command for the current HyperFrames CLI (v0.6.x).
 
     The render entry is the project directory (which must contain
@@ -118,7 +124,7 @@ def _build_render_command(project_dir: Path, video_path: Path) -> list[str]:
     return base + [
         "render", str(project_dir),
         "--output", str(video_path),
-        "--resolution", config.RENDER_RESOLUTION,
+        "--resolution", frame.render_resolution,
         "--fps", str(config.RENDER_FPS),
         "--quality", config.RENDER_QUALITY,
         "-w", str(config.RENDER_WORKERS),
@@ -234,7 +240,10 @@ def _finalize_quality_report(
 
 
 def _kit_plans(
-    plans: list[dict], mounts: list[dict], theme: scene_kit.Theme
+    plans: list[dict],
+    mounts: list[dict],
+    theme: scene_kit.Theme,
+    frame: FrameSpec = LANDSCAPE,
 ) -> list[scene_kit.ScenePlan]:
     duration_by_id = {mount["id"]: float(mount["duration"]) for mount in mounts}
     return [
@@ -243,6 +252,7 @@ def _kit_plans(
             duration=duration_by_id.get(plan["id"], 6.0),
             scene_id=plan["id"],
             theme=theme,
+            frame=frame,
         )
         for plan in plans
     ]
@@ -256,6 +266,10 @@ async def compose_video(
     include_character: bool = False,
     captions_enabled: bool = True,
     video_template: str = "podcast",
+    video_orientation: str = "landscape",
+    opening_style: str = "editorial_motion",
+    collage_broll_enabled: bool = False,
+    collage_broll_count: int = 4,
     is_monologue: bool = False,
     ai_endpoint: str | None = None,
     ai_model: str | None = None,
@@ -265,6 +279,7 @@ async def compose_video(
 ) -> str:
     output_dir_path = Path(output_dir)
     output_dir_path.mkdir(parents=True, exist_ok=True)
+    frame = resolve_frame_spec(video_orientation)
 
     # Mirror to the task log (pipeline.log + LogPanel) when available, else the
     # module logger (start.sh log). Prefer the callback to avoid double-logging.
@@ -325,6 +340,28 @@ async def compose_video(
     if attached:
         emit(f"Footage: {attached} manifest clip(s) placed as full-bleed scenes")
 
+    force_collage_opening = opening_style == "paper_collage"
+    if collage_broll_enabled or force_collage_opening:
+        requested_collages = collage_broll_count if collage_broll_enabled else 1
+        collage_manifest = await collage_broll.generate_collage_broll(
+            board,
+            output_dir_path,
+            count=requested_collages,
+            force_opening=force_collage_opening,
+            frame=frame,
+            provider_id=provider_id,
+            ai_endpoint=ai_endpoint,
+            ai_model=ai_model,
+            log=emit,
+        )
+        collage_attached = collage_broll.attach_collage(
+            plans, collage_manifest, output_dir_path
+        )
+        emit(
+            f"Collage B-roll: {collage_attached}/{requested_collages} generated "
+            f"clip(s) placed as {frame.aspect_ratio} full-bleed scenes"
+        )
+
     scene_plans = list(plans)
     visual_grounding = visual_plan.visual_grounding_report(scene_plans, board)
     quality_report = {
@@ -370,7 +407,7 @@ async def compose_video(
     # --- 3. Authoring ------------------------------------------------------
     mounts = _mount_list(board)
     theme = scene_kit.resolve_theme(video_template)
-    kit_plans = _kit_plans(plans, mounts, theme)
+    kit_plans = _kit_plans(plans, mounts, theme, frame)
 
     assembler.vendor_assets(output_dir_path, include_lottie=include_character)
     character_src = assembler.stage_character(output_dir_path) if include_character else None
@@ -387,8 +424,9 @@ async def compose_video(
         emit(f"Provider lookup failed ({exc}); rendering the deterministic scenes")
         endpoint, model, api_key = None, None, None
 
-    if config.DIRECTOR_ENABLED and scene_plans and model:
-        budget = scene_plans[: config.DIRECTOR_MAX_SCENES] if config.DIRECTOR_MAX_SCENES else scene_plans
+    director_plans = [plan for plan in scene_plans if not plan.get("collage_broll")]
+    if config.DIRECTOR_ENABLED and director_plans and model:
+        budget = director_plans[: config.DIRECTOR_MAX_SCENES] if config.DIRECTOR_MAX_SCENES else director_plans
         try:
             outcome = await director.direct_scenes(
                 output_dir_path,
@@ -399,6 +437,7 @@ async def compose_video(
                 endpoint=endpoint,
                 api_key=api_key,
                 log=emit,
+                frame=frame,
             )
             (output_dir_path / "director_report.json").write_text(
                 json.dumps(
@@ -426,6 +465,7 @@ async def compose_video(
         audio_src=audio_src,
         mounts=mounts,
         theme=theme,
+        frame=frame,
         character_src=character_src,
         captions_enabled=captions_enabled,
     )
@@ -468,6 +508,8 @@ async def compose_video(
                     endpoint=endpoint,
                     api_key=api_key,
                     log=emit,
+                    frame=frame,
+                    theme=theme,
                 )
             except Exception as exc:  # noqa: BLE001 - layout polish is never fatal
                 emit(f"Director repair pass unavailable ({exc})")
@@ -496,7 +538,7 @@ async def compose_video(
         f"stall timeout {RENDER_STALL_TIMEOUT}s"
     )
 
-    render_command = _build_render_command(output_dir_path, video_path)
+    render_command = _build_render_command(output_dir_path, video_path, frame)
     returncode, output = await stream_subprocess(
         name="HyperFrames render",
         command=render_command,

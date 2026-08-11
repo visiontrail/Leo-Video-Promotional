@@ -20,6 +20,7 @@ const manifestPath = path.join(
   'opencli',
   'cli-manifest.json',
 )
+const videoPath = path.join(geminiDir, 'video.js')
 
 const helperMarker = 'export async function attachGeminiFile(page, filePath)'
 const helperSource = fs.readFileSync(
@@ -68,6 +69,11 @@ ask = replaceOnce(
 )
 fs.writeFileSync(askPath, ask)
 
+fs.copyFileSync(
+  path.join(runtimeDir, 'patches', 'gemini-video-command.js'),
+  videoPath,
+)
+
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
 const askEntry = manifest.find(
   (entry) => entry?.site === 'gemini' && entry?.name === 'ask',
@@ -82,7 +88,38 @@ if (!askEntry.args.some((argument) => argument?.name === 'file')) {
     required: false,
     help: 'Attach one local image before sending the prompt',
   })
-  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 }
 
-console.log('Applied project Gemini image-upload patch to OpenCLI 1.8.6')
+const videoEntry = {
+  site: 'gemini',
+  name: 'video',
+  description: 'Create a Gemini Web video from ordered first/last frames and save it locally',
+  access: 'write',
+  domain: 'gemini.google.com',
+  strategy: 'cookie',
+  browser: true,
+  args: [
+    { name: 'prompt', type: 'str', required: false, positional: true, help: 'Create Video animation prompt' },
+    { name: 'first', type: 'str', required: false, help: 'Local empty first-frame image' },
+    { name: 'last', type: 'str', required: false, help: 'Local completed last-frame image' },
+    { name: 'resume', type: 'str', required: false, help: 'Existing Gemini conversation URL to finish or download' },
+    { name: 'aspect', type: 'str', default: '16:9', required: false, help: 'Final aspect ratio', choices: ['16:9', '9:16'] },
+    { name: 'output', type: 'str', required: true, help: 'Local MP4 output path' },
+    { name: 'timeout', type: 'int', default: 1800, required: false, help: 'Total generation and download timeout in seconds' },
+  ],
+  columns: ['status', 'file', 'aspect', 'link'],
+  defaultFormat: 'plain',
+  type: 'js',
+  modulePath: 'gemini/video.js',
+  sourceFile: 'gemini/video.js',
+  navigateBefore: false,
+  siteSession: 'persistent',
+}
+const videoIndex = manifest.findIndex(
+  (entry) => entry?.site === 'gemini' && entry?.name === 'video',
+)
+if (videoIndex >= 0) manifest[videoIndex] = videoEntry
+else manifest.push(videoEntry)
+fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+
+console.log('Applied project Gemini image-upload and Create Video patches to OpenCLI 1.8.6')

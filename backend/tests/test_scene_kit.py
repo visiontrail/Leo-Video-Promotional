@@ -4,6 +4,7 @@ import pytest
 
 from backend.pipeline import scene_kit as sk
 from backend.pipeline.director import validate_scene_html
+from backend.pipeline.video_format import PORTRAIT
 
 
 def plan(**kwargs) -> sk.ScenePlan:
@@ -148,3 +149,31 @@ def test_video_footage_declares_hyperframes_media_timing():
     assert 'data-duration="12.00"' in video
     assert 'data-track-index="0"' in video
     assert "muted" in video and "playsinline" in video
+    assert " loop" in video
+
+
+def test_collage_footage_is_clean_locked_off_full_bleed():
+    html = sk.render_scene(
+        plan(
+            archetype="footage",
+            footage_src="collage_broll/01/video/final-5s-noaudio.mp4",
+            footage_kind="video",
+            collage_broll=True,
+        )
+    )
+
+    assert 'class="frame collage-frame"' in html
+    assert 'class="scrim"' not in html
+    assert 'class="stage"' not in html
+    assert "scale: 1.16" not in html
+    video = re.search(r"<video[^>]*>", html).group(0)
+    assert " loop" not in video
+
+
+def test_portrait_scene_uses_portrait_root_contract():
+    html = sk.render_scene(plan(frame=PORTRAIT, archetype="topic", body="Support"))
+
+    assert 'data-width="1080"' in html
+    assert 'data-height="1920"' in html
+    assert "width:1080px; height:1920px" in html
+    assert validate_scene_html(html, "scene-01", PORTRAIT) == []

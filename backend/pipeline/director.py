@@ -28,6 +28,7 @@ from pathlib import Path
 
 from backend import config, skills_admin
 from backend.pipeline import scene_kit
+from backend.pipeline.video_format import FrameSpec, LANDSCAPE
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
@@ -177,7 +178,10 @@ Report at the end with one line per scene: the scene id and the visual idea.
 """
 
 
-def _system_prompt(theme: scene_kit.Theme) -> str:
+def _system_prompt(
+    theme: scene_kit.Theme,
+    frame: FrameSpec = LANDSCAPE,
+) -> str:
     """Give authoring crews the selected template instead of a dark default."""
     prompt = SYSTEM_PROMPT.replace("background:#0B0D17;", f"background:{theme.bg};")
     prompt = prompt.replace(
@@ -193,6 +197,16 @@ def _system_prompt(theme: scene_kit.Theme) -> str:
             "fine topographic veins, plus thin ochre route arcs with solid circular nodes. Motion is contemplative: "
             "slow terrain drift, route-line drawing, and soft reveals. Avoid neon, glossy UI, rounded cards, and "
             "generic geometric blobs.\n- Draw with SVG, CSS gradients, and shapes.",
+        )
+    if frame != LANDSCAPE:
+        prompt = prompt.replace("1920x1080", f"{frame.width}x{frame.height}")
+        prompt = prompt.replace('data-width="1920"', f'data-width="{frame.width}"')
+        prompt = prompt.replace('data-height="1080"', f'data-height="{frame.height}"')
+        prompt = prompt.replace("width:1920px", f"width:{frame.width}px")
+        prompt = prompt.replace("height:1080px", f"height:{frame.height}px")
+        prompt += (
+            f"\n- Portrait layout: the frame is {frame.width}x{frame.height}. Use a vertical flex stack, "
+            "keep text within 92px side margins, and reserve the bottom 300px for captions/chrome.\n"
         )
     return prompt
 
@@ -240,7 +254,11 @@ You are crew {batch_no} of {batch_total}. Author these scenes and only these: {i
 Write each scene to compositions/<scene-id>.html now."""
 
 
-def validate_scene_html(text: str, scene_id: str) -> list[str]:
+def validate_scene_html(
+    text: str,
+    scene_id: str,
+    frame: FrameSpec = LANDSCAPE,
+) -> list[str]:
     """Structural problems that would break the render. Empty list means ship it."""
     problems: list[str] = []
     if len(text) < 400:
@@ -249,6 +267,10 @@ def validate_scene_html(text: str, scene_id: str) -> list[str]:
         problems.append("missing <template> wrapper")
     if f'data-composition-id="{scene_id}"' not in text:
         problems.append(f'missing data-composition-id="{scene_id}"')
+    if f'data-width="{frame.width}"' not in text or f'data-height="{frame.height}"' not in text:
+        problems.append(
+            f"composition dimensions must be {frame.width}x{frame.height}"
+        )
     if not re.search(rf"""window\.__timelines\[\s*["']{re.escape(scene_id)}["']\s*\]\s*=""", text):
         problems.append(f'missing window.__timelines["{scene_id}"] registration')
     if "paused" not in text:
@@ -364,6 +386,7 @@ async def direct_scenes(
     endpoint: str | None = None,
     api_key: str | None = None,
     log: LogCallback | None = None,
+    frame: FrameSpec = LANDSCAPE,
 ) -> DirectorOutcome:
     """Run the director crews and gate everything they wrote.
 
@@ -421,7 +444,7 @@ async def direct_scenes(
                 model=resolved_model,
                 env=env,
                 log=log,
-                system_prompt=_system_prompt(theme),
+                system_prompt=_system_prompt(theme, frame),
             )
 
     results = await asyncio.gather(
@@ -455,7 +478,7 @@ async def direct_scenes(
             # report a failed run as a success.
             outcome.rejected.append(scene_id)
             continue
-        problems = validate_scene_html(text, scene_id)
+        problems = validate_scene_html(text, scene_id, frame)
         if problems:
             outcome.rejected.append(scene_id)
             if log:
@@ -483,6 +506,8 @@ async def repair_scenes(
     endpoint: str | None = None,
     api_key: str | None = None,
     log: LogCallback | None = None,
+    frame: FrameSpec = LANDSCAPE,
+    theme: scene_kit.Theme = scene_kit.DEFAULT_THEME,
 ) -> list[str]:
     """Hand HyperFrames' own layout findings back to an agent to fix.
 
@@ -512,8 +537,8 @@ Rules for the fix:
   it with `data-layout-allow-overlap`.
 - `container_overflow ... overflowed bottom Npx` means the content is taller than
   the frame. Cut copy, reduce font sizes, or reduce gaps until it fits.
-- Everything must sit inside the 1920x1080 frame with a 60px margin from every
-  edge, and nothing may enter the bottom 200px — the caption bar lives there.
+- Everything must sit inside the {frame.width}x{frame.height} frame with a 60px margin from every
+  edge, and nothing may enter the bottom {300 if frame.is_portrait else 200}px — the caption bar lives there.
 - Keep every rule from your original instructions. Do not break the timeline
   registration or the template wrapper.
 
@@ -529,6 +554,7 @@ Read each file, fix it, and write it back."""
         env=env,
         log=log,
         label="repairing",
+        system_prompt=_system_prompt(theme, frame),
     )
     if error and log:
         log(f"Director: repair pass {error}")
@@ -537,7 +563,9 @@ Read each file, fix it, and write it back."""
     healthy: list[str] = []
     for scene_id in ids:
         path = comps / f"{scene_id}.html"
-        if path.exists() and not validate_scene_html(path.read_text(encoding="utf-8"), scene_id):
+        if path.exists() and not validate_scene_html(
+            path.read_text(encoding="utf-8"), scene_id, frame
+        ):
             healthy.append(scene_id)
     return healthy
 

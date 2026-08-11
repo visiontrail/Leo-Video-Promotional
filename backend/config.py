@@ -61,6 +61,10 @@ OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "600"))
 ACCOUNT_OPS_POLL_SECONDS = int(os.getenv("ACCOUNT_OPS_POLL_SECONDS", "10"))
 # ChatGPT image generation routinely takes longer than simple browser reads.
 THUMBNAIL_CHATGPT_TIMEOUT = int(os.getenv("THUMBNAIL_CHATGPT_TIMEOUT", "360"))
+# Collage stills run through ChatGPT Web; motion runs through Gemini Create
+# Video. These are browser waits, not API-key-backed provider timeouts.
+COLLAGE_CHATGPT_TIMEOUT = int(os.getenv("COLLAGE_CHATGPT_TIMEOUT", "420"))
+COLLAGE_GEMINI_TIMEOUT = int(os.getenv("COLLAGE_GEMINI_TIMEOUT", "1800"))
 WEB_FOOTAGE_ENABLED = _env_bool("WEB_FOOTAGE_ENABLED", "1")
 WEB_FOOTAGE_GEMINI_ENABLED = _env_bool("WEB_FOOTAGE_GEMINI_ENABLED", "1")
 WEB_FOOTAGE_GEMINI_TIMEOUT = int(os.getenv("WEB_FOOTAGE_GEMINI_TIMEOUT", "120"))

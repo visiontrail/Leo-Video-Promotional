@@ -1,4 +1,5 @@
 from backend.pipeline import composer, visual_plan
+from backend.pipeline.video_format import PORTRAIT
 
 
 def test_mount_list_starts_with_content_and_has_no_title_card():
@@ -78,3 +79,9 @@ def test_failed_review_completes_delivery_with_warning():
     assert report["quality_status"] == "warning"
     assert report["delivery_status"] == "completed_with_warnings"
     assert "81.42" in report["warnings"][0]
+
+
+def test_portrait_render_command_uses_task_resolution(tmp_path):
+    command = composer._build_render_command(tmp_path, tmp_path / "video.mp4", PORTRAIT)
+
+    assert command[command.index("--resolution") + 1] == "portrait"

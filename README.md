@@ -5,8 +5,8 @@ The primary output is a **solo talk-show monologue** (a single host talking to t
 a two-host dialogue format is also available.
 
 Pipeline: **source extract → AI digest → script → ChatGPT Web viral thumbnail → rights-ledgered
-footage scout → VibeVoice TTS → storyboard → art direction → agent-authored scenes → HyperFrames
-video render**.
+footage scout → optional web-generated collage B-roll → VibeVoice TTS → storyboard → art direction
+→ agent-authored scenes → HyperFrames video render**.
 
 ## Architecture
 
@@ -167,6 +167,26 @@ On the New Task form, **Format** is the first choice:
 - **Two-Host Dialogue** — host + co-host, two voices. Requires the **1.5B** model.
 
 The number of voice pickers follows the format automatically.
+
+## Video orientation and paper-collage B-roll
+
+Each new task has one final-video orientation: **16:9 landscape** (default) or **9:16 portrait**.
+That choice drives public-footage search, generated collage stills, Gemini videos, scene dimensions,
+caption safe areas, and the final HyperFrames render; the pipeline does not generate in one ratio and
+cross-crop to the other.
+
+The optional **Paper-collage B-roll** switch defaults to off and, when enabled, defaults to four
+five-second clips. The task's Agent provider selects narration beats and designs visual metaphors,
+ChatGPT Web generates the completed stills, and Gemini Web **Create Video** assembles each scene from
+an empty paper field. Both web stages run through the signed-in project-local OpenCLI session, with
+no `GEMINI_API_KEY` or `google-genai` dependency and no intermediate approval pauses. Choosing
+**Paper collage** as the opening style always generates at least the opening clip, even when the
+general collage switch is off. Successful clips are mounted full-bleed in HyperFrames; failed items
+leave the deterministic scene intact and are recorded in `collage_broll/manifest.json`.
+
+Browser timeouts have safe defaults of 420 seconds for ChatGPT stills and 1800 seconds for Gemini
+video generation. They are editable under **Admin → System → Paper-collage B-roll** as
+`COLLAGE_CHATGPT_TIMEOUT` and `COLLAGE_GEMINI_TIMEOUT`.
 
 ## Footage scout: Commons + YouTube
 

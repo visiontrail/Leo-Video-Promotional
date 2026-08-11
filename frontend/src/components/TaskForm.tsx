@@ -11,6 +11,8 @@ type SourceType = 'youtube' | 'epub' | 'pdf'
 type VideoTemplate = 'podcast' | 'kinetic' | 'swiss' | 'minimal' | 'shanshui'
 type ScriptFormat = 'monologue' | 'dialogue'
 type FootageProvider = 'wikimedia' | 'hybrid' | 'opencli_web'
+type VideoOrientation = 'landscape' | 'portrait'
+type OpeningStyle = 'editorial_motion' | 'paper_collage'
 
 const SCRIPT_FORMATS: Array<{ key: ScriptFormat; name: string; description: string }> = [
   { key: 'monologue', name: 'Solo Talk-Show', description: 'One host talking straight to the audience' },
@@ -157,6 +159,8 @@ export default function TaskForm() {
   const [voice2, setVoice2] = useState('Alice')
   const [ttsModel, setTtsModel] = useState('vibevoice-0.5b')
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
+  const [videoOrientation, setVideoOrientation] = useState<VideoOrientation>('landscape')
+  const [openingStyle, setOpeningStyle] = useState<OpeningStyle>('editorial_motion')
   const [processingMode, setProcessingMode] = useState<'full_text' | 'curated_highlights'>('full_text')
   const [character, setCharacter] = useState(false)
   const [captionsEnabled, setCaptionsEnabled] = useState(false)
@@ -165,7 +169,8 @@ export default function TaskForm() {
   const [footageEnabled, setFootageEnabled] = useState(true)
   const [footageProvider, setFootageProvider] = useState<FootageProvider>('hybrid')
   const [footageClipCount, setFootageClipCount] = useState(8)
-  const [footageOrientation, setFootageOrientation] = useState<'landscape' | 'portrait'>('landscape')
+  const [collageBrollEnabled, setCollageBrollEnabled] = useState(false)
+  const [collageBrollCount, setCollageBrollCount] = useState(4)
   const [providerId, setProviderId] = useState<number | null>(null)
   const [startMode, setStartMode] = useState<'now' | 'later'>('now')
   const [startAt, setStartAt] = useState('')
@@ -251,6 +256,8 @@ export default function TaskForm() {
         voice_2: voice2,
         tts_model: ttsModel,
         video_template: videoTemplate,
+        video_orientation: videoOrientation,
+        opening_style: openingStyle,
         processing_mode: sourceType === 'epub' ? processingMode : 'full_text',
         include_character: character,
         captions_enabled: captionsEnabled,
@@ -259,8 +266,10 @@ export default function TaskForm() {
         footage_provider: footageProvider,
         footage_license_policy: footageProvider === 'wikimedia' ? 'open_only' : 'review_required',
         footage_clip_count: footageClipCount,
-        footage_orientation: footageOrientation,
+        footage_orientation: videoOrientation,
         footage_multimodal_analyzer: 'gemini_web',
+        collage_broll_enabled: collageBrollEnabled,
+        collage_broll_count: collageBrollCount,
         thumbnail_enabled: thumbnailEnabled,
         auto_render: autoRender,
       }
@@ -305,6 +314,15 @@ export default function TaskForm() {
     { label: 'Footage', note: footageEnabled ? `Scout ${footageClipCount} clips via ${footageProvider === 'wikimedia' ? 'Commons' : footageProvider === 'hybrid' ? 'Commons + web' : 'web platforms'}` : 'Skipped — media scout is off', on: footageEnabled },
     { label: 'Voice', note: `Synthesise with VibeVoice ${is05b ? '0.5B' : '1.5B'}`, on: true },
     {
+      label: 'Collage',
+      note: collageBrollEnabled
+        ? `Generate ${collageBrollCount} ${videoOrientation === 'landscape' ? '16:9' : '9:16'} paper-collage clips via ChatGPT + Gemini Web`
+        : openingStyle === 'paper_collage'
+          ? 'Generate the opening paper-collage clip'
+          : 'Skipped — generated collage is off',
+      on: collageBrollEnabled || openingStyle === 'paper_collage',
+    },
+    {
       label: 'Captions',
       note: captionsEnabled ? 'Show concise, single-line captions' : 'Skipped — captions are off',
       on: captionsEnabled,
@@ -314,7 +332,7 @@ export default function TaskForm() {
       note: autoRender ? 'Skipped — render starts without approval' : 'Pause for your audio approval',
       on: !autoRender,
     },
-    { label: 'Compose', note: `Render the ${activeTemplate.name} template`, on: true },
+    { label: 'Compose', note: `Render the ${activeTemplate.name} template in ${videoOrientation === 'landscape' ? '16:9' : '9:16'}`, on: true },
   ]
 
   // Live read-out pinned above the launch button — the run at a glance.
@@ -326,10 +344,13 @@ export default function TaskForm() {
     ['Voice', isMonologue ? voice1 : `${voice1} · ${voice2}`],
     ['Engine', is05b ? '0.5B' : '1.5B'],
     ['Template', activeTemplate.name],
+    ['Frame', videoOrientation === 'landscape' ? '16:9 landscape' : '9:16 portrait'],
+    ['Opening', openingStyle === 'paper_collage' ? 'Paper collage' : 'Editorial motion'],
     ['Captions', captionsEnabled ? 'On · single line' : 'Off'],
     ['Title', 'Independent Agent'],
     ['Thumbnail', thumbnailEnabled ? 'ChatGPT Web' : 'Off'],
     ['B-roll', footageEnabled ? `${footageClipCount} · ${footageProvider === 'hybrid' ? 'Hybrid' : footageProvider === 'wikimedia' ? 'Commons' : 'Web'}` : 'Off'],
+    ['Collage', collageBrollEnabled ? `${collageBrollCount} clips` : openingStyle === 'paper_collage' ? 'Opening only' : 'Off'],
     ['Review', autoRender ? 'Auto-render' : 'Manual'],
   ]
 
@@ -622,6 +643,54 @@ export default function TaskForm() {
                 ))}
               </div>
               <small className="wb-hint template-note">{activeTemplate.description}</small>
+
+              <div className="format-direction">
+                <label>Final frame</label>
+                <div className="frame-picker" role="radiogroup" aria-label="Final video orientation">
+                  <label className={`frame-option ${videoOrientation === 'landscape' ? 'active' : ''}`}>
+                    <input
+                      type="radio"
+                      name="video_orientation"
+                      value="landscape"
+                      checked={videoOrientation === 'landscape'}
+                      onChange={() => setVideoOrientation('landscape')}
+                    />
+                    <span className="frame-shape landscape" aria-hidden="true" />
+                    <b>16:9</b>
+                    <small>Landscape · default</small>
+                  </label>
+                  <label className={`frame-option ${videoOrientation === 'portrait' ? 'active' : ''}`}>
+                    <input
+                      type="radio"
+                      name="video_orientation"
+                      value="portrait"
+                      checked={videoOrientation === 'portrait'}
+                      onChange={() => setVideoOrientation('portrait')}
+                    />
+                    <span className="frame-shape portrait" aria-hidden="true" />
+                    <b>9:16</b>
+                    <small>Portrait</small>
+                  </label>
+                </div>
+                <small className="wb-hint">This one choice drives public footage, generated stills, Gemini videos, scenes, and the final render.</small>
+              </div>
+
+              <div className="form-group opening-style-field">
+                <label htmlFor="opening-style">Opening style</label>
+                <select
+                  id="opening-style"
+                  value={openingStyle}
+                  onChange={(event) => setOpeningStyle(event.target.value as OpeningStyle)}
+                >
+                  <option value="editorial_motion">Editorial motion — template-led hook</option>
+                  <option value="paper_collage">Paper collage — assemble-from-empty hook</option>
+                </select>
+                <small className="wb-hint">
+                  {openingStyle === 'paper_collage'
+                    ? 'Scene 01 is guaranteed a generated halftone paper-collage clip.'
+                    : 'The opening stays in the selected HyperFrames visual system.'}
+                </small>
+              </div>
             </article>
 
             {/* The run-level switches share one panel: on their own they were
@@ -767,6 +836,56 @@ export default function TaskForm() {
               )}
             </article>
 
+            <section className={`collage-config footage-config wb-wide ${collageBrollEnabled ? 'is-enabled' : ''}`}>
+              <div className="footage-config-head">
+                <div>
+                  <span className="eyebrow">Generated media</span>
+                  <h3>Paper-collage B-roll</h3>
+                  <p>Agent-designed metaphors · ChatGPT Web stills · Gemini Web Create Video · zero approval pauses.</p>
+                </div>
+                <label className="footage-toggle">
+                  <input
+                    type="checkbox"
+                    checked={collageBrollEnabled}
+                    onChange={(event) => setCollageBrollEnabled(event.target.checked)}
+                    aria-label="Generate paper-collage B-roll"
+                  />
+                  <span aria-hidden="true" />
+                  <b>{collageBrollEnabled ? 'On' : 'Off'}</b>
+                </label>
+              </div>
+
+              {(collageBrollEnabled || openingStyle === 'paper_collage') && (
+                <div className="collage-controls">
+                  {collageBrollEnabled && (
+                    <div className="form-group">
+                      <label htmlFor="collage-count">Generated clips</label>
+                      <select
+                        id="collage-count"
+                        value={collageBrollCount}
+                        onChange={(event) => setCollageBrollCount(Number(event.target.value))}
+                      >
+                        {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((value) => (
+                          <option key={value} value={value}>{value} clips</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div className="source-readiness collage-readiness">
+                    <span className="source-monogram">{videoOrientation === 'landscape' ? '16' : '9'}</span>
+                    <span>
+                      <strong>{videoOrientation === 'landscape' ? 'Landscape 16:9' : 'Portrait 9:16'}</strong>
+                      <small>5 seconds · 24fps · H.264 · silent · full-bleed</small>
+                    </span>
+                    <em>No API key</em>
+                  </div>
+                  {!collageBrollEnabled && openingStyle === 'paper_collage' && (
+                    <small className="wb-hint">The opening selection still generates one collage clip; turn this section on to distribute multiple clips across the video.</small>
+                  )}
+                </div>
+              )}
+            </section>
+
             <section className={`footage-config wb-wide ${footageEnabled ? 'is-enabled' : ''}`}>
               <div className="footage-config-head">
                 <div>
@@ -847,14 +966,11 @@ export default function TaskForm() {
                       </select>
                     </div>
                     <div>
-                      <label>Frame orientation</label>
-                      <select
-                        value={footageOrientation}
-                        onChange={(event) => setFootageOrientation(event.target.value as 'landscape' | 'portrait')}
-                      >
-                        <option value="landscape">Landscape</option>
-                        <option value="portrait">Portrait</option>
-                      </select>
+                      <label>Inherited frame</label>
+                      <div className="inherited-frame">
+                        <span className={`frame-shape ${videoOrientation}`} aria-hidden="true" />
+                        <strong>{videoOrientation === 'landscape' ? '16:9 landscape' : '9:16 portrait'}</strong>
+                      </div>
                     </div>
                   </div>
                   <div className={`license-gate ${footageProvider === 'wikimedia' ? '' : 'review-required'}`}>

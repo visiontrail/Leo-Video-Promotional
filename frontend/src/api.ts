@@ -10,6 +10,8 @@ export interface TaskConfig {
   captions_enabled?: boolean;
   tts_model?: string;
   video_template?: string;
+  video_orientation?: 'landscape' | 'portrait';
+  opening_style?: 'editorial_motion' | 'paper_collage';
   processing_mode?: string;
   ai_endpoint?: string;
   ai_model?: string;
@@ -20,6 +22,8 @@ export interface TaskConfig {
   footage_clip_count?: number;
   footage_orientation?: 'landscape' | 'portrait';
   footage_multimodal_analyzer?: 'gemini_web';
+  collage_broll_enabled?: boolean;
+  collage_broll_count?: number;
   thumbnail_enabled?: boolean;
   auto_render?: boolean;
 }

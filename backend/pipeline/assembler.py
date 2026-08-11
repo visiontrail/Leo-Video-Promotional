@@ -25,6 +25,7 @@ from pathlib import Path
 from backend import config
 from backend.pipeline import scene_kit
 from backend.pipeline.process_logging import run_capture_logged
+from backend.pipeline.video_format import FrameSpec, LANDSCAPE
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
@@ -248,7 +249,7 @@ def _scene_mounts(mounts: Sequence[dict]) -> list[str]:
     return tags
 
 
-def _spine_css(theme: scene_kit.Theme) -> str:
+def _spine_css(theme: scene_kit.Theme, frame: FrameSpec = LANDSCAPE) -> str:
     paper_style = theme.name == "shanshui"
     caption_radius = "5px" if paper_style else "14px"
     caption_shadow = (
@@ -259,9 +260,17 @@ def _spine_css(theme: scene_kit.Theme) -> str:
     progress_from = scene_kit.accent_hex("amber", theme)
     progress_to = scene_kit.accent_hex("teal" if paper_style else "coral", theme)
     brand_alpha = 0.78 if paper_style else 0.45
+    portrait = ""
+    if frame.is_portrait:
+        portrait = """
+      .caption { left:70px; right:70px; bottom:122px; }
+      .caption-inner { font-size:38px; max-width:920px; padding:16px 24px; }
+      .character { right:42px; bottom:188px; width:230px; height:230px; }
+      .brand { left:38px; bottom:44px; }
+"""
     return f"""
       * {{ margin:0; padding:0; box-sizing:border-box; }}
-      html, body {{ width:1920px; height:1080px; overflow:hidden; background:{theme.bg}; }}
+      html, body {{ width:{frame.width}px; height:{frame.height}px; overflow:hidden; background:{theme.bg}; }}
       .scene-mount {{ position:absolute; inset:0; z-index:1; isolation:isolate; }}
 
       .caption {{
@@ -296,6 +305,7 @@ def _spine_css(theme: scene_kit.Theme) -> str:
         font:600 22px {scene_kit.SANS}; letter-spacing:.18em; text-transform:uppercase;
         color:{scene_kit._rgba(theme.ink, brand_alpha)};
       }}
+{portrait}
 """
 
 
@@ -306,6 +316,7 @@ def build_spine(
     mounts: Sequence[dict],
     brand: str = "",
     theme: scene_kit.Theme = scene_kit.DEFAULT_THEME,
+    frame: FrameSpec = LANDSCAPE,
     character_src: str | None = None,
     captions_enabled: bool = True,
 ) -> str:
@@ -353,13 +364,13 @@ def build_spine(
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1920, height=1080" />
-    <style>{_spine_css(theme)}    </style>
+    <meta name="viewport" content="width={frame.width}, height={frame.height}" />
+    <style>{_spine_css(theme, frame)}    </style>
   </head>
   <body>
     <div id="root" data-composition-id="root" data-start="0" data-duration="{total}"
-         data-width="1920" data-height="1080"
-         style="position:relative;width:1920px;height:1080px;overflow:hidden;">
+         data-width="{frame.width}" data-height="{frame.height}"
+         style="position:relative;width:{frame.width}px;height:{frame.height}px;overflow:hidden;">
 
 {chr(10).join(mount_tags)}
 

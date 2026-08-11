@@ -135,6 +135,12 @@ GROUPS: tuple[SettingGroup, ...] = (
         "The editable art-direction formula lives in the Prompts tab.",
     ),
     SettingGroup(
+        "collage",
+        "Paper-collage B-roll",
+        "Agent-planned stills and Gemini Create Video motion generated through "
+        "the signed-in project-local OpenCLI web sessions.",
+    ),
+    SettingGroup(
         "paths",
         "Paths & Storage",
         "Where the app reads and writes. Relative paths resolve under the "
@@ -483,6 +489,16 @@ SPECS: tuple[SettingSpec, ...] = (
         "THUMBNAIL_CHATGPT_TIMEOUT", "thumbnail", "ChatGPT image timeout", "int",
         unit="seconds", minimum=30, maximum=1800,
         description="Maximum time to wait for ChatGPT Web to generate and export the cover image.",
+    ),
+    SettingSpec(
+        "COLLAGE_CHATGPT_TIMEOUT", "collage", "Collage still timeout", "int",
+        unit="seconds", minimum=60, maximum=1800,
+        description="Maximum wait per editorial collage still generated through signed-in ChatGPT Web.",
+    ),
+    SettingSpec(
+        "COLLAGE_GEMINI_TIMEOUT", "collage", "Collage video timeout", "int",
+        unit="seconds", minimum=120, maximum=3600,
+        description="Maximum wait per collage animation generated through Gemini Web Create Video.",
     ),
     # ── Paths ────────────────────────────────────────────────────────────
     SettingSpec(

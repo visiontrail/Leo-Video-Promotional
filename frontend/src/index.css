@@ -2117,6 +2117,52 @@ video {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
+.collage-config {
+  background:
+    radial-gradient(circle at 88% 14%, rgba(89, 64, 128, 0.16), transparent 22%),
+    linear-gradient(127deg, rgba(217, 107, 53, 0.14), transparent 44%),
+    var(--surface-muted);
+}
+
+.collage-config.is-enabled {
+  border-color: color-mix(in srgb, #d96b35 58%, var(--border));
+}
+
+.collage-config::after {
+  border-style: dashed;
+  border-color: rgba(217, 107, 53, 0.55);
+  border-radius: 4px;
+  transform: rotate(9deg);
+}
+
+.collage-controls {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  align-items: end;
+  gap: 0 18px;
+  grid-template-columns: minmax(150px, 0.55fr) minmax(0, 1.45fr);
+  margin-top: 16px;
+}
+
+.collage-controls .form-group {
+  margin: 0;
+}
+
+.collage-readiness {
+  margin-top: 0;
+}
+
+.collage-readiness .source-monogram {
+  border-color: rgba(217, 107, 53, 0.45);
+  background: #d96b35;
+  color: #fff4df;
+}
+
+.collage-controls > .wb-hint {
+  grid-column: 1 / -1;
+}
+
 .footage-config::after {
   position: absolute;
   top: -32px;
@@ -3120,6 +3166,111 @@ video {
   line-height: 1;
 }
 
+.format-direction,
+.opening-style-field {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.format-direction > label {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.frame-picker {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.frame-option {
+  display: grid;
+  align-items: center;
+  gap: 1px 9px;
+  grid-template-columns: 38px minmax(0, 1fr);
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--input) 72%, transparent);
+  padding: 9px 10px;
+  cursor: pointer;
+  transition: border-color 150ms ease, transform 150ms ease, background 150ms ease;
+}
+
+.frame-option:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+
+.frame-option.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--input));
+}
+
+.frame-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.frame-option:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.frame-option b {
+  align-self: end;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.frame-option small {
+  align-self: start;
+  color: var(--text-dim);
+  font-size: 9px;
+}
+
+.frame-shape {
+  display: block;
+  grid-row: span 2;
+  place-self: center;
+  border: 1px solid color-mix(in srgb, var(--accent-3) 56%, var(--border));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent-3) 28%, transparent), transparent 58%),
+    var(--bg-strong);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.frame-shape.landscape {
+  width: 36px;
+  height: 21px;
+}
+
+.frame-shape.portrait {
+  width: 21px;
+  height: 36px;
+}
+
+.inherited-frame {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input);
+  padding: 7px 11px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.inherited-frame .frame-shape {
+  flex: 0 0 auto;
+}
+
 :root[data-theme='dark'] .template-option.active::after {
   color: var(--accent-3);
 }
@@ -3266,6 +3417,11 @@ video {
   .wb-grid,
   .tile-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .collage-controls {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
   }
 }
 

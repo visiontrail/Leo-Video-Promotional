@@ -62,7 +62,7 @@ async def _acquire_task_footage(
         title=title or task.generated_title or task.source_title or task.id,
         script_path=script_path,
         clip_count=task.config.footage_clip_count,
-        orientation=task.config.footage_orientation,
+        orientation=task.config.video_orientation,
         license_policy=task.config.footage_license_policy,
         provider_id=task.config.provider_id,
         ai_endpoint=task.config.ai_endpoint,
@@ -394,6 +394,10 @@ async def run_compose(task: TaskResponse, log: LogCallback | None = None):
         include_character=task.config.include_character,
         captions_enabled=task.config.captions_enabled,
         video_template=task.config.video_template,
+        video_orientation=task.config.video_orientation,
+        opening_style=task.config.opening_style,
+        collage_broll_enabled=task.config.collage_broll_enabled,
+        collage_broll_count=task.config.collage_broll_count,
         is_monologue=task.config.script_format == ScriptFormat.MONOLOGUE,
         # The compose stage now runs its own AI calls (art direction, then the
         # Claude Agent SDK authoring crews), so it needs the same provider the
