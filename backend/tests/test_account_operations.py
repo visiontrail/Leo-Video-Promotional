@@ -233,19 +233,41 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(content["year"], 1914)
 
-    def test_content_contract_rejects_an_oversized_post(self):
-        with self.assertRaisesRegex(OpenCLIError, "maximum is 280"):
-            _content_object(
-                {
-                    "title": "Event",
-                    "year": 1900,
-                    "event_summary": "Summary",
-                    "historical_reflection": "Reflection",
-                    "post_text": "x" * 281,
-                    "image_prompt": "Scene",
-                    "source_notes": ["A", "B"],
-                }
-            )
+    def test_content_contract_compacts_an_oversized_post(self):
+        content = _content_object(
+            {
+                "title": "Event",
+                "year": 1900,
+                "event_summary": "Summary",
+                "historical_reflection": "Reflection",
+                "post_text": "A historically grounded sentence " * 12,
+                "image_prompt": "Scene",
+                "source_notes": ["A", "B"],
+            }
+        )
+
+        self.assertLessEqual(len(content["post_text"]), 280)
+        self.assertTrue(content["post_text"].endswith("…"))
+
+    def test_content_contract_selects_final_content_json_after_tool_events(self):
+        planned = {
+            "title": "Event",
+            "year": 1900,
+            "event_summary": "Summary",
+            "historical_reflection": "Reflection",
+            "post_text": "In 1900, this event changed public life and institutions. Its consequences show how choices can outlive the people who made them.",
+            "image_prompt": "Scene",
+            "source_notes": ["A", "B"],
+        }
+        mixed_output = (
+            'Tool returned [{"type":"text","text":"working"}]\n'
+            "Final answer:\n"
+            + json.dumps(planned)
+        )
+
+        content = _content_object(mixed_output)
+
+        self.assertEqual(content["title"], "Event")
 
     def test_publish_image_is_compacted_for_browser_upload(self):
         with tempfile.TemporaryDirectory() as directory:

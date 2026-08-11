@@ -28,6 +28,17 @@ from backend.models import (
 from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_CONTENT_FIELDS = (
+    "title",
+    "year",
+    "event_summary",
+    "historical_reflection",
+    "post_text",
+    "image_prompt",
+    "source_notes",
+)
+_X_POST_LIMIT = 280
+_X_POST_MINIMUM = 80
 
 
 def _rows(value: Any) -> list[dict[str, Any]]:
@@ -64,30 +75,88 @@ def _render_prompt(template: str, event_date: str) -> str:
     return result
 
 
+def _json_dicts(value: Any, *, depth: int = 0) -> list[dict[str, Any]]:
+    """Recover JSON objects from mixed OpenCode narration and event output."""
+    if depth > 2:
+        return []
+    if isinstance(value, dict):
+        candidates = [value]
+        for nested in value.values():
+            if isinstance(nested, (dict, list, str)):
+                candidates.extend(_json_dicts(nested, depth=depth + 1))
+        return candidates
+    if isinstance(value, list):
+        candidates: list[dict[str, Any]] = []
+        for nested in value:
+            candidates.extend(_json_dicts(nested, depth=depth + 1))
+        return candidates
+    if not isinstance(value, str):
+        return []
+
+    decoder = json.JSONDecoder()
+    candidates = []
+    for index, character in enumerate(value):
+        if character not in "[{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(value[index:])
+        except json.JSONDecodeError:
+            continue
+        candidates.extend(_json_dicts(parsed, depth=depth + 1))
+    return candidates
+
+
+def _fit_x_post(value: Any) -> str:
+    """Keep a planned post inside X's limit without cutting through a word."""
+    post_text = re.sub(r"\s+", " ", str(value)).strip()
+    if len(post_text) <= _X_POST_LIMIT:
+        return post_text
+
+    prefix = post_text[: _X_POST_LIMIT - 1].rstrip()
+    sentence_end = max(prefix.rfind(mark) for mark in ".!?。！？")
+    # Only prefer a complete sentence when it uses most of the budget. Cutting
+    # at a much earlier period can discard the historical reflection entirely.
+    if sentence_end + 1 >= _X_POST_LIMIT - 40:
+        return prefix[: sentence_end + 1].rstrip()
+
+    word_end = prefix.rfind(" ")
+    if word_end >= _X_POST_MINIMUM:
+        prefix = prefix[:word_end]
+    return prefix.rstrip(" ,;:—–-") + "…"
+
+
 def _content_object(value: str | dict[str, Any]) -> dict[str, Any]:
-    parsed = value if isinstance(value, dict) else first_json(value)
+    if isinstance(value, dict):
+        parsed = value
+    else:
+        candidates = _json_dicts(value)
+        complete = [
+            candidate
+            for candidate in candidates
+            if all(candidate.get(key) for key in _CONTENT_FIELDS)
+        ]
+        if complete:
+            # OpenCode emits intermediate tool text before its final response.
+            # Prefer the last object that actually satisfies the content contract.
+            parsed = complete[-1]
+        elif candidates:
+            parsed = max(
+                candidates,
+                key=lambda candidate: sum(
+                    bool(candidate.get(key)) for key in _CONTENT_FIELDS
+                ),
+            )
+        else:
+            parsed = None
     if not isinstance(parsed, dict):
         raise OpenCLIError("Content planner did not return a JSON object")
-    required = (
-        "title",
-        "year",
-        "event_summary",
-        "historical_reflection",
-        "post_text",
-        "image_prompt",
-        "source_notes",
-    )
-    missing = [key for key in required if not parsed.get(key)]
+    missing = [key for key in _CONTENT_FIELDS if not parsed.get(key)]
     if missing:
         raise OpenCLIError(
             "Content planner omitted required fields: " + ", ".join(missing)
         )
-    post_text = str(parsed["post_text"]).strip()
-    if len(post_text) > 280:
-        raise OpenCLIError(
-            f"Planned X post is {len(post_text)} characters; maximum is 280"
-        )
-    if len(post_text) < 80:
+    post_text = _fit_x_post(parsed["post_text"])
+    if len(post_text) < _X_POST_MINIMUM:
         raise OpenCLIError("Planned X post is too short to carry historical context")
     sources = parsed.get("source_notes")
     if not isinstance(sources, list) or len(sources) < 2:
@@ -139,6 +208,8 @@ async def _plan_content(
     prompt = _render_prompt(automation.prompt_template, run.event_date)
     prompt += (
         f"\n\nThe operational date is {run.event_date}. Return the post in English. "
+        "The post_text value must be 80-260 characters so it remains safely within "
+        "X's 280-character limit after normalization. "
         "Treat source_notes as provenance for the operator; do not append a source list "
         "to the X post unless it fits naturally."
     )

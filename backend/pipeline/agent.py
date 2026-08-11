@@ -141,6 +141,7 @@ async def agent_complete(
     endpoint: str | None = None,
     api_key: str | None = None,
     max_tokens: int | None = None,
+    enable_skills: bool = True,
     log: LogCallback | None = None,
     label: str = "AI call",
 ) -> str:
@@ -162,7 +163,10 @@ async def agent_complete(
     resolved_model = (config.ANTHROPIC_MODEL or model or "").strip() or None
     env = build_agent_env(model, endpoint, api_key, max_tokens)
 
-    enabled_skills, disabled_skills = skills_admin.runtime_skill_names()
+    if enable_skills:
+        enabled_skills, disabled_skills = skills_admin.runtime_skill_names()
+    else:
+        enabled_skills, disabled_skills = [], []
     skill_tools = [f"Skill({name})" for name in enabled_skills]
 
     base_options: dict = {
@@ -170,13 +174,15 @@ async def agent_complete(
         "model": resolved_model,
         # One turn may load a relevant Skill; the following turn emits the
         # requested text result.
-        "max_turns": 2,
+        "max_turns": 2 if enable_skills else 1,
         # Restrict the agent to Admin-managed project Skills. No filesystem,
         # shell, web, or mutation tools are exposed by this pipeline.
         "tools": ["Skill"] if enabled_skills else [],
         "allowed_tools": skill_tools,
         "disallowed_tools": [f"Skill({name})" for name in disabled_skills],
-        "setting_sources": ["project"],
+        # One-shot calls such as title generation do not need project Skills.
+        # Avoid loading every discovered Skill into the CLI in those sessions.
+        "setting_sources": ["project"] if enable_skills else [],
         "cwd": config.PROJECT_ROOT,
         "permission_mode": "default",
         "env": env,
@@ -190,11 +196,16 @@ async def agent_complete(
     if config.CLAUDE_CLI_PATH:
         base_options["cli_path"] = config.CLAUDE_CLI_PATH
 
+    skills_summary = (
+        "off"
+        if not enable_skills
+        else f"{len(enabled_skills)} enabled/{len(disabled_skills)} disabled"
+    )
     _log(
         log,
         f"{label}: Claude Agent SDK (model={resolved_model or 'default'}, "
         f"base={env.get('ANTHROPIC_BASE_URL', 'default')}, "
-        f"skills={len(enabled_skills)} enabled/{len(disabled_skills)} disabled, "
+        f"skills={skills_summary}, "
         f"~{len(user_content.split())} words in, "
         f"request/turn ceiling {config.AGENT_REQUEST_TIMEOUT}s/{config.AGENT_TURN_TIMEOUT}s)",
     )

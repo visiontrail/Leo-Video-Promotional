@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from backend import config
-from backend.pipeline.digester import _resolve_provider
+from backend.pipeline.digester import _chat, _resolve_provider
 
 logger = logging.getLogger(__name__)
 LogCallback = Callable[[str], None]
@@ -75,9 +75,7 @@ async def generate_title(
     ai_model: str | None = None,
     log: LogCallback | None = None,
 ) -> TitleArtifact:
-    """Run a dedicated Agent SDK session and persist its title as an artifact."""
-    from backend.pipeline import agent
-
+    """Run a dedicated AI session and persist its title as an artifact."""
     title_dir = task_dir / "title"
     title_dir.mkdir(parents=True, exist_ok=True)
     title_path = title_dir / "title.txt"
@@ -114,13 +112,16 @@ async def generate_title(
             ensure_ascii=False,
         )
         _log(log, "Title agent: starting an independent Agent SDK session")
-        result = await agent.agent_complete(
+        result = await _chat(
             system_prompt,
             payload,
             model=model,
             endpoint=endpoint,
             api_key=api_key,
-            max_tokens=256,
+            # Reasoning models may consume a few hundred internal tokens before
+            # emitting a short title. A 256-token ceiling made the CLI exit 1.
+            max_tokens=1024,
+            enable_skills=False,
             log=log,
             label="Title agent",
         )

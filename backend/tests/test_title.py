@@ -48,7 +48,39 @@ class TitleAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manifest["executor"], "claude_agent_sdk")
             self.assertEqual(manifest["title"], artifact.title)
             self.assertEqual(complete.await_args.kwargs["label"], "Title agent")
-            self.assertEqual(complete.await_args.kwargs["max_tokens"], 256)
+            self.assertEqual(complete.await_args.kwargs["max_tokens"], 1024)
+            self.assertFalse(complete.await_args.kwargs["enable_skills"])
+
+    async def test_falls_back_to_http_when_the_title_cli_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task_dir = Path(directory)
+            with (
+                patch.object(
+                    title,
+                    "_resolve_provider",
+                    AsyncMock(return_value=("https://ai.example/v1", "title-model", "secret")),
+                ),
+                patch.object(config, "AI_BACKEND", "agent_sdk"),
+                patch.object(config, "AI_HTTP_FALLBACK", True),
+                patch(
+                    "backend.pipeline.agent.agent_complete",
+                    AsyncMock(side_effect=RuntimeError("claude CLI exited 1")),
+                ),
+                patch(
+                    "backend.pipeline.digester._chat_http",
+                    AsyncMock(return_value="A Reliable Fallback Title"),
+                ) as fallback,
+            ):
+                artifact = await title.generate_title(
+                    task_id="title-fallback",
+                    task_dir=task_dir,
+                    source_title="Source",
+                    summary={"thesis": "Brief"},
+                    script="A complete script.",
+                )
+
+            self.assertEqual(artifact.title, "A Reliable Fallback Title")
+            self.assertEqual(fallback.await_count, 1)
 
     async def test_composer_receives_the_generated_title(self):
         with tempfile.TemporaryDirectory() as directory:

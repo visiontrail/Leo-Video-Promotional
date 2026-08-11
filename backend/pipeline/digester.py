@@ -71,6 +71,7 @@ async def _chat(
     log: LogCallback | None = None,
     label: str = "AI call",
     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    enable_skills: bool = True,
 ) -> str:
     """Single completion for a (system prompt, user content) pair.
 
@@ -88,6 +89,7 @@ async def _chat(
                 endpoint=endpoint or config.AI_ENDPOINT,
                 api_key=api_key if api_key is not None else config.AI_API_KEY,
                 max_tokens=max_tokens,
+                enable_skills=enable_skills,
                 log=log,
                 label=label,
             )
