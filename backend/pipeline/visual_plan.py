@@ -48,6 +48,7 @@ _NEGATIVE_ANALYSIS = re.compile(
     r"\b(?:no b-?roll|no visual depictions?|unrelated|does not (?:show|depict|match)|talking-head filler)\b",
     re.IGNORECASE,
 )
+_FOOTAGE_CREDIT_LIMIT = 90
 
 
 def _emit(log: LogCallback | None, message: str) -> None:
@@ -242,6 +243,61 @@ def _plan_copy(plan: dict) -> str:
         *(plan.get("items") or []),
     ]
     return " ".join(str(value or "") for value in fields)
+
+
+def _credit_text(value: object, fallback: str) -> str:
+    """Collapse source metadata to a safe, single-line display value."""
+    text = " ".join(str(value or "").split())
+    return text or fallback
+
+
+def _ellipsize(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 1:
+        return "…"[:limit]
+    return value[: limit - 1].rstrip(" .·:;-–—") + "…"
+
+
+def _source_credit(clip: dict) -> str:
+    """Build the viewer-facing credit without exposing acquisition tooling.
+
+    Web video needs provenance in the frame, so its creator and original video
+    title take precedence over license shorthand.  ``provider`` is deliberately
+    excluded because it describes our ingestion implementation, not the work's
+    source.
+    """
+    creator = _credit_text(clip.get("creator"), "Unknown creator")
+    title = _credit_text(clip.get("title"), "Untitled video")
+    prefix = "Source: "
+    separator = " · "
+    full = f"{prefix}{creator}{separator}{title}"
+    if len(full) <= _FOOTAGE_CREDIT_LIMIT:
+        return full
+
+    available = _FOOTAGE_CREDIT_LIMIT - len(prefix) - len(separator)
+    # Preserve both parts when metadata is long: reserve enough room to keep
+    # the title meaningful, then give the remaining width to the channel name.
+    title_budget = min(len(title), max(24, available // 2))
+    creator_budget = available - title_budget
+    return (
+        f"{prefix}{_ellipsize(creator, creator_budget)}"
+        f"{separator}{_ellipsize(title, title_budget)}"
+    )
+
+
+def _footage_credit(clip: dict) -> str:
+    external_video = bool(clip.get("platform")) or bool(clip.get("review_required"))
+    external_video = external_video or clip.get("rights_status") == "review_required"
+    if external_video:
+        return _source_credit(clip)
+
+    attribution = clip.get("attribution") or clip.get("license_short_name")
+    if attribution:
+        return _ellipsize(
+            _credit_text(attribution, "Footage source"), _FOOTAGE_CREDIT_LIMIT
+        )
+    return _source_credit(clip)
 
 
 def _plan_grounding(plan: dict, scene: dict) -> tuple[bool, list[str]]:
@@ -442,12 +498,7 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
         plan["archetype"] = "footage"
         plan["footage_src"] = rel
         plan["footage_kind"] = "video" if path.suffix.lower() in {".webm", ".mp4", ".ogv"} else "image"
-        credit = clip.get("attribution") or clip.get("license_short_name")
-        if not credit:
-            creator = str(clip.get("creator") or "Unknown creator")
-            provider = str(clip.get("provider") or "Footage source")
-            credit = f"{creator} · {provider}"
-        plan["footage_credit"] = str(credit)[:90]
+        plan["footage_credit"] = _footage_credit(clip)
         plan["footage_query"] = str(clip.get("query") or "")[:160]
         plan["footage_match_terms"] = best_matches
         plan["footage_script_match_terms"] = best_excerpt_matches

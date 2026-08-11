@@ -128,6 +128,54 @@ def test_footage_is_attached_to_the_scene_whose_keywords_match(tmp_path: Path):
     assert plans[0]["archetype"] != "footage"
 
 
+def test_external_video_credit_uses_creator_and_title_not_acquisition_tool(
+    tmp_path: Path,
+):
+    data = board(1)
+    data["scenes"][0]["keywords"] = ["hannibal", "carthage"]
+    plans = visual_plan.fallback_plan(data)
+    (tmp_path / "footage").mkdir()
+    (tmp_path / "footage" / "hannibal.mp4").write_bytes(b"x")
+    manifest = {
+        "clips": [
+            {
+                "local_path": "footage/hannibal.mp4",
+                "query": "hannibal carthage",
+                "title": "Hannibal's Greatest Victory",
+                "creator": "Kings and Generals",
+                "provider": "YouTube via yt-dlp",
+                "platform": "youtube",
+                "review_required": True,
+            }
+        ]
+    }
+
+    assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 1
+    assert plans[0]["footage_credit"] == (
+        "Source: Kings and Generals · Hannibal's Greatest Victory"
+    )
+    assert "yt-dlp" not in plans[0]["footage_credit"]
+
+
+def test_open_license_credit_remains_unchanged(tmp_path: Path):
+    data = board(1)
+    plans = visual_plan.fallback_plan(data)
+    (tmp_path / "footage").mkdir()
+    (tmp_path / "footage" / "field.jpg").write_bytes(b"x")
+    manifest = {
+        "clips": [
+            {
+                "local_path": "footage/field.jpg",
+                "query": "sunflowers paris",
+                "attribution": "Vincent Archive · CC BY-SA 4.0",
+            }
+        ]
+    }
+
+    assert visual_plan.attach_footage(plans, data, manifest, tmp_path) == 1
+    assert plans[0]["footage_credit"] == "Vincent Archive · CC BY-SA 4.0"
+
+
 def test_footage_with_no_keyword_overlap_is_not_forced_onto_a_scene(tmp_path: Path):
     data = board(1)
     plans = visual_plan.fallback_plan(data)

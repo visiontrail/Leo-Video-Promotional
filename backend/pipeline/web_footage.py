@@ -130,7 +130,7 @@ async def search_youtube(query: str, *, limit: int = 4) -> list[dict]:
         candidates.append(
             {
                 "platform": "youtube",
-                "provider": "YouTube via yt-dlp",
+                "provider": "YouTube",
                 "provider_id": "youtube-ytdlp",
                 "title": str(row.get("title") or "YouTube video"),
                 "creator": str(row.get("channel") or row.get("uploader") or "Unknown"),
@@ -506,7 +506,7 @@ async def supplement_web_footage(
     used_sources = {str(clip.get("source_page_url") or "") for clip in manifest.get("clips", [])}
 
     if manifest.get("provider_id") in {"opencli-web", "youtube-web"}:
-        manifest["provider"] = "YouTube: yt-dlp + Gemini Web"
+        manifest["provider"] = "YouTube"
         manifest["provider_id"] = "youtube-web"
     else:
         manifest["provider"] = "Hybrid: Wikimedia Commons + YouTube"

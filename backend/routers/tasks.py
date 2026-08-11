@@ -108,7 +108,7 @@ async def get_task_footage(task_id: str):
     uses_web = provider_id in {"hybrid", "opencli_web"}
     provider = {
         "hybrid": "Hybrid: Wikimedia Commons + YouTube",
-        "opencli_web": "YouTube: yt-dlp + Gemini Web",
+        "opencli_web": "YouTube",
     }.get(provider_id, "Wikimedia Commons")
     return {
         "task_id": task_id,
