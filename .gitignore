@@ -10,6 +10,7 @@ dist/
 outputs/
 uploads/
 logs/
+.run/
 hyperframe/node_modules/
 .DS_Store
 data/

@@ -61,3 +61,17 @@ def start_account_worker() -> None:
     if _worker_task is None or _worker_task.done():
         _worker_task = asyncio.create_task(_worker_loop())
         logger.info("Account-operations worker task created")
+
+
+async def stop_account_worker() -> None:
+    global _worker_task
+    if _worker_task is None:
+        return
+    _worker_task.cancel()
+    try:
+        await _worker_task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _worker_task = None
+    logger.info("Account-operations worker stopped")

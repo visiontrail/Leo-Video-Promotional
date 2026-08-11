@@ -117,10 +117,15 @@ def _mask_key(api_key: str | None) -> str:
 async def get_db() -> aiosqlite.Connection:
     # config.DB_PATH is read per connection, not bound at import: the Admin
     # console can move the database (a restart re-runs init_db against it).
-    db = await aiosqlite.connect(str(config.DB_PATH))
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    return db
+    db = await aiosqlite.connect(str(config.DB_PATH), timeout=30)
+    try:
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA busy_timeout=30000")
+        await db.execute("PRAGMA journal_mode=WAL")
+        return db
+    except BaseException:
+        await db.close()
+        raise
 
 
 async def _migrate_tasks(db: aiosqlite.Connection):
@@ -200,25 +205,30 @@ async def _migrate_account_operations(db: aiosqlite.Connection) -> None:
 
 async def init_db():
     db = await get_db()
-    await db.executescript(SCHEMA)
-    await db.commit()
-    await _migrate_tasks(db)
-    await _migrate_account_operations(db)
-    # Seed the default provider from the AI engine settings if none exist yet.
-    rows = await db.execute_fetchall("SELECT COUNT(*) AS c FROM providers")
-    if rows[0]["c"] == 0 and config.AI_ENDPOINT:
-        now = datetime.now(timezone.utc).isoformat()
-        await db.execute(
-            """INSERT INTO providers (name, endpoint, api_key, model, is_default, created_at)
-               VALUES (?, ?, ?, ?, 1, ?)""",
-            ("Default (settings)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
-        )
+    try:
+        await db.executescript(SCHEMA)
         await db.commit()
-    automation_rows = await db.execute_fetchall(
-        "SELECT DISTINCT feature_type FROM account_automations"
-    )
-    existing_features = {row["feature_type"] for row in automation_rows}
-    await db.close()
+        await _migrate_tasks(db)
+        await _migrate_account_operations(db)
+        # Seed the default provider from the AI engine settings if none exist yet.
+        rows = await db.execute_fetchall("SELECT COUNT(*) AS c FROM providers")
+        if rows[0]["c"] == 0 and config.AI_ENDPOINT:
+            now = datetime.now(timezone.utc).isoformat()
+            await db.execute(
+                """INSERT INTO providers (name, endpoint, api_key, model, is_default, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?)""",
+                ("Default (settings)", config.AI_ENDPOINT, config.AI_API_KEY, config.AI_MODEL, now),
+            )
+            await db.commit()
+        automation_rows = await db.execute_fetchall(
+            "SELECT DISTINCT feature_type FROM account_automations"
+        )
+        existing_features = {row["feature_type"] for row in automation_rows}
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
     if AccountAutomationFeature.TODAY_IN_HISTORY.value not in existing_features:
         await create_account_automation(AccountAutomationCreate())
     if AccountAutomationFeature.X_ENGAGEMENT.value not in existing_features:
@@ -418,15 +428,20 @@ async def reset_orphaned_tasks() -> int:
     )
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
-    placeholders = ", ".join("?" for _ in in_progress)
-    cursor = await db.execute(
-        f"""UPDATE tasks SET status = ?, error_message = ?, updated_at = ?
-            WHERE status IN ({placeholders})""",
-        (TaskStatus.FAILED.value, "Interrupted by a server restart — please retry.", now, *in_progress),
-    )
-    await db.commit()
-    await db.close()
-    return cursor.rowcount
+    try:
+        placeholders = ", ".join("?" for _ in in_progress)
+        cursor = await db.execute(
+            f"""UPDATE tasks SET status = ?, error_message = ?, updated_at = ?
+                WHERE status IN ({placeholders})""",
+            (TaskStatus.FAILED.value, "Interrupted by a server restart — please retry.", now, *in_progress),
+        )
+        await db.commit()
+        return cursor.rowcount
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
 
 
 async def get_next_queued_task() -> TaskResponse | None:
@@ -698,68 +713,79 @@ async def enqueue_due_account_runs() -> int:
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
     db = await get_db()
-    await db.execute("BEGIN IMMEDIATE")
-    rows = await db.execute_fetchall(
-        """SELECT * FROM account_automations
-           WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
-           ORDER BY next_run_at ASC""",
-        (now,),
-    )
-    for row in rows:
-        automation = _row_to_account_automation(row)
-        await create_account_run(
-            automation,
-            trigger="scheduled",
-            scheduled_for=automation.next_run_at,
-            event_date=local_event_date(automation.timezone, at=now_dt),
-            connection=db,
+    try:
+        await db.execute("BEGIN IMMEDIATE")
+        rows = await db.execute_fetchall(
+            """SELECT * FROM account_automations
+               WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
+               ORDER BY next_run_at ASC""",
+            (now,),
         )
-        await db.execute(
-            """UPDATE account_automations
-               SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?""",
-            (
-                automation.next_run_at,
-                next_scheduled_run(
-                    automation.schedule_times,
-                    automation.timezone,
-                    after=now_dt,
+        for row in rows:
+            automation = _row_to_account_automation(row)
+            await create_account_run(
+                automation,
+                trigger="scheduled",
+                scheduled_for=automation.next_run_at,
+                event_date=local_event_date(automation.timezone, at=now_dt),
+                connection=db,
+            )
+            await db.execute(
+                """UPDATE account_automations
+                   SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?""",
+                (
+                    automation.next_run_at,
+                    next_scheduled_run(
+                        automation.schedule_times,
+                        automation.timezone,
+                        after=now_dt,
+                    ),
+                    now,
+                    automation.id,
                 ),
-                now,
-                automation.id,
-            ),
-        )
-    await db.commit()
-    await db.close()
-    return len(rows)
+            )
+        await db.commit()
+        return len(rows)
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
 
 
 async def claim_next_account_run() -> AccountRunResponse | None:
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
-    await db.execute("BEGIN IMMEDIATE")
-    rows = await db.execute_fetchall(
-        """SELECT * FROM account_runs WHERE status = ?
-           ORDER BY created_at ASC LIMIT 1""",
-        (AccountRunStatus.QUEUED.value,),
-    )
-    if not rows:
+    try:
+        await db.execute("BEGIN IMMEDIATE")
+        rows = await db.execute_fetchall(
+            """SELECT * FROM account_runs WHERE status = ?
+               ORDER BY created_at ASC LIMIT 1""",
+            (AccountRunStatus.QUEUED.value,),
+        )
+        if not rows:
+            await db.commit()
+            return None
+        run_id = rows[0]["id"]
+        await db.execute(
+            "UPDATE account_runs SET status = ?, started_at = ? WHERE id = ? AND status = ?",
+            (
+                AccountRunStatus.PLANNING.value,
+                now,
+                run_id,
+                AccountRunStatus.QUEUED.value,
+            ),
+        )
         await db.commit()
+        claimed = await db.execute_fetchall(
+            "SELECT * FROM account_runs WHERE id = ?", (run_id,)
+        )
+        return _row_to_account_run(claimed[0])
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
         await db.close()
-        return None
-    run_id = rows[0]["id"]
-    await db.execute(
-        "UPDATE account_runs SET status = ?, started_at = ? WHERE id = ? AND status = ?",
-        (
-            AccountRunStatus.PLANNING.value,
-            now,
-            run_id,
-            AccountRunStatus.QUEUED.value,
-        ),
-    )
-    await db.commit()
-    claimed = await db.execute_fetchall("SELECT * FROM account_runs WHERE id = ?", (run_id,))
-    await db.close()
-    return _row_to_account_run(claimed[0])
 
 
 async def list_account_runs(limit: int = 200) -> list[AccountRunResponse]:
@@ -805,21 +831,31 @@ async def update_account_run(run_id: str, **values: object) -> None:
         parameters.append(value)
     parameters.append(run_id)
     db = await get_db()
-    await db.execute(
-        f"UPDATE account_runs SET {', '.join(sets)} WHERE id = ?", parameters
-    )
-    await db.commit()
-    await db.close()
+    try:
+        await db.execute(
+            f"UPDATE account_runs SET {', '.join(sets)} WHERE id = ?", parameters
+        )
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
 
 
 async def append_account_run_log(run_id: str, line: str) -> None:
     db = await get_db()
-    await db.execute(
-        "UPDATE account_runs SET log_text = log_text || ? WHERE id = ?",
-        (line.rstrip() + "\n", run_id),
-    )
-    await db.commit()
-    await db.close()
+    try:
+        await db.execute(
+            "UPDATE account_runs SET log_text = log_text || ? WHERE id = ?",
+            (line.rstrip() + "\n", run_id),
+        )
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
 
 
 async def reset_orphaned_account_runs() -> int:
@@ -830,20 +866,25 @@ async def reset_orphaned_account_runs() -> int:
     )
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
-    placeholders = ", ".join("?" for _ in statuses)
-    cursor = await db.execute(
-        f"""UPDATE account_runs
-            SET status = ?, completed_at = ?, error_message = ?,
-                log_text = log_text || ?
-            WHERE status IN ({placeholders})""",
-        (
-            AccountRunStatus.FAILED.value,
-            now,
-            "Interrupted by a server restart.",
-            "Interrupted by a server restart.\n",
-            *statuses,
-        ),
-    )
-    await db.commit()
-    await db.close()
-    return cursor.rowcount
+    try:
+        placeholders = ", ".join("?" for _ in statuses)
+        cursor = await db.execute(
+            f"""UPDATE account_runs
+                SET status = ?, completed_at = ?, error_message = ?,
+                    log_text = log_text || ?
+                WHERE status IN ({placeholders})""",
+            (
+                AccountRunStatus.FAILED.value,
+                now,
+                "Interrupted by a server restart.",
+                "Interrupted by a server restart.\n",
+                *statuses,
+            ),
+        )
+        await db.commit()
+        return cursor.rowcount
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()

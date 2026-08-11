@@ -143,3 +143,17 @@ def start_worker():
     if _worker_task is None or _worker_task.done():
         _worker_task = asyncio.create_task(_worker_loop())
         logger.info("Worker task created")
+
+
+async def stop_worker() -> None:
+    global _worker_task
+    if _worker_task is None:
+        return
+    _worker_task.cancel()
+    try:
+        await _worker_task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _worker_task = None
+    logger.info("Background worker stopped")

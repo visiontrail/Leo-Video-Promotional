@@ -1,7 +1,9 @@
+import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -50,6 +52,28 @@ class TaskDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
 
             self.assertIn("generated_title", columns)
+
+    async def test_reset_orphaned_tasks_closes_connection_after_lock_error(self):
+        connection = AsyncMock()
+        connection.execute.side_effect = sqlite3.OperationalError("database is locked")
+
+        with patch.object(database, "get_db", AsyncMock(return_value=connection)):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                await database.reset_orphaned_tasks()
+
+        connection.rollback.assert_awaited_once()
+        connection.close.assert_awaited_once()
+
+    async def test_claim_account_run_closes_transaction_when_cancelled(self):
+        connection = AsyncMock()
+        connection.execute.side_effect = asyncio.CancelledError
+
+        with patch.object(database, "get_db", AsyncMock(return_value=connection)):
+            with self.assertRaises(asyncio.CancelledError):
+                await database.claim_next_account_run()
+
+        connection.rollback.assert_awaited_once()
+        connection.close.assert_awaited_once()
 
 
 if __name__ == "__main__":

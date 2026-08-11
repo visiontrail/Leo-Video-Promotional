@@ -7,8 +7,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from backend.database import init_db, reset_orphaned_account_runs, reset_orphaned_tasks
 from backend.logging_setup import configure_logging
-from backend.worker import start_worker
-from backend.account_ops.worker import start_account_worker
+from backend.worker import start_worker, stop_worker
+from backend.account_ops.worker import start_account_worker, stop_account_worker
 from backend.routers import account_operations, tasks, settings, providers, prompts, skills, voices
 from backend import config
 from backend import prompts_registry
@@ -55,7 +55,11 @@ async def lifespan(app: FastAPI):
         )
     start_worker()
     start_account_worker()
-    yield
+    try:
+        yield
+    finally:
+        await stop_account_worker()
+        await stop_worker()
 
 
 app = FastAPI(title="Video-Promotional", lifespan=lifespan)
