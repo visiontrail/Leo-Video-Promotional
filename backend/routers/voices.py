@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from backend import config
 from backend.models import TtsModelOption, VoiceOption
+from backend.pipeline.voice_previews import ensure_voice_preview
 
 router = APIRouter(prefix="/api/voices", tags=["voices"])
 
@@ -19,7 +20,7 @@ async def list_voices(tts_model: str | None = Query(default=None)):
             gender=meta["gender"],
             lang=meta["lang"],
             resolved_name=config.resolve_voice(name, tts_model),
-            preview_available=config.voice_sample_path(name, tts_model) is not None,
+            preview_available=config.voice_preview_supported(name, tts_model),
         )
         for name, meta in config.voices_for_model(tts_model).items()
     ]
@@ -44,7 +45,16 @@ async def preview_voice(voice: str, tts_model: str | None = Query(default=None))
     if voice not in config.voices_for_model(tts_model):
         raise HTTPException(status_code=404, detail=f"Unknown voice '{voice}'")
 
-    sample = config.voice_sample_path(voice, tts_model)
+    model_id = tts_model or config.TTS_DEFAULT_MODEL
+    sample = config.voice_sample_path(voice, model_id)
+    if sample is None and config.TTS_MODELS.get(model_id, {}).get("kind") == "orpheus_http":
+        try:
+            sample = await ensure_voice_preview(voice, model_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not generate preview for '{voice}': {exc}",
+            ) from exc
     if sample is None:
         raise HTTPException(
             status_code=404,

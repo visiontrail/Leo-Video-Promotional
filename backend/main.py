@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,6 +13,7 @@ from backend.account_ops.worker import start_account_worker, stop_account_worker
 from backend.routers import account_operations, tasks, settings, providers, prompts, skills, voices
 from backend import config
 from backend import prompts_registry
+from backend.pipeline.voice_previews import preload_remote_voice_previews
 
 # Not logging.basicConfig: log writes must never block the event loop that is
 # streaming subprocess output. See backend/logging_setup.py.
@@ -55,9 +57,17 @@ async def lifespan(app: FastAPI):
         )
     start_worker()
     start_account_worker()
+    preview_preload_task = asyncio.create_task(
+        preload_remote_voice_previews(), name="voice-preview-preload"
+    )
     try:
         yield
     finally:
+        preview_preload_task.cancel()
+        try:
+            await preview_preload_task
+        except asyncio.CancelledError:
+            pass
         await stop_account_worker()
         await stop_worker()
 

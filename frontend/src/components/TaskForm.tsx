@@ -47,9 +47,9 @@ type VoiceFieldProps = {
   onPreview: (voice: string) => void
 }
 
-/* A voice select with an inline preview button. The preview plays VibeVoice's
-   own reference sample for the preset — the clip the model clones — so it is
-   what the finished audio will sound like, without running synthesis. */
+/* A voice select with an inline preview button. Local models play their own
+   reference sample; remote models generate a short clip once and reuse the
+   backend's persistent cache on every later play. */
 function VoiceField({ label, value, onChange, voices, playing, onPreview }: VoiceFieldProps) {
   const selected = voices.find((v) => v.name === value)
   const canPreview = selected?.preview_available ?? false
@@ -72,7 +72,7 @@ function VoiceField({ label, value, onChange, voices, playing, onPreview }: Voic
           onClick={() => onPreview(value)}
           disabled={!canPreview}
           aria-label={playing ? `Stop ${value} preview` : `Preview ${value}`}
-          title={canPreview ? `Preview ${value}` : `No preview sample installed for ${value}`}
+          title={canPreview ? `Preview ${value}` : `No preview available for ${value}`}
         >
           {playing ? <IconStop /> : <IconPlay />}
         </button>

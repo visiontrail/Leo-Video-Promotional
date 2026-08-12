@@ -48,12 +48,21 @@ class VoiceSampleTests(unittest.TestCase):
     def test_unknown_model_falls_back_to_no_substitution(self):
         self.assertEqual(config.resolve_voice("Alice", "nope"), "Alice")
 
-    def test_orpheus_has_model_specific_voices_and_no_local_preview(self):
+    def test_orpheus_has_model_specific_voices_and_uses_generated_cache(self):
         self.assertEqual(
             list(config.voices_for_model("orpheus-en")),
             ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"],
         )
-        self.assertIsNone(config.voice_sample_path("tara", "orpheus-en"))
+        with tempfile.TemporaryDirectory() as cache:
+            with patch.object(config, "VOICE_PREVIEW_CACHE_DIR", Path(cache)):
+                self.assertIsNone(config.voice_sample_path("tara", "orpheus-en"))
+                sample = Path(cache) / "orpheus-en" / "tara.wav"
+                sample.parent.mkdir()
+                sample.write_bytes(b"RIFF" + b"0" * 64)
+                self.assertEqual(
+                    config.voice_sample_path("tara", "orpheus-en"), sample
+                )
+                self.assertTrue(config.voice_preview_supported("tara", "orpheus-en"))
 
 
 class VoiceRouteTests(unittest.TestCase):
@@ -73,9 +82,11 @@ class VoiceRouteTests(unittest.TestCase):
         )
 
     def test_lists_orpheus_voices_only_for_orpheus(self):
-        body = self.client.get("/api/voices?tts_model=orpheus-en").json()
+        with tempfile.TemporaryDirectory() as cache:
+            with patch.object(config, "VOICE_PREVIEW_CACHE_DIR", Path(cache)):
+                body = self.client.get("/api/voices?tts_model=orpheus-en").json()
         self.assertEqual([v["name"] for v in body], list(config.ORPHEUS_EN_VOICES))
-        self.assertTrue(all(not v["preview_available"] for v in body))
+        self.assertTrue(all(v["preview_available"] for v in body))
 
     def test_lists_tts_model_capabilities(self):
         body = self.client.get("/api/voices/models").json()
@@ -98,6 +109,24 @@ class VoiceRouteTests(unittest.TestCase):
                 res = self.client.get("/api/voices/Carter/preview")
         self.assertEqual(res.status_code, 404)
         self.assertIn("No preview sample", res.json()["detail"])
+
+    def test_generates_and_serves_missing_orpheus_preview(self):
+        async def fake_ensure(voice, model_id):
+            self.assertEqual((voice, model_id), ("tara", "orpheus-en"))
+            sample.write_bytes(b"RIFF" + b"0" * 64)
+            return sample
+
+        with tempfile.TemporaryDirectory() as cache:
+            sample = Path(cache) / "tara.wav"
+            with (
+                patch.object(config, "VOICE_PREVIEW_CACHE_DIR", Path(cache)),
+                patch("backend.routers.voices.ensure_voice_preview", fake_ensure),
+            ):
+                res = self.client.get(
+                    "/api/voices/tara/preview?tts_model=orpheus-en"
+                )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.content, b"RIFF" + b"0" * 64)
 
 
 if __name__ == "__main__":

@@ -271,6 +271,10 @@ TTS_MODELS: dict[str, dict] = _build_tts_models(AIWORK_ROOT)
 # ships pre-encoded .pt embeddings, so its previews resolve through the same
 # voice_aliases map used at synthesis time and fall back to the 1.5B WAV.
 VOICE_SAMPLE_DIR = AIWORK_ROOT / "VibeVoice-1.5B" / "demo" / "voices"
+# Generated previews for remote providers are runtime data, not source assets.
+# Keeping them under ignored data/ makes a successful remote synthesis survive
+# app restarts without ever entering git.
+VOICE_PREVIEW_CACHE_DIR = PROJECT_ROOT / "data" / "voice_previews"
 
 
 def resolve_voice(voice: str, tts_model: str | None = None) -> str:
@@ -297,11 +301,22 @@ def voice_sample_path(voice: str, tts_model: str | None = None):
     the model registry so an arbitrary string never reaches the glob.
     """
     model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
+    if model.get("kind") == "orpheus_http":
+        cached = VOICE_PREVIEW_CACHE_DIR / (tts_model or TTS_DEFAULT_MODEL) / f"{voice}.wav"
+        return cached if cached.is_file() and cached.stat().st_size >= 44 else None
     if model.get("kind") != "local_subprocess":
         return None
     resolved = resolve_voice(voice, tts_model)
     matches = sorted(VOICE_SAMPLE_DIR.glob(f"*-{resolved}_*.wav"))
     return matches[0] if matches else None
+
+
+def voice_preview_supported(voice: str, tts_model: str | None = None) -> bool:
+    """Whether a voice can be previewed now or generated on first use."""
+    model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
+    if voice not in voices_for_model(tts_model):
+        return False
+    return model.get("kind") == "orpheus_http" or voice_sample_path(voice, tts_model) is not None
 
 
 HYPERFRAME_DIR = resolve_project_path(os.getenv("HYPERFRAME_DIR", "hyperframe"))

@@ -137,6 +137,7 @@ async def _generate_orpheus(
     *,
     log: LogCallback | None,
     emit: LogCallback,
+    max_tokens: int | None = None,
 ) -> str:
     if not config.ORPHEUS_TTS_API_KEY:
         raise RuntimeError(
@@ -163,7 +164,7 @@ async def _generate_orpheus(
                 "input": input_path.read_text(encoding="utf-8"),
                 "language": language,
                 "voice_id": voice,
-                "max_tokens": config.ORPHEUS_TTS_MAX_TOKENS,
+                "max_tokens": max_tokens or config.ORPHEUS_TTS_MAX_TOKENS,
                 "temperature": 0.8,
                 "top_p": 0.95,
                 "top_k": 40,
