@@ -363,6 +363,20 @@ export interface VoiceOption {
   preview_available: boolean;
 }
 
+export interface TtsModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  single_speaker: boolean;
+  is_default: boolean;
+}
+
+export async function fetchTtsModels(): Promise<TtsModelOption[]> {
+  const res = await fetch(`${BASE}/api/voices/models`);
+  if (!res.ok) throw new Error('Failed to load TTS models');
+  return res.json();
+}
+
 export async function fetchVoices(ttsModel?: string): Promise<VoiceOption[]> {
   const qs = ttsModel ? `?tts_model=${encodeURIComponent(ttsModel)}` : '';
   const res = await fetch(`${BASE}/api/voices${qs}`);

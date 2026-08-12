@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+
 from backend import config
 from backend.pipeline import tts
 
@@ -177,6 +179,59 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                 ],
                 [3, 3, 3],
             )
+
+    async def test_orpheus_submits_polls_and_downloads_wav(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-1", "status": "queued"})
+            if request.url.path.endswith("/audio"):
+                return httpx.Response(200, content=b"RIFF" + b"0" * 64)
+            return httpx.Response(200, json={"id": "job-1", "status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Remote narration.")
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+            ):
+                result = await tts.generate_tts(
+                    str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                )
+
+            self.assertEqual(Path(result).read_bytes(), b"RIFF" + b"0" * 64)
+            submitted = __import__("json").loads(requests[0].content)
+            self.assertEqual(submitted["voice_id"], "tara")
+            self.assertEqual(submitted["input"], "Remote narration.")
+            self.assertEqual(requests[0].headers["X-API-Key"], "test-secret")
+            self.assertEqual(
+                [request.url.path for request in requests],
+                [
+                    "/v1/audio/jobs",
+                    "/v1/audio/jobs/job-1",
+                    "/v1/audio/jobs/job-1/audio",
+                ],
+            )
+
+    async def test_orpheus_requires_api_key_before_network(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Hello")
+            with patch.object(config, "ORPHEUS_TTS_API_KEY", ""):
+                with self.assertRaisesRegex(RuntimeError, "API key is not configured"):
+                    await tts.generate_tts(
+                        str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                    )
 
 
 if __name__ == "__main__":

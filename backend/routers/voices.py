@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from backend import config
-from backend.models import VoiceOption
+from backend.models import TtsModelOption, VoiceOption
 
 router = APIRouter(prefix="/api/voices", tags=["voices"])
 
@@ -21,13 +21,27 @@ async def list_voices(tts_model: str | None = Query(default=None)):
             resolved_name=config.resolve_voice(name, tts_model),
             preview_available=config.voice_sample_path(name, tts_model) is not None,
         )
-        for name, meta in config.AVAILABLE_VOICES.items()
+        for name, meta in config.voices_for_model(tts_model).items()
+    ]
+
+
+@router.get("/models", response_model=list[TtsModelOption])
+async def list_tts_models():
+    return [
+        TtsModelOption(
+            id=model_id,
+            label=model["label"],
+            provider=model.get("provider", "Unknown"),
+            single_speaker=bool(model.get("single_speaker")),
+            is_default=model_id == config.TTS_DEFAULT_MODEL,
+        )
+        for model_id, model in config.TTS_MODELS.items()
     ]
 
 
 @router.get("/{voice}/preview")
 async def preview_voice(voice: str, tts_model: str | None = Query(default=None)):
-    if voice not in config.AVAILABLE_VOICES:
+    if voice not in config.voices_for_model(tts_model):
         raise HTTPException(status_code=404, detail=f"Unknown voice '{voice}'")
 
     sample = config.voice_sample_path(voice, tts_model)

@@ -2,8 +2,8 @@ import { useState, useRef } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { createTask, fetchProviders, fetchVoices, voicePreviewUrl } from '../api'
-import type { TaskConfig, VoiceOption } from '../api'
+import { createTask, fetchProviders, fetchTtsModels, fetchVoices, voicePreviewUrl } from '../api'
+import type { TaskConfig, TtsModelOption, VoiceOption } from '../api'
 import { countdown, formatStart, localInputToIso, toLocalInputValue } from '../schedule'
 import { IconPlay, IconStop } from './Icons'
 
@@ -29,6 +29,12 @@ const VOICES: VoiceOption[] = [
   { name: 'Mary', gender: 'female', lang: 'en' },
   { name: 'Samuel', gender: 'male', lang: 'in' },
 ].map((v) => ({ ...v, resolved_name: v.name, preview_available: false }))
+
+const TTS_MODELS: TtsModelOption[] = [
+  { id: 'vibevoice-1.5b', label: '1.5B (high quality)', provider: 'Microsoft VibeVoice', single_speaker: false, is_default: false },
+  { id: 'vibevoice-0.5b', label: '0.5B (fast draft)', provider: 'Microsoft VibeVoice', single_speaker: true, is_default: true },
+  { id: 'orpheus-en', label: 'English Q4 (remote CPU)', provider: 'Orpheus', single_speaker: true, is_default: false },
+]
 
 const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
@@ -157,7 +163,7 @@ export default function TaskForm() {
   const [scriptFormat, setScriptFormat] = useState<ScriptFormat>('monologue')
   const [voice1, setVoice1] = useState('Carter')
   const [voice2, setVoice2] = useState('Alice')
-  const [ttsModel, setTtsModel] = useState('vibevoice-0.5b')
+  const [ttsModel, setTtsModel] = useState('')
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
   const [videoOrientation, setVideoOrientation] = useState<VideoOrientation>('landscape')
   const [openingStyle, setOpeningStyle] = useState<OpeningStyle>('editorial_motion')
@@ -174,6 +180,7 @@ export default function TaskForm() {
   const [providerId, setProviderId] = useState<number | null>(null)
   const [startMode, setStartMode] = useState<'now' | 'later'>('now')
   const [startAt, setStartAt] = useState('')
+  const [renderedAt] = useState(Date.now)
   const [dragover, setDragover] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -184,13 +191,31 @@ export default function TaskForm() {
   const [previewError, setPreviewError] = useState<string | null>(null)
 
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: fetchProviders })
+  const { data: ttsModels = TTS_MODELS } = useQuery({
+    queryKey: ['tts-models'],
+    queryFn: fetchTtsModels,
+    placeholderData: TTS_MODELS,
+  })
+  const selectedTtsModel = ttsModel
+    || ttsModels.find((model) => model.is_default)?.id
+    || TTS_MODELS[1].id
   // Preview availability and voice substitution are model-dependent, so refetch
   // when the engine changes.
   const { data: voices = VOICES } = useQuery({
-    queryKey: ['voices', ttsModel],
-    queryFn: () => fetchVoices(ttsModel),
+    queryKey: ['voices', selectedTtsModel],
+    queryFn: () => fetchVoices(selectedTtsModel),
     placeholderData: VOICES,
   })
+
+  // A model switch can temporarily leave the old model's voice in local state
+  // while the new catalog loads. Derive a valid selection immediately without
+  // an effect-driven extra render; any user choice then replaces local state.
+  const selectedVoice1 = voices.some((voice) => voice.name === voice1)
+    ? voice1
+    : (voices[0]?.name ?? '')
+  const selectedVoice2 = voices.some((voice) => voice.name === voice2)
+    ? voice2
+    : (voices[Math.min(1, voices.length - 1)]?.name ?? selectedVoice1)
 
   const stopPreview = () => {
     const audio = audioRef.current
@@ -209,7 +234,7 @@ export default function TaskForm() {
     const audio = audioRef.current
     if (!audio) return
     setPreviewError(null)
-    audio.src = voicePreviewUrl(voice, ttsModel)
+    audio.src = voicePreviewUrl(voice, selectedTtsModel)
     audio.play().then(
       () => setPlayingVoice(voice),
       () => {
@@ -223,14 +248,20 @@ export default function TaskForm() {
   // The 0.5B realtime model is single-speaker, so it can only do monologue —
   // keep the style and model selections in sync.
   const isMonologue = scriptFormat === 'monologue'
-  const is05b = ttsModel === 'vibevoice-0.5b'
+  const activeTtsModel = ttsModels.find((model) => model.id === selectedTtsModel) ?? TTS_MODELS[1]
+  const isSingleSpeakerModel = activeTtsModel.single_speaker
 
   const selectFormat = (f: ScriptFormat) => {
-    if (f === 'dialogue' && ttsModel === 'vibevoice-0.5b') setTtsModel('vibevoice-1.5b')
+    if (f === 'dialogue' && isSingleSpeakerModel) {
+      const dialogueModel = ttsModels.find((model) => !model.single_speaker)
+      if (dialogueModel) setTtsModel(dialogueModel.id)
+    }
     setScriptFormat(f)
   }
   const selectModel = (m: string) => {
-    if (m === 'vibevoice-0.5b' && scriptFormat === 'dialogue') setScriptFormat('monologue')
+    if (ttsModels.find((model) => model.id === m)?.single_speaker && scriptFormat === 'dialogue') {
+      setScriptFormat('monologue')
+    }
     // The sample a voice maps to can change with the model — drop stale audio.
     stopPreview()
     setTtsModel(m)
@@ -238,7 +269,7 @@ export default function TaskForm() {
 
   // The picker holds local wall-clock; the API takes UTC.
   const scheduled = startMode === 'later' ? localInputToIso(startAt) : null
-  const scheduleIsPast = !!scheduled && new Date(scheduled).getTime() <= Date.now()
+  const scheduleIsPast = !!scheduled && new Date(scheduled).getTime() <= renderedAt
   const startLabel = scheduled ? formatStart(scheduled) : 'Immediately'
 
   const pickPreset = (at: Date) => {
@@ -252,9 +283,9 @@ export default function TaskForm() {
         target_duration_minutes: duration,
         script_format: scriptFormat,
         speaker_count: isMonologue ? 1 : 2,
-        voice_1: voice1,
-        voice_2: voice2,
-        tts_model: ttsModel,
+        voice_1: selectedVoice1,
+        voice_2: selectedVoice2,
+        tts_model: selectedTtsModel,
         video_template: videoTemplate,
         video_orientation: videoOrientation,
         opening_style: openingStyle,
@@ -312,7 +343,7 @@ export default function TaskForm() {
     { label: 'Title', note: 'Generate a publication title in an independent Agent session', on: true },
     { label: 'Thumbnail', note: thumbnailEnabled ? 'Generate cover art through ChatGPT Web' : 'Skipped — cover generation is off', on: thumbnailEnabled },
     { label: 'Footage', note: footageEnabled ? `Scout ${footageClipCount} clips via ${footageProvider === 'wikimedia' ? 'Commons' : footageProvider === 'hybrid' ? 'Commons + web' : 'web platforms'}` : 'Skipped — media scout is off', on: footageEnabled },
-    { label: 'Voice', note: `Synthesise with VibeVoice ${is05b ? '0.5B' : '1.5B'}`, on: true },
+    { label: 'Voice', note: `Synthesise with ${activeTtsModel.provider} · ${activeTtsModel.label}`, on: true },
     {
       label: 'Collage',
       note: collageBrollEnabled
@@ -341,8 +372,8 @@ export default function TaskForm() {
     ['Start', scheduled && !scheduleIsPast ? startLabel : 'Now'],
     ['Length', `${duration} min`],
     ['Style', isMonologue ? 'Solo' : 'Two-host'],
-    ['Voice', isMonologue ? voice1 : `${voice1} · ${voice2}`],
-    ['Engine', is05b ? '0.5B' : '1.5B'],
+    ['Voice', isMonologue ? selectedVoice1 : `${selectedVoice1} · ${selectedVoice2}`],
+    ['Engine', `${activeTtsModel.provider} · ${activeTtsModel.label}`],
     ['Template', activeTemplate.name],
     ['Frame', videoOrientation === 'landscape' ? '16:9 landscape' : '9:16 portrait'],
     ['Opening', openingStyle === 'paper_collage' ? 'Paper collage' : 'Editorial motion'],
@@ -534,25 +565,25 @@ export default function TaskForm() {
               <div className="grid-2 wb-voices">
                 <VoiceField
                   label={isMonologue ? 'Host Voice' : 'Host Voice (Speaker 1)'}
-                  value={voice1}
+                  value={selectedVoice1}
                   onChange={(v) => {
                     stopPreview()
                     setVoice1(v)
                   }}
                   voices={voices}
-                  playing={playingVoice === voice1}
+                  playing={playingVoice === selectedVoice1}
                   onPreview={togglePreview}
                 />
                 {!isMonologue && (
                   <VoiceField
                     label="Co-host Voice (Speaker 2)"
-                    value={voice2}
+                    value={selectedVoice2}
                     onChange={(v) => {
                       stopPreview()
                       setVoice2(v)
                     }}
                     voices={voices}
-                    playing={playingVoice === voice2}
+                    playing={playingVoice === selectedVoice2}
                     onPreview={togglePreview}
                   />
                 )}
@@ -586,17 +617,22 @@ export default function TaskForm() {
               )}
               <div className="form-group">
                 <label>TTS Model</label>
-                <select value={ttsModel} onChange={(e) => selectModel(e.target.value)}>
-                  <option value="vibevoice-1.5b">1.5B (high quality)</option>
-                  <option value="vibevoice-0.5b" disabled={scriptFormat === 'dialogue'}>
-                    0.5B (fast draft, solo only)
-                  </option>
+                <select value={selectedTtsModel} onChange={(e) => selectModel(e.target.value)}>
+                  {ttsModels.map((model) => (
+                    <option
+                      key={model.id}
+                      value={model.id}
+                      disabled={scriptFormat === 'dialogue' && model.single_speaker}
+                    >
+                      {model.provider} — {model.label}{model.single_speaker ? ' · solo only' : ''}
+                    </option>
+                  ))}
                 </select>
-                {is05b && (
-                  <small className="wb-hint">The 0.5B model is single-speaker — solo talk-show only.</small>
+                {isSingleSpeakerModel && (
+                  <small className="wb-hint">{activeTtsModel.label} is single-speaker — solo talk-show only.</small>
                 )}
                 {scriptFormat === 'dialogue' && (
-                  <small className="wb-hint">Two-host dialogue requires the 1.5B model.</small>
+                  <small className="wb-hint">Two-host dialogue requires a model that supports multiple speakers.</small>
                 )}
               </div>
               <div className="form-group">

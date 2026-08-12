@@ -8,7 +8,7 @@ rendered WAV to word timestamps, caches the result next to the task, and lets
 
 MLX Whisper is used on Apple Silicon because it is fast and can reuse the
 operator's Hugging Face cache. It is a post-TTS analyzer only: Microsoft
-VibeVoice remains the narration source. If bounded transcription retries are
+The selected TTS model remains the narration source. If bounded transcription retries are
 exhausted, the caller receives a warning result and continues with estimated
 timing; HyperFrames is not used for transcription.
 """
@@ -76,7 +76,11 @@ def _load_words(path: Path) -> list[dict]:
 
 
 def _transcript_quality(words: list[dict]) -> tuple[bool, str]:
-    if len(words) < 10:
+    # Short promos can legitimately contain fewer than ten spoken words. The
+    # later forced-alignment gate compares transcript coverage with the actual
+    # script, so this preflight only needs enough samples to reject empty or
+    # obviously broken Whisper output without rejecting complete short clips.
+    if len(words) < 3:
         return False, f"only {len(words)} timestamped words"
     non_speech = sum(1 for word in words if word["text"].strip() in NON_SPEECH_TOKENS)
     ratio = non_speech / len(words)
@@ -172,7 +176,7 @@ async def ensure_word_transcript(
         _emit(
             log,
             "A/V sync warning: MLX Whisper is unavailable; continuing with "
-            "estimated timing. VibeVoice narration is unchanged.",
+            "estimated timing. The generated narration is unchanged.",
         )
         return [], {
             "backend": "unavailable",
@@ -185,7 +189,7 @@ async def ensure_word_transcript(
     for attempt in range(1, maximum_attempts + 1):
         _emit(
             log,
-            f"A/V sync: transcribing finished VibeVoice narration with MLX Whisper "
+            f"A/V sync: transcribing finished narration with MLX Whisper "
             f"(attempt {attempt}/{maximum_attempts})",
         )
         try:
@@ -228,7 +232,7 @@ async def ensure_word_transcript(
     _emit(
         log,
         "A/V sync warning: MLX Whisper retries were exhausted; continuing with "
-        "estimated timing. VibeVoice narration is unchanged. " + detail,
+        "estimated timing. The generated narration is unchanged. " + detail,
     )
     return [], {
         "backend": "unavailable",

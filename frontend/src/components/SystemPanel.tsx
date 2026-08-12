@@ -54,6 +54,7 @@ export default function SystemPanel() {
     queryClient.invalidateQueries({ queryKey: ['settings-schema'] })
     // Voices, models and endpoints shown elsewhere may have moved with it.
     queryClient.invalidateQueries({ queryKey: ['voices'] })
+    queryClient.invalidateQueries({ queryKey: ['tts-models'] })
     setRestartKeys(schema.restart_required)
     clearAll()
   }

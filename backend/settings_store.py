@@ -75,7 +75,10 @@ def _tts_model_options() -> tuple[str, ...]:
 
 
 def _voice_options() -> tuple[str, ...]:
-    return tuple(_config().AVAILABLE_VOICES)
+    voices: dict[str, None] = {}
+    for model_id in _config().TTS_MODELS:
+        voices.update(dict.fromkeys(_config().voices_for_model(model_id)))
+    return tuple(voices)
 
 
 GROUPS: tuple[SettingGroup, ...] = (
@@ -94,8 +97,8 @@ GROUPS: tuple[SettingGroup, ...] = (
     SettingGroup(
         "tts",
         "Voice & TTS",
-        "The local VibeVoice runtime: where it is installed, which device it "
-        "runs on, and the default model and voices for new tasks.",
+        "Local VibeVoice and remote Orpheus synthesis: runtimes, credentials, "
+        "defaults, voices, chunking, and inference limits.",
     ),
     SettingGroup(
         "av_sync",
@@ -283,6 +286,42 @@ SPECS: tuple[SettingSpec, ...] = (
         description="Coarse ceiling on one synthesis run. A full-length script "
                     "legitimately decodes for hours.",
     ),
+    SettingSpec(
+        "ORPHEUS_TTS_URL", "tts", "Orpheus service URL", "string",
+        placeholder="http://10.60.11.3:8088",
+        description="Base URL of the authenticated Orpheus async TTS service.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_API_KEY", "tts", "Orpheus API key", "secret",
+        description="Sent only as X-API-Key to the configured Orpheus service.",
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_SPEED_PERCENT", "tts", "Orpheus speed", "int", unit="%",
+        minimum=50, maximum=200,
+        description="Playback speed sent to Orpheus (100% = natural speed). The "
+                    "finished WAV is measured again before video timing is built.",
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_MAX_TOKENS", "tts", "Orpheus max tokens", "int",
+        minimum=28, maximum=16384,
+        description="Decode-token ceiling for each chunk submitted to Orpheus.",
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_N_THREADS", "tts", "Orpheus CPU threads", "int",
+        minimum=1, maximum=64,
+        description="CPU thread count requested from the remote Orpheus worker.",
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_POLL_SECONDS", "tts", "Orpheus poll interval", "int", unit="seconds",
+        minimum=1, maximum=60,
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_REQUEST_TIMEOUT", "tts", "Orpheus request timeout", "int", unit="seconds",
+        minimum=5, maximum=600,
+        description="HTTP timeout per submit, status, or audio-download request. "
+                    "The overall synthesis ceiling remains Total timeout.",
+    ),
     # ── Audio / visual sync ──────────────────────────────────────────────
     SettingSpec(
         "AV_SYNC_LANGUAGE", "av_sync", "Narration language", "string",
@@ -293,7 +332,7 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "AV_SYNC_MLX_MODEL", "av_sync", "Apple Silicon model", "string",
         placeholder="mlx-community/whisper-large-v3-turbo-q4",
-        description="Post-TTS transcription model. It reads the finished VibeVoice "
+        description="Post-TTS transcription model. It reads the finished narration "
                     "WAV and never generates or replaces narration.",
         allow_blank=False,
     ),

@@ -8,6 +8,14 @@ from backend.pipeline import av_sync
 
 
 class TranscriptRetryTests(unittest.IsolatedAsyncioTestCase):
+    def test_short_complete_transcript_passes_preflight(self):
+        words = [
+            {"text": text, "start": index * 0.3, "end": index * 0.3 + 0.2}
+            for index, text in enumerate(("short", "clips", "still", "align"))
+        ]
+
+        self.assertEqual(av_sync._transcript_quality(words), (True, ""))
+
     async def test_exhausted_mlx_retries_return_warning_instead_of_raising(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

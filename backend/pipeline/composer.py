@@ -370,7 +370,7 @@ async def compose_video(
         "delivery_status": "pending",
         "warnings": _quality_warnings(board["alignment"], visual_grounding),
         "narration": {
-            "provider": "Microsoft VibeVoice",
+            "provider": config.tts_provider_label(tts_model),
             "model": tts_model or config.TTS_DEFAULT_MODEL,
             "audio_path": str(Path(audio_path).resolve()),
         },

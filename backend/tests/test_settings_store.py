@@ -173,9 +173,15 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(
             self.field("TTS_DEFAULT_MODEL")["options"], sorted(config.TTS_MODELS)
         )
-        self.assertEqual(
-            self.field("TTS_DEFAULT_VOICE_1")["options"], list(config.AVAILABLE_VOICES)
-        )
+        expected_voices = list(config.AVAILABLE_VOICES) + list(config.ORPHEUS_EN_VOICES)
+        self.assertEqual(self.field("TTS_DEFAULT_VOICE_1")["options"], expected_voices)
+
+    def test_orpheus_api_key_is_masked(self):
+        settings_store.update({"ORPHEUS_TTS_API_KEY": "orpheus-secret-value"})
+        field = self.field("ORPHEUS_TTS_API_KEY")
+        self.assertEqual(field["value"], "")
+        self.assertEqual(field["masked"], "orph...alue")
+        self.assertNotIn("orpheus-secret-value", json.dumps(settings_store.schema()))
 
     def test_every_spec_maps_to_a_real_config_attribute(self):
         for spec in settings_store.SPECS:

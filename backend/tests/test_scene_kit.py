@@ -19,6 +19,12 @@ def test_text_archetypes_satisfy_the_runtime_contract(archetype):
     assert validate_scene_html(html, "scene-01") == []
 
 
+def test_outro_marks_its_intentional_exit_overflow():
+    html = sk.render_scene(plan(archetype="outro"))
+
+    assert '<div class="stage" data-layout-allow-overflow>' in html
+
+
 def test_contrast_and_list_render_when_given_their_content():
     contrast = sk.render_scene(
         plan(archetype="contrast", left_label="Then", left_text="A", right_label="Now", right_text="B")

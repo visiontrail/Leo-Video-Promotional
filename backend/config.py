@@ -144,9 +144,19 @@ TTS_DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "vibevoice-0.5b")
 TTS_DEFAULT_VOICE_1 = os.getenv("TTS_DEFAULT_VOICE_1", "Carter")
 TTS_DEFAULT_VOICE_2 = os.getenv("TTS_DEFAULT_VOICE_2", "Alice")
 
-# Audio/visual alignment. Microsoft VibeVoice remains the only narration
-# generator. MLX Whisper reads the finished VibeVoice WAV after synthesis to
-# obtain word timestamps; it never generates or replaces speech. Alignment is
+# Remote Orpheus service. The key is intentionally blank in source and is
+# managed as a masked secret by Admin -> System (or seeded through .env).
+ORPHEUS_TTS_URL = os.getenv("ORPHEUS_TTS_URL", "http://10.60.11.3:8088").rstrip("/")
+ORPHEUS_TTS_API_KEY = os.getenv("ORPHEUS_TTS_API_KEY", "")
+ORPHEUS_TTS_SPEED_PERCENT = int(os.getenv("ORPHEUS_TTS_SPEED_PERCENT", "100"))
+ORPHEUS_TTS_MAX_TOKENS = int(os.getenv("ORPHEUS_TTS_MAX_TOKENS", "2048"))
+ORPHEUS_TTS_N_THREADS = int(os.getenv("ORPHEUS_TTS_N_THREADS", "64"))
+ORPHEUS_TTS_POLL_SECONDS = int(os.getenv("ORPHEUS_TTS_POLL_SECONDS", "2"))
+ORPHEUS_TTS_REQUEST_TIMEOUT = int(os.getenv("ORPHEUS_TTS_REQUEST_TIMEOUT", "60"))
+
+# Audio/visual alignment. MLX Whisper reads the finished WAV from whichever TTS
+# provider the task selected to obtain word timestamps; it never generates or
+# replaces speech. Alignment is
 # advisory: after bounded retries the renderer continues and records a warning.
 AV_SYNC_LANGUAGE = os.getenv("AV_SYNC_LANGUAGE", "en").strip() or "en"
 AV_SYNC_MLX_MODEL = os.getenv(
@@ -186,16 +196,27 @@ AVAILABLE_VOICES = {
     "Samuel": {"gender": "male", "lang": "in"},
 }
 
+ORPHEUS_EN_VOICES = {
+    "tara": {"gender": "female", "lang": "en"},
+    "leah": {"gender": "female", "lang": "en"},
+    "jess": {"gender": "female", "lang": "en"},
+    "leo": {"gender": "male", "lang": "en"},
+    "dan": {"gender": "male", "lang": "en"},
+    "mia": {"gender": "female", "lang": "en"},
+    "zac": {"gender": "male", "lang": "en"},
+    "zoe": {"gender": "female", "lang": "en"},
+}
+
 
 def _build_tts_models(root: Path) -> dict[str, dict]:
-    """Registry of installed VibeVoice TTS models, rooted at ``root``.
+    """Registry of local and remote TTS model invocation contracts.
 
-    Each entry carries the full invocation contract for that model: which venv
-    to source, which project directory to cd into, which inference script to
-    run, and which speaker flag the script expects (1.5B uses plural
+    Local entries carry the full invocation contract: which venv to source,
+    which project directory to cd into, which inference script to run, and
+    which speaker flag the script expects (1.5B uses plural
     --speaker_names, 0.5B uses singular --speaker_name). The 0.5B realtime model
     is single-speaker, so it only ever receives one voice source. Adding a
-    future model is a data change here, not a code change in tts.py.
+    future model of an existing provider kind is a data change here.
 
     It is a function because AIWORK_ROOT is settable from the Admin console:
     every path below has to be rebuilt when the root moves.
@@ -203,6 +224,8 @@ def _build_tts_models(root: Path) -> dict[str, dict]:
     return {
         "vibevoice-1.5b": {
             "label": "1.5B (high quality)",
+            "provider": "Microsoft VibeVoice",
+            "kind": "local_subprocess",
             "env_script": root / "env_vibevoice_1.5b.sh",
             "project_dir": root / "VibeVoice-1.5B",
             "inference_script": root / "VibeVoice-1.5B" / "demo" / "inference_from_file.py",
@@ -211,6 +234,8 @@ def _build_tts_models(root: Path) -> dict[str, dict]:
         },
         "vibevoice-0.5b": {
             "label": "0.5B (fast draft)",
+            "provider": "Microsoft VibeVoice",
+            "kind": "local_subprocess",
             "env_script": root / "env_vibevoice.sh",
             "project_dir": root / "VibeVoice",
             "inference_script": root / "VibeVoice" / "demo" / "realtime_model_inference_from_file.py",
@@ -225,6 +250,14 @@ def _build_tts_models(root: Path) -> dict[str, dict]:
                 "Maya": "Grace",
                 "Mary": "Emma",
             },
+        },
+        "orpheus-en": {
+            "label": "English Q4 (remote CPU)",
+            "provider": "Orpheus",
+            "kind": "orpheus_http",
+            "single_speaker": True,
+            "language": "en",
+            "voices": ORPHEUS_EN_VOICES,
         },
     }
 
@@ -246,12 +279,26 @@ def resolve_voice(voice: str, tts_model: str | None = None) -> str:
     return model.get("voice_aliases", {}).get(voice, voice)
 
 
+def voices_for_model(tts_model: str | None = None) -> dict[str, dict]:
+    """Return only the voices accepted by the selected synthesis model."""
+    model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
+    return model.get("voices", AVAILABLE_VOICES)
+
+
+def tts_provider_label(tts_model: str | None = None) -> str:
+    model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
+    return model.get("provider", "Unknown TTS provider")
+
+
 def voice_sample_path(voice: str, tts_model: str | None = None):
     """Return the reference WAV for a voice, or None if none is installed.
 
     `voice` must already be a known preset name — callers validate it against
     the model registry so an arbitrary string never reaches the glob.
     """
+    model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
+    if model.get("kind") != "local_subprocess":
+        return None
     resolved = resolve_voice(voice, tts_model)
     matches = sorted(VOICE_SAMPLE_DIR.glob(f"*-{resolved}_*.wav"))
     return matches[0] if matches else None

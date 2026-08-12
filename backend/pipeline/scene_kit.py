@@ -914,6 +914,13 @@ def _render_outro(plan: ScenePlan) -> str:
     out = _render_title(plan)
     # The final scene is the one place an exit animation is allowed, so fade the
     # whole stage after the hold instead of cutting to black on the last frame.
+    # Mark its deliberate 26px upward travel so layout inspection does not
+    # report the exit as content accidentally escaping the scene container.
+    out = out.replace(
+        '<div class="stage">',
+        '<div class="stage" data-layout-allow-overflow>',
+        1,
+    )
     fade = (
         f'        outAt("#{plan.id} .stage", {{ opacity: 0, y: -26, duration: .8, ease: "power2.in" }}, '
         f'{max(1.2, plan.duration - 1.0):.2f});\n'

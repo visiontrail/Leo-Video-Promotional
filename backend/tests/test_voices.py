@@ -25,7 +25,7 @@ class VoiceSampleTests(unittest.TestCase):
             )
             # The trailing "_bgm" variant must still resolve.
             self.assertEqual(
-                config.voice_sample_path("Mary"),
+                config.voice_sample_path("Mary", "vibevoice-1.5b"),
                 self.sample_dir / "en-Mary_woman_bgm.wav",
             )
 
@@ -48,6 +48,13 @@ class VoiceSampleTests(unittest.TestCase):
     def test_unknown_model_falls_back_to_no_substitution(self):
         self.assertEqual(config.resolve_voice("Alice", "nope"), "Alice")
 
+    def test_orpheus_has_model_specific_voices_and_no_local_preview(self):
+        self.assertEqual(
+            list(config.voices_for_model("orpheus-en")),
+            ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"],
+        )
+        self.assertIsNone(config.voice_sample_path("tara", "orpheus-en"))
+
 
 class VoiceRouteTests(unittest.TestCase):
     def setUp(self):
@@ -64,6 +71,17 @@ class VoiceRouteTests(unittest.TestCase):
         self.assertEqual(
             [v["name"] for v in body], list(config.AVAILABLE_VOICES)
         )
+
+    def test_lists_orpheus_voices_only_for_orpheus(self):
+        body = self.client.get("/api/voices?tts_model=orpheus-en").json()
+        self.assertEqual([v["name"] for v in body], list(config.ORPHEUS_EN_VOICES))
+        self.assertTrue(all(not v["preview_available"] for v in body))
+
+    def test_lists_tts_model_capabilities(self):
+        body = self.client.get("/api/voices/models").json()
+        orpheus = next(model for model in body if model["id"] == "orpheus-en")
+        self.assertEqual(orpheus["provider"], "Orpheus")
+        self.assertTrue(orpheus["single_speaker"])
 
     def test_rejects_unknown_voice_before_touching_the_filesystem(self):
         res = self.client.get("/api/voices/Bogus*/preview")

@@ -87,6 +87,25 @@ class TaskConfig(BaseModel):
             # that value once so their portrait choice survives this migration.
             self.video_orientation = self.footage_orientation
         self.footage_orientation = self.video_orientation
+        # Validate the synthesis contract at task creation as well as at worker
+        # execution, so a stale UI cannot queue a task that is guaranteed to fail.
+        from backend import config as app_config
+
+        model = app_config.TTS_MODELS.get(self.tts_model)
+        if model is None:
+            raise ValueError(f"Unknown TTS model '{self.tts_model}'")
+        if model.get("single_speaker") and self.script_format == ScriptFormat.DIALOGUE:
+            raise ValueError(f"TTS model '{self.tts_model}' supports monologue only")
+        voices = app_config.voices_for_model(self.tts_model)
+        selected = [self.voice_1]
+        if self.script_format == ScriptFormat.DIALOGUE:
+            selected.append(self.voice_2)
+        invalid = [voice for voice in selected if voice not in voices]
+        if invalid:
+            raise ValueError(
+                f"Voice(s) {invalid} are unavailable for TTS model '{self.tts_model}'"
+            )
+        self.speaker_count = 1 if self.script_format == ScriptFormat.MONOLOGUE else 2
         return self
 
 
@@ -195,6 +214,14 @@ class VoiceOption(BaseModel):
     # The preset the selected TTS model actually uses (0.5B substitutes some).
     resolved_name: str
     preview_available: bool
+
+
+class TtsModelOption(BaseModel):
+    id: str
+    label: str
+    provider: str
+    single_speaker: bool
+    is_default: bool
 
 
 class SettingsUpdate(BaseModel):

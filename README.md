@@ -5,7 +5,7 @@ The primary output is a **solo talk-show monologue** (a single host talking to t
 a two-host dialogue format is also available.
 
 Pipeline: **source extract → AI digest → script → ChatGPT Web viral thumbnail → rights-ledgered
-footage scout → optional web-generated collage B-roll → VibeVoice TTS → storyboard → art direction
+footage scout → optional web-generated collage B-roll → selectable TTS → storyboard → art direction
 → agent-authored scenes → HyperFrames video render**.
 
 ## Architecture
@@ -15,7 +15,8 @@ footage scout → optional web-generated collage B-roll → VibeVoice TTS → st
 - **Frontend** — React + Vite. Built to `frontend/dist/` and served by the backend.
 - **AI (digest + script)** — the **Claude Agent SDK** by default (`AI_BACKEND=agent_sdk`); the
   legacy direct OpenAI-compatible HTTP client is still available (`AI_BACKEND=http`). See below.
-- **TTS** — VibeVoice (1.5B high quality / 0.5B fast solo) invoked as a subprocess.
+- **TTS** — local VibeVoice (1.5B high quality / 0.5B fast solo) or authenticated
+  remote Orpheus English Q4, with model-specific voice catalogs and async job polling.
 - **Video** — HyperFrames HTML→MP4 renderer (`hyperframe/`), invoked as a subprocess.
 
 ### AI backend: Claude Agent SDK
