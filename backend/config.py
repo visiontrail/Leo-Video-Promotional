@@ -134,6 +134,11 @@ TTS_DEVICE = os.getenv("TTS_DEVICE", "mps")
 # whatever the elapsed time. TTS_TIMEOUT is only a coarse backstop.
 TTS_TIMEOUT = int(os.getenv("TTS_TIMEOUT", str(6 * 3600)))
 TTS_STALL_TIMEOUT = int(os.getenv("TTS_STALL_TIMEOUT", "600"))
+# Bound each inference context on Apple MPS. The realtime model's decode cost
+# can become superlinear late in a long, single request even while it continues
+# printing progress, so the silence watchdog alone cannot detect the failure.
+# Zero disables chunking for diagnosis or accelerator-specific tuning.
+TTS_CHUNK_WORDS = int(os.getenv("TTS_CHUNK_WORDS", "350"))
 
 TTS_DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "vibevoice-0.5b")
 TTS_DEFAULT_VOICE_1 = os.getenv("TTS_DEFAULT_VOICE_1", "Carter")

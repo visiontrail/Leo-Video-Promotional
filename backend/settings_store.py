@@ -264,6 +264,13 @@ SPECS: tuple[SettingSpec, ...] = (
         description="Second speaker, used only by dialogue scripts.",
     ),
     SettingSpec(
+        "TTS_CHUNK_WORDS", "tts", "Words per chunk", "int", unit="words",
+        minimum=0, maximum=5000,
+        description="Maximum words sent to VibeVoice in one inference process. "
+                    "Long scripts are joined into one WAV afterward; 0 disables "
+                    "chunking.",
+    ),
+    SettingSpec(
         "TTS_STALL_TIMEOUT", "tts", "Stall timeout", "int", unit="seconds",
         minimum=30, maximum=24 * 3600,
         description="Seconds of total silence that count as a wedged run. "

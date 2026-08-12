@@ -13,6 +13,7 @@ LogCallback = Callable[[str], None]
 # second, so silence is the only reliable hang signal. The values are read from
 # config at call time so an Admin change applies to the next run.
 SPEAKER_LABEL_RE = re.compile(r"^\s*Speaker\s*\d+\s*[:：\-—–]\s*", re.IGNORECASE)
+SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?。！？])\s+")
 
 
 def _strip_speaker_labels(script: str) -> str:
@@ -27,6 +28,46 @@ def _strip_speaker_labels(script: str) -> str:
         if cleaned:
             lines.append(cleaned)
     return "\n".join(lines)
+
+
+def _split_tts_text(text: str, max_words: int) -> list[str]:
+    """Split long narration at sentence boundaries without dropping words."""
+    if max_words <= 0 or len(text.split()) <= max_words:
+        return [text]
+
+    units: list[str] = []
+    for line in text.splitlines():
+        units.extend(
+            sentence.strip()
+            for sentence in SENTENCE_BOUNDARY_RE.split(line.strip())
+            if sentence.strip()
+        )
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_words = 0
+
+    def flush() -> None:
+        nonlocal current, current_words
+        if current:
+            chunks.append("\n".join(current))
+            current = []
+            current_words = 0
+
+    for unit in units:
+        words = unit.split()
+        while len(words) > max_words:
+            flush()
+            chunks.append(" ".join(words[:max_words]))
+            words = words[max_words:]
+        if not words:
+            continue
+        if current and current_words + len(words) > max_words:
+            flush()
+        current.append(" ".join(words))
+        current_words += len(words)
+    flush()
+    return chunks
 
 
 async def generate_tts(
@@ -101,47 +142,91 @@ async def generate_tts(
     cleaned = _strip_speaker_labels(script_path_obj.read_text(encoding="utf-8"))
     tts_input = output_dir_path / "tts_input.txt"
     tts_input.write_text(cleaned, encoding="utf-8")
-    tts_script_path = str(tts_input)
+    chunks = _split_tts_text(cleaned, config.TTS_CHUNK_WORDS)
+    if len(chunks) == 1:
+        input_paths = [tts_input]
+    else:
+        input_paths = [
+            output_dir_path / f"tts_input_part_{index:03d}.txt"
+            for index in range(1, len(chunks) + 1)
+        ]
+    if len(chunks) > 1:
+        for input_path, chunk in zip(input_paths, chunks):
+            input_path.write_text(chunk, encoding="utf-8")
     emit(f"TTS input: stripped speaker labels -> {tts_input}")
+    if len(chunks) > 1:
+        emit(
+            f"TTS input: split {len(cleaned.split())} words into {len(chunks)} "
+            f"chunks (limit {config.TTS_CHUNK_WORDS} words each)"
+        )
 
     speaker_args = " ".join(f'"{v}"' for v in voices)
 
-    cmd = f"""
+    emit(f"Running TTS: model={tts_model}, voices={voices}, script={script_path_obj}")
+    wav_parts: list[Path] = []
+    for index, input_path in enumerate(input_paths, start=1):
+        expected_part = output_dir_path / f"{input_path.stem}_generated.wav"
+        expected_part.unlink(missing_ok=True)
+        cmd = f"""
 source "{model['env_script']}"
 cd "{model['project_dir']}"
 python "{model['inference_script']}" \
-    --txt_path "{tts_script_path}" \
+    --txt_path "{input_path}" \
     {model['speaker_flag']} {speaker_args} \
     --output_dir "{output_dir_path}" \
     --device {config.TTS_DEVICE}
 """
+        process_name = (
+            "TTS"
+            if len(input_paths) == 1
+            else f"TTS part {index}/{len(input_paths)}"
+        )
+        returncode, output = await stream_subprocess(
+            name=process_name,
+            command=["bash", "-c", cmd],
+            logger=logger,
+            log=log,
+            cwd=model["project_dir"],
+            timeout=config.TTS_TIMEOUT,
+            stall_timeout=config.TTS_STALL_TIMEOUT,
+        )
+        if returncode != 0:
+            raise RuntimeError(
+                f"{process_name} generation failed (exit {returncode}): {output[-500:]}"
+            )
+        if not expected_part.exists():
+            raise RuntimeError(
+                f"{process_name} produced no WAV output at {expected_part}"
+            )
+        wav_parts.append(expected_part)
 
-    emit(f"Running TTS: model={tts_model}, voices={voices}, script={script_path_obj}")
-    returncode, output = await stream_subprocess(
-        name="TTS",
-        command=["bash", "-c", cmd],
-        logger=logger,
-        log=log,
-        cwd=model["project_dir"],
-        timeout=config.TTS_TIMEOUT,
-        stall_timeout=config.TTS_STALL_TIMEOUT,
-    )
+    expected = output_dir_path / "tts_input_generated.wav"
+    if len(wav_parts) > 1:
+        concat_list = output_dir_path / "tts_concat.txt"
+        concat_lines = []
+        for part in wav_parts:
+            escaped = str(part).replace("'", "'\\''")
+            concat_lines.append(f"file '{escaped}'")
+        concat_list.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+        expected.unlink(missing_ok=True)
+        returncode, output = await stream_subprocess(
+            name="TTS concat",
+            command=[
+                "ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                "-i", concat_list, "-c", "copy", expected,
+            ],
+            logger=logger,
+            log=log,
+            cwd=output_dir_path,
+            timeout=300,
+            stall_timeout=120,
+        )
+        if returncode != 0 or not expected.exists():
+            raise RuntimeError(
+                f"TTS WAV concatenation failed (exit {returncode}): {output[-500:]}"
+            )
+    else:
+        expected = wav_parts[0]
 
-    if returncode != 0:
-        raise RuntimeError(f"TTS generation failed (exit {returncode}): {output[-500:]}")
-
-    # The inference scripts name output "<input-stem>_generated.wav" from the
-    # txt they actually read, which is tts_script_path (the cleaned copy).
-    script_stem = Path(tts_script_path).stem
-    expected = output_dir_path / f"{script_stem}_generated.wav"
-    if expected.exists():
-        emit(f"TTS output: {expected} ({expected.stat().st_size / 1024:.0f} KB)")
-        return str(expected)
-
-    wav_files = list(output_dir_path.glob("*.wav"))
-    if wav_files:
-        latest = max(wav_files, key=lambda p: p.stat().st_mtime)
-        emit(f"TTS output (fallback): {latest}")
-        return str(latest)
-
-    raise RuntimeError("TTS produced no WAV output")
+    emit(f"TTS output: {expected} ({expected.stat().st_size / 1024:.0f} KB)")
+    return str(expected)
