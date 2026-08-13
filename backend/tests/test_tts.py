@@ -492,6 +492,23 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             512,
         )
 
+    def test_orpheus_cache_is_invalidated_when_speed_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "part.wav"
+            write_wav(path)
+            text = "A fully verified utterance."
+            with patch.object(config, "ORPHEUS_TTS_SPEED_PERCENT", 100):
+                tts._write_orpheus_part_metadata(
+                    path,
+                    text,
+                    job_id="job-1",
+                    request_token_budget=512,
+                    integrity=self.verified_report(None, text, None),
+                )
+                self.assertIsNotNone(tts._load_cached_orpheus_part(path, text))
+            with patch.object(config, "ORPHEUS_TTS_SPEED_PERCENT", 140):
+                self.assertIsNone(tts._load_cached_orpheus_part(path, text))
+
     def test_rejects_orpheus_audio_that_reaches_token_ceiling(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "part.wav"

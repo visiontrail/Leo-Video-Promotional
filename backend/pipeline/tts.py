@@ -571,6 +571,8 @@ def _load_cached_orpheus_part(path: Path, text: str) -> dict | None:
         return None
     if metadata.get("text_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest():
         return None
+    if metadata.get("speed_percent") != config.ORPHEUS_TTS_SPEED_PERCENT:
+        return None
     if not (metadata.get("integrity") or {}).get("verified"):
         return None
     try:
@@ -595,6 +597,7 @@ def _write_orpheus_part_metadata(
         "word_count": _spoken_word_count(text),
         "job_id": job_id,
         "request_token_budget": request_token_budget,
+        "speed_percent": config.ORPHEUS_TTS_SPEED_PERCENT,
         "wav": asdict(_read_pcm_wav(path)),
         "integrity": integrity,
     }
