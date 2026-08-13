@@ -252,6 +252,13 @@ def _split_tts_text(
             words = sentence.strip().split()
             while words:
                 take = min(max_words, len(words))
+                remainder = len(words) - take
+                if 0 < remainder < 5:
+                    # Avoid context-starved sentence tails such as "belonged
+                    # to the state." Orpheus repeatedly drops inflections in
+                    # these fragments. Balance the final two utterances while
+                    # preserving every source word and the original order.
+                    take = math.ceil(len(words) / 2)
                 while (
                     take > 1
                     and take < len(words)
