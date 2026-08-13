@@ -461,6 +461,19 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report["verified"])
         self.assertIn("repeated", " ".join(report["failure_reasons"]))
 
+    def test_orpheus_transcript_report_rejects_one_extra_spoken_word(self):
+        expected = "Every requested word is spoken once."
+        observed = (expected.rstrip(".") + " extra").split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertFalse(report["verified"])
+        self.assertIn("likely repeated", " ".join(report["failure_reasons"]))
+
     def test_orpheus_transcript_report_finds_truncated_second_utterance(self):
         expected = "The complete phrase is spoken exactly once."
         observed = (expected.rstrip(".") + " The complete phrase").split()
