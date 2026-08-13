@@ -925,7 +925,7 @@ export default function TaskForm() {
                       type="datetime-local"
                       value={startAt}
                       min={toLocalInputValue(new Date())}
-                      onChange={(e) => setStartAt(e.target.value)}
+                      onInput={(e) => setStartAt(e.currentTarget.value)}
                     />
                   </div>
                   <small className="wb-hint">

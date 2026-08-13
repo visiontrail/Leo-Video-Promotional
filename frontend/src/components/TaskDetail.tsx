@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   fetchTask,
@@ -138,7 +138,7 @@ export default function TaskDetail() {
             {task.source_type.toUpperCase()} &middot; {task.id.slice(0, 8)}
           </span>
           <h1>{task.generated_title || task.source_title || task.id}</h1>
-          {task.source_url && <p className="detail-source">{task.source_url}</p>}
+          {task.source_url && task.source_type !== 'topic' && <p className="detail-source">{task.source_url}</p>}
         </div>
 
         <div className="detail-command-side">
@@ -175,13 +175,17 @@ export default function TaskDetail() {
                 <button className="btn-primary" type="button">Download Thumbnail</button>
               </a>
             )}
-            <button
-              className="btn-danger"
-              type="button"
-              onClick={() => { if (confirm('Delete this task?')) deleteMutation.mutate() }}
-            >
-              Delete
-            </button>
+            {task.origin_type === 'content_plan' ? (
+              <Link to="/planning"><button className="btn-ghost" type="button">Open Content Plan</button></Link>
+            ) : (
+              <button
+                className="btn-danger"
+                type="button"
+                onClick={() => { if (confirm('Delete this task?')) deleteMutation.mutate() }}
+              >
+                Delete
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -211,11 +215,29 @@ export default function TaskDetail() {
             <dt>Captions</dt>
             <dd>{task.config.captions_enabled !== false ? 'On · single line' : 'Off'}</dd>
           </div>
+          <div>
+            <dt>Origin</dt>
+            <dd>{task.origin_type === 'content_plan' ? 'Content plan' : 'Manual task'}</dd>
+          </div>
+          <div>
+            <dt>Target release</dt>
+            <dd>{task.planned_publish_at ? formatStart(task.planned_publish_at) : 'Not planned'}</dd>
+          </div>
         </dl>
       </div>
 
       <div className="detail-body">
         <section className="detail-column detail-main">
+          {task.origin_type === 'content_plan' && (
+            <div className="task-origin-banner">
+              <div>
+                <span className="eyebrow">Task source · editorial plan</span>
+                <strong>{task.origin_label || task.origin_id}</strong>
+                {task.source_type === 'topic' && task.source_url && <p>{task.source_url}</p>}
+              </div>
+              <Link to="/planning">View plan and publication review →</Link>
+            </div>
+          )}
           {parked && (
             <div className="schedule-bar">
               <div className="schedule-bar-copy">
@@ -228,7 +250,7 @@ export default function TaskDetail() {
                   aria-label="Start time"
                   value={startDraft}
                   min={toLocalInputValue(new Date())}
-                  onChange={(e) => setStartOverride(e.target.value)}
+                  onInput={(e) => setStartOverride(e.currentTarget.value)}
                 />
                 <button
                   className="btn-ghost"

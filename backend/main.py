@@ -10,7 +10,7 @@ from backend.database import init_db, reset_orphaned_account_runs, reset_orphane
 from backend.logging_setup import configure_logging
 from backend.worker import start_worker, stop_worker
 from backend.account_ops.worker import start_account_worker, stop_account_worker
-from backend.routers import account_operations, tasks, settings, providers, prompts, skills, voices
+from backend.routers import account_operations, content_planning, tasks, settings, providers, prompts, skills, voices
 from backend import config
 from backend import prompts_registry
 from backend.pipeline.voice_previews import preload_remote_voice_previews
@@ -88,6 +88,7 @@ app.include_router(prompts.router)
 app.include_router(skills.router)
 app.include_router(voices.router)
 app.include_router(account_operations.router)
+app.include_router(content_planning.router)
 
 # Bound to the directory as it stands at startup — this is why OUTPUTS_DIR is
 # flagged "restart required" in the Admin console.

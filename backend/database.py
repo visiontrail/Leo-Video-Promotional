@@ -8,13 +8,20 @@ from backend.models import (
     AccountAutomationResponse,
     AccountRunResponse,
     AccountRunStatus,
+    ContentPlanItemCreate,
+    ContentPlanItemResponse,
+    ContentPlanStatus,
+    ContentSeriesCreate,
+    ContentSeriesResponse,
     DEFAULT_ENGAGEMENT_PROMPT,
     DEFAULT_REPLY_STYLE_PROMPT,
+    PublicationStatus,
     ProviderResponse,
     TaskConfig,
     TaskResponse,
     TaskStatus,
     new_account_id,
+    new_content_id,
     new_task_id,
 )
 
@@ -36,7 +43,45 @@ CREATE TABLE IF NOT EXISTS tasks (
     audio_path TEXT,
     video_path TEXT,
     thumbnail_path TEXT,
-    duration_seconds REAL
+    duration_seconds REAL,
+    origin_type TEXT NOT NULL DEFAULT 'manual',
+    origin_id TEXT,
+    origin_label TEXT,
+    planned_publish_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS content_series (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    theme TEXT NOT NULL DEFAULT '',
+    archived INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS content_plan_items (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    series_id TEXT,
+    title TEXT NOT NULL,
+    brief TEXT NOT NULL,
+    episode_number INTEGER,
+    generation_at TEXT,
+    publish_at TEXT,
+    platform TEXT NOT NULL DEFAULT 'manual',
+    auto_publish_requested INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    publication_status TEXT NOT NULL DEFAULT 'not_ready',
+    task_config_json TEXT NOT NULL,
+    task_id TEXT,
+    published_at TEXT,
+    publication_url TEXT,
+    reviewed_at TEXT,
+    error_message TEXT,
+    FOREIGN KEY (series_id) REFERENCES content_series(id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
 );
 
 CREATE TABLE IF NOT EXISTS providers (
@@ -103,6 +148,10 @@ CREATE INDEX IF NOT EXISTS idx_account_automations_due
     ON account_automations(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_account_runs_queue
     ON account_runs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_content_plan_generation
+    ON content_plan_items(status, generation_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_plan_task
+    ON content_plan_items(task_id) WHERE task_id IS NOT NULL;
 """
 
 
@@ -145,6 +194,23 @@ async def _migrate_tasks(db: aiosqlite.Connection):
     if "generated_title" not in existing:
         await db.execute("ALTER TABLE tasks ADD COLUMN generated_title TEXT")
         await db.commit()
+    additions = {
+        "origin_type": "TEXT NOT NULL DEFAULT 'manual'",
+        "origin_id": "TEXT",
+        "origin_label": "TEXT",
+        "planned_publish_at": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in existing:
+            await db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_origin ON tasks(origin_type, origin_id)"
+    )
+    if {"status", "scheduled_at", "created_at"}.issubset(existing):
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, scheduled_at, created_at)"
+        )
+    await db.commit()
 
 
 async def _migrate_account_operations(db: aiosqlite.Connection) -> None:
@@ -346,6 +412,10 @@ def _row_to_response(row: aiosqlite.Row) -> TaskResponse:
         video_path=row["video_path"],
         thumbnail_path=row["thumbnail_path"],
         duration_seconds=row["duration_seconds"],
+        origin_type=row["origin_type"],
+        origin_id=row["origin_id"],
+        origin_label=row["origin_label"],
+        planned_publish_at=row["planned_publish_at"],
     )
 
 
@@ -355,19 +425,35 @@ async def create_task(
     config: TaskConfig,
     upload_path: str | None = None,
     scheduled_at: str | None = None,
+    *,
+    source_title: str | None = None,
+    origin_type: str = "manual",
+    origin_id: str | None = None,
+    origin_label: str | None = None,
+    planned_publish_at: str | None = None,
+    connection: aiosqlite.Connection | None = None,
 ) -> TaskResponse:
     task_id = new_task_id()
     now = datetime.now(timezone.utc).isoformat()
-    db = await get_db()
+    db = connection or await get_db()
     effective_url = source_url or upload_path
     await db.execute(
-        """INSERT INTO tasks (id, created_at, updated_at, source_type, source_url, status, config_json, scheduled_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (task_id, now, now, source_type, effective_url, TaskStatus.QUEUED.value, config.model_dump_json(), scheduled_at),
+        """INSERT INTO tasks (
+               id, created_at, updated_at, source_type, source_url, source_title,
+               status, config_json, scheduled_at, origin_type, origin_id,
+               origin_label, planned_publish_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            task_id, now, now, source_type, effective_url, source_title,
+            TaskStatus.QUEUED.value, config.model_dump_json(), scheduled_at,
+            origin_type, origin_id, origin_label, planned_publish_at,
+        ),
     )
-    await db.commit()
+    if connection is None:
+        await db.commit()
     row = await db.execute_fetchall("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    await db.close()
+    if connection is None:
+        await db.close()
     return _row_to_response(row[0])
 
 
@@ -396,8 +482,35 @@ async def update_task(task_id: str, **kwargs):
     vals.append(task_id)
     db = await get_db()
     await db.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals)
+    if "status" in kwargs:
+        await _sync_content_plan_status(db, task_id, kwargs["status"], kwargs.get("error_message"))
     await db.commit()
     await db.close()
+
+
+async def reschedule_task(task_id: str, scheduled_at: str | None) -> None:
+    """Move a task and its editorial plan clock together in one transaction."""
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE tasks SET scheduled_at = ?, updated_at = ? WHERE id = ?",
+            (scheduled_at, now, task_id),
+        )
+        # An immediate release is a concrete generation event, not a return to
+        # draft, so its editorial timestamp becomes the release moment.
+        editorial_time = scheduled_at or now
+        await db.execute(
+            """UPDATE content_plan_items SET generation_at = ?, status = ?, updated_at = ?
+               WHERE task_id = ?""",
+            (editorial_time, ContentPlanStatus.SCHEDULED.value, now, task_id),
+        )
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
 
 
 async def delete_task(task_id: str):
@@ -435,6 +548,21 @@ async def reset_orphaned_tasks() -> int:
                 WHERE status IN ({placeholders})""",
             (TaskStatus.FAILED.value, "Interrupted by a server restart — please retry.", now, *in_progress),
         )
+        await db.execute(
+            """UPDATE content_plan_items
+               SET status = ?, publication_status = ?,
+                   error_message = ?, updated_at = ?
+               WHERE task_id IN (SELECT id FROM tasks WHERE status = ?)
+                 AND status = ?""",
+            (
+                ContentPlanStatus.FAILED.value,
+                PublicationStatus.NOT_READY.value,
+                "Interrupted by a server restart — please retry.",
+                now,
+                TaskStatus.FAILED.value,
+                ContentPlanStatus.GENERATING.value,
+            ),
+        )
         await db.commit()
         return cursor.rowcount
     except BaseException:
@@ -456,11 +584,449 @@ async def get_next_queued_task() -> TaskResponse | None:
     rows = await db.execute_fetchall(
         """SELECT * FROM tasks
            WHERE status = ? AND (scheduled_at IS NULL OR scheduled_at <= ?)
-           ORDER BY COALESCE(scheduled_at, created_at) ASC LIMIT 1""",
+           ORDER BY CASE WHEN scheduled_at IS NOT NULL THEN 0 ELSE 1 END,
+                    COALESCE(scheduled_at, created_at) ASC LIMIT 1""",
         (TaskStatus.QUEUED.value, now),
     )
     await db.close()
     return _row_to_response(rows[0]) if rows else None
+
+
+async def _sync_content_plan_status(
+    db: aiosqlite.Connection,
+    task_id: str,
+    task_status: str | TaskStatus,
+    error_message: object | None = None,
+) -> None:
+    """Project task execution state back onto its originating editorial plan."""
+    task_status = getattr(task_status, "value", task_status)
+    now = datetime.now(timezone.utc).isoformat()
+    if task_status == TaskStatus.QUEUED.value:
+        await db.execute(
+            """UPDATE content_plan_items
+               SET status = ?, publication_status = ?, error_message = NULL, updated_at = ?
+               WHERE task_id = ? AND status != ?""",
+            (
+                ContentPlanStatus.SCHEDULED.value,
+                PublicationStatus.NOT_READY.value,
+                now,
+                task_id,
+                ContentPlanStatus.PUBLISHED.value,
+            ),
+        )
+    elif task_status == TaskStatus.COMPLETE.value:
+        await db.execute(
+            """UPDATE content_plan_items
+               SET status = ?, publication_status = ?, error_message = NULL, updated_at = ?
+               WHERE task_id = ? AND status != ?""",
+            (
+                ContentPlanStatus.REVIEW.value,
+                PublicationStatus.AWAITING_REVIEW.value,
+                now,
+                task_id,
+                ContentPlanStatus.PUBLISHED.value,
+            ),
+        )
+    elif task_status == TaskStatus.FAILED.value:
+        await db.execute(
+            """UPDATE content_plan_items
+               SET status = ?, publication_status = ?, error_message = ?, updated_at = ?
+               WHERE task_id = ? AND status != ?""",
+            (
+                ContentPlanStatus.FAILED.value,
+                PublicationStatus.NOT_READY.value,
+                str(error_message or "Video generation failed"),
+                now,
+                task_id,
+                ContentPlanStatus.PUBLISHED.value,
+            ),
+        )
+    elif task_status in {
+        TaskStatus.EXTRACTING.value,
+        TaskStatus.DIGESTING.value,
+        TaskStatus.TITLING.value,
+        TaskStatus.SOURCING.value,
+        TaskStatus.TTS.value,
+        TaskStatus.AWAITING_REVIEW.value,
+        TaskStatus.COMPOSING.value,
+    }:
+        await db.execute(
+            """UPDATE content_plan_items
+               SET status = ?, publication_status = ?, error_message = NULL, updated_at = ?
+               WHERE task_id = ? AND status != ?""",
+            (
+                ContentPlanStatus.GENERATING.value,
+                PublicationStatus.NOT_READY.value,
+                now,
+                task_id,
+                ContentPlanStatus.PUBLISHED.value,
+            ),
+        )
+
+
+def _row_to_content_series(row: aiosqlite.Row) -> ContentSeriesResponse:
+    return ContentSeriesResponse(
+        id=row["id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        name=row["name"],
+        description=row["description"],
+        theme=row["theme"],
+        archived=bool(row["archived"]),
+        item_count=int(row["item_count"] if "item_count" in row.keys() else 0),
+    )
+
+
+def _row_to_content_plan_item(row: aiosqlite.Row) -> ContentPlanItemResponse:
+    return ContentPlanItemResponse(
+        id=row["id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        series_id=row["series_id"],
+        series_name=row["series_name"] if "series_name" in row.keys() else None,
+        title=row["title"],
+        brief=row["brief"],
+        episode_number=row["episode_number"],
+        generation_at=row["generation_at"],
+        publish_at=row["publish_at"],
+        platform=row["platform"],
+        auto_publish_requested=bool(row["auto_publish_requested"]),
+        status=row["status"],
+        publication_status=row["publication_status"],
+        task_config=TaskConfig(**json.loads(row["task_config_json"])),
+        task_id=row["task_id"],
+        published_at=row["published_at"],
+        publication_url=row["publication_url"],
+        reviewed_at=row["reviewed_at"],
+        error_message=row["error_message"],
+    )
+
+
+async def create_content_series(body: ContentSeriesCreate) -> ContentSeriesResponse:
+    series_id = new_content_id("series")
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO content_series
+           (id, created_at, updated_at, name, description, theme)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (series_id, now, now, body.name, body.description, body.theme),
+    )
+    await db.commit()
+    rows = await db.execute_fetchall(
+        "SELECT *, 0 AS item_count FROM content_series WHERE id = ?", (series_id,)
+    )
+    await db.close()
+    return _row_to_content_series(rows[0])
+
+
+async def list_content_series() -> list[ContentSeriesResponse]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT s.*, COUNT(i.id) AS item_count
+           FROM content_series s
+           LEFT JOIN content_plan_items i ON i.series_id = s.id
+           GROUP BY s.id
+           ORDER BY s.archived ASC, s.created_at ASC"""
+    )
+    await db.close()
+    return [_row_to_content_series(row) for row in rows]
+
+
+async def get_content_series(series_id: str, *, connection=None) -> ContentSeriesResponse | None:
+    db = connection or await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT s.*, COUNT(i.id) AS item_count
+           FROM content_series s
+           LEFT JOIN content_plan_items i ON i.series_id = s.id
+           WHERE s.id = ? GROUP BY s.id""",
+        (series_id,),
+    )
+    if connection is None:
+        await db.close()
+    return _row_to_content_series(rows[0]) if rows else None
+
+
+async def update_content_series(series_id: str, **values: object) -> ContentSeriesResponse | None:
+    allowed = {"name", "description", "theme", "archived"}
+    updates = {key: value for key, value in values.items() if key in allowed and value is not None}
+    db = await get_db()
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        sets = ", ".join(f"{key} = ?" for key in updates)
+        parameters = [int(value) if key == "archived" else value for key, value in updates.items()]
+        parameters.append(series_id)
+        await db.execute(f"UPDATE content_series SET {sets} WHERE id = ?", parameters)
+        if "name" in updates:
+            plan_rows = await db.execute_fetchall(
+                """SELECT i.id, i.title, i.episode_number, i.task_id
+                   FROM content_plan_items i WHERE i.series_id = ? AND i.task_id IS NOT NULL""",
+                (series_id,),
+            )
+            for row in plan_rows:
+                await db.execute(
+                    "UPDATE tasks SET origin_label = ?, updated_at = ? WHERE id = ?",
+                    (
+                        _plan_origin_label(str(updates["name"]), row["title"], row["episode_number"]),
+                        updates["updated_at"],
+                        row["task_id"],
+                    ),
+                )
+        await db.commit()
+    series = await get_content_series(series_id, connection=db)
+    await db.close()
+    return series
+
+
+def _plan_origin_label(series_name: str | None, title: str, episode_number: int | None) -> str:
+    if not series_name:
+        return f"Editorial plan · {title}"
+    episode = f" · EP {episode_number:02d}" if episode_number else ""
+    return f"{series_name}{episode} · {title}"
+
+
+async def _materialize_plan_task(
+    db: aiosqlite.Connection,
+    item_id: str,
+    body: ContentPlanItemCreate,
+    series_name: str | None,
+) -> TaskResponse:
+    return await create_task(
+        source_type="topic",
+        source_url=body.brief,
+        source_title=body.title,
+        config=body.task_config,
+        scheduled_at=body.generation_at,
+        origin_type="content_plan",
+        origin_id=item_id,
+        origin_label=_plan_origin_label(series_name, body.title, body.episode_number),
+        planned_publish_at=body.publish_at,
+        connection=db,
+    )
+
+
+async def create_content_plan_item(body: ContentPlanItemCreate) -> ContentPlanItemResponse:
+    item_id = new_content_id("plan")
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    try:
+        series = None
+        if body.series_id:
+            series = await get_content_series(body.series_id, connection=db)
+            if series is None:
+                raise ValueError("Series not found")
+        task = None
+        if body.generation_at:
+            task = await _materialize_plan_task(db, item_id, body, series.name if series else None)
+        await db.execute(
+            """INSERT INTO content_plan_items (
+                   id, created_at, updated_at, series_id, title, brief,
+                   episode_number, generation_at, publish_at, platform,
+                   auto_publish_requested, status, publication_status,
+                   task_config_json, task_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                item_id, now, now, body.series_id, body.title, body.brief,
+                body.episode_number, body.generation_at, body.publish_at, body.platform,
+                int(body.auto_publish_requested),
+                ContentPlanStatus.SCHEDULED.value if task else ContentPlanStatus.DRAFT.value,
+                PublicationStatus.NOT_READY.value,
+                body.task_config.model_dump_json(), task.id if task else None,
+            ),
+        )
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        await db.close()
+        raise
+    rows = await db.execute_fetchall(
+        """SELECT i.*, s.name AS series_name FROM content_plan_items i
+           LEFT JOIN content_series s ON s.id = i.series_id WHERE i.id = ?""",
+        (item_id,),
+    )
+    await db.close()
+    return _row_to_content_plan_item(rows[0])
+
+
+async def list_content_plan_items() -> list[ContentPlanItemResponse]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT i.*, s.name AS series_name FROM content_plan_items i
+           LEFT JOIN content_series s ON s.id = i.series_id
+           ORDER BY COALESCE(i.generation_at, '9999-12-31T23:59:59+00:00') ASC,
+                    i.created_at ASC"""
+    )
+    await db.close()
+    return [_row_to_content_plan_item(row) for row in rows]
+
+
+async def get_content_plan_item(item_id: str, *, connection=None) -> ContentPlanItemResponse | None:
+    db = connection or await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT i.*, s.name AS series_name FROM content_plan_items i
+           LEFT JOIN content_series s ON s.id = i.series_id WHERE i.id = ?""",
+        (item_id,),
+    )
+    if connection is None:
+        await db.close()
+    return _row_to_content_plan_item(rows[0]) if rows else None
+
+
+async def update_content_plan_item(
+    item_id: str,
+    body: ContentPlanItemCreate,
+) -> ContentPlanItemResponse | None:
+    db = await get_db()
+    try:
+        current = await get_content_plan_item(item_id, connection=db)
+        if current is None:
+            await db.close()
+            return None
+        series = None
+        if body.series_id:
+            series = await get_content_series(body.series_id, connection=db)
+            if series is None:
+                raise ValueError("Series not found")
+        task = await get_task(current.task_id) if current.task_id else None
+        if task and task.status != TaskStatus.QUEUED:
+            immutable_changed = any((
+                body.title != current.title,
+                body.brief != current.brief,
+                body.series_id != current.series_id,
+                body.episode_number != current.episode_number,
+                body.generation_at != current.generation_at,
+                body.task_config != current.task_config,
+            ))
+            if immutable_changed:
+                raise ValueError("Generation has started; source, series, configuration, and start time are locked")
+
+        task_id = current.task_id
+        status = current.status.value
+        publication_status = current.publication_status.value
+        if task and task.status == TaskStatus.QUEUED:
+            if body.generation_at:
+                await db.execute(
+                    """UPDATE tasks SET source_url = ?, source_title = ?, config_json = ?,
+                       scheduled_at = ?, origin_label = ?, planned_publish_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        body.brief, body.title, body.task_config.model_dump_json(),
+                        body.generation_at,
+                        _plan_origin_label(series.name if series else None, body.title, body.episode_number),
+                        body.publish_at, datetime.now(timezone.utc).isoformat(), task.id,
+                    ),
+                )
+                status = ContentPlanStatus.SCHEDULED.value
+            else:
+                await db.execute("DELETE FROM tasks WHERE id = ?", (task.id,))
+                task_id = None
+                status = ContentPlanStatus.DRAFT.value
+        elif task is None and body.generation_at:
+            created = await _materialize_plan_task(db, item_id, body, series.name if series else None)
+            task_id = created.id
+            status = ContentPlanStatus.SCHEDULED.value
+            publication_status = PublicationStatus.NOT_READY.value
+
+        await db.execute(
+            """UPDATE content_plan_items SET
+               series_id = ?, title = ?, brief = ?, episode_number = ?,
+               generation_at = ?, publish_at = ?, platform = ?,
+               auto_publish_requested = ?, task_config_json = ?, task_id = ?,
+               status = ?, publication_status = ?, updated_at = ?
+               WHERE id = ?""",
+            (
+                body.series_id, body.title, body.brief, body.episode_number,
+                body.generation_at, body.publish_at, body.platform,
+                int(body.auto_publish_requested), body.task_config.model_dump_json(), task_id,
+                status, publication_status, datetime.now(timezone.utc).isoformat(), item_id,
+            ),
+        )
+        await db.commit()
+    except BaseException:
+        await db.rollback()
+        await db.close()
+        raise
+    item = await get_content_plan_item(item_id, connection=db)
+    await db.close()
+    return item
+
+
+async def delete_content_plan_item(item_id: str) -> bool:
+    db = await get_db()
+    try:
+        item = await get_content_plan_item(item_id, connection=db)
+        if item is None:
+            return False
+        if item.task_id:
+            rows = await db.execute_fetchall("SELECT status FROM tasks WHERE id = ?", (item.task_id,))
+            if rows and rows[0]["status"] != TaskStatus.QUEUED.value:
+                raise ValueError("A plan whose generation has started cannot be deleted")
+            await db.execute("DELETE FROM tasks WHERE id = ?", (item.task_id,))
+        await db.execute("DELETE FROM content_plan_items WHERE id = ?", (item_id,))
+        await db.commit()
+        return True
+    except BaseException:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+
+async def approve_content_plan_item(item_id: str) -> ContentPlanItemResponse | None:
+    db = await get_db()
+    item = await get_content_plan_item(item_id, connection=db)
+    if item is None:
+        await db.close()
+        return None
+    if not item.task_id:
+        await db.close()
+        raise ValueError("This plan has no video task")
+    rows = await db.execute_fetchall("SELECT status FROM tasks WHERE id = ?", (item.task_id,))
+    if not rows or rows[0]["status"] != TaskStatus.COMPLETE.value:
+        await db.close()
+        raise ValueError("The video must finish before publication approval")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        """UPDATE content_plan_items SET status = ?, publication_status = ?,
+           reviewed_at = ?, updated_at = ? WHERE id = ?""",
+        (
+            ContentPlanStatus.READY.value,
+            PublicationStatus.APPROVED.value,
+            now, now, item_id,
+        ),
+    )
+    await db.commit()
+    result = await get_content_plan_item(item_id, connection=db)
+    await db.close()
+    return result
+
+
+async def record_manual_publication(
+    item_id: str,
+    publication_url: str | None,
+) -> ContentPlanItemResponse | None:
+    db = await get_db()
+    item = await get_content_plan_item(item_id, connection=db)
+    if item is None:
+        await db.close()
+        return None
+    if item.publication_status != PublicationStatus.APPROVED:
+        await db.close()
+        raise ValueError("Human approval is required before recording publication")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        """UPDATE content_plan_items SET status = ?, publication_status = ?,
+           published_at = ?, publication_url = ?, updated_at = ? WHERE id = ?""",
+        (
+            ContentPlanStatus.PUBLISHED.value,
+            PublicationStatus.PUBLISHED.value,
+            now, publication_url, now, item_id,
+        ),
+    )
+    await db.commit()
+    result = await get_content_plan_item(item_id, connection=db)
+    await db.close()
+    return result
 
 
 def _row_to_account_automation(row: aiosqlite.Row) -> AccountAutomationResponse:

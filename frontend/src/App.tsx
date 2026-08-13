@@ -6,11 +6,13 @@ import TaskDetail from './components/TaskDetail'
 import SettingsPage from './components/SettingsPage'
 import AccountOperations from './components/AccountOperations'
 import AccountRunDetail from './components/AccountRunDetail'
+import ContentPlanning from './components/ContentPlanning'
 import {
   IconTasks,
   IconNew,
   IconAdmin,
   IconAtlas,
+  IconCalendar,
   IconSun,
   IconMoon,
   IconMenu,
@@ -23,6 +25,7 @@ type Theme = 'light' | 'dark'
 const NAV = [
   { to: '/', label: 'Tasks', hint: 'Pipeline queue', Icon: IconTasks, end: true },
   { to: '/new', label: 'New Task', hint: 'Start a render', Icon: IconNew, end: false },
+  { to: '/planning', label: 'Content Plan', hint: 'Series & release calendar', Icon: IconCalendar, end: false },
   { to: '/account-operations', label: 'Account Ops', hint: 'Autonomous publishing', Icon: IconAtlas, end: false },
   { to: '/settings', label: 'Admin', hint: 'Models & prompts', Icon: IconAdmin, end: false },
 ]
@@ -41,6 +44,7 @@ type PageMeta = {
 function pageMeta(pathname: string): PageMeta {
   if (pathname === '/') return { title: 'Tasks', sub: 'Every podcast render in the pipeline', full: true, chrome: false }
   if (pathname === '/new') return { title: 'New Task', sub: 'Configure a podcast video run', full: true, chrome: false }
+  if (pathname === '/planning') return { title: 'Content Plan', sub: 'Editorial series and release calendar', full: true, chrome: false }
   if (pathname.startsWith('/tasks/')) return {
     title: 'Task Detail',
     sub: 'Stages, script review, and output',
@@ -215,6 +219,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<TaskList />} />
               <Route path="/new" element={<TaskForm />} />
+              <Route path="/planning" element={<ContentPlanning />} />
               <Route path="/tasks/:id" element={<TaskDetail />} />
               <Route path="/account-operations" element={<AccountOperations />} />
               <Route path="/account-operations/runs/:id" element={<AccountRunDetail />} />

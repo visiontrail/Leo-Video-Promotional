@@ -59,6 +59,10 @@ OPENCLI_TIMEOUT = int(os.getenv("OPENCLI_TIMEOUT", "180"))
 OPENCODE_BIN = os.getenv("OPENCODE_BIN", "opencode").strip() or "opencode"
 OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "600"))
 ACCOUNT_OPS_POLL_SECONDS = int(os.getenv("ACCOUNT_OPS_POLL_SECONDS", "10"))
+# Video publication is deliberately human-gated in the first production
+# phase. This process-wide kill switch must be enabled in addition to a plan
+# item's own opt-in before any future publishing adapter may run.
+VIDEO_AUTO_PUBLISH_ENABLED = _env_bool("VIDEO_AUTO_PUBLISH_ENABLED", "0")
 # ChatGPT image generation routinely takes longer than simple browser reads.
 THUMBNAIL_CHATGPT_TIMEOUT = int(os.getenv("THUMBNAIL_CHATGPT_TIMEOUT", "360"))
 # Collage stills run through ChatGPT Web; motion runs through Gemini Create

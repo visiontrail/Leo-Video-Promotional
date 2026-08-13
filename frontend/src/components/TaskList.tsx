@@ -103,6 +103,7 @@ export default function TaskList() {
                   <th scope="col">Title / Source</th>
                   <th scope="col">Status</th>
                   <th scope="col">Format</th>
+                  <th scope="col">Origin</th>
                   <th scope="col">Target</th>
                   <th scope="col">Start</th>
                   <th scope="col">Created</th>
@@ -131,7 +132,7 @@ export default function TaskList() {
                       <td>
                         <div className="task-source">
                           <span className={`source-glyph ${task.source_type}`} aria-hidden="true">
-                            {task.source_type === 'youtube' ? 'YT' : task.source_type.toUpperCase()}
+                            {task.source_type === 'youtube' ? 'YT' : task.source_type === 'topic' ? 'TP' : task.source_type.toUpperCase()}
                           </span>
                           <span className="task-source-copy">
                             <strong title={taskName(task)}>{taskName(task)}</strong>
@@ -141,6 +142,14 @@ export default function TaskList() {
                       </td>
                       <td><span className={`badge ${state}`}>{STATUS_LABELS[state] || state}</span></td>
                       <td><span className="table-value">{task.source_type.toUpperCase()}</span></td>
+                      <td>
+                        {task.origin_type === 'content_plan' ? (
+                          <span className="task-origin-cell">
+                            <strong>Content plan</strong>
+                            <small title={task.origin_label || ''}>{task.origin_label || task.origin_id}</small>
+                          </span>
+                        ) : <span className="table-muted">Manual</span>}
+                      </td>
                       <td><span className="table-value">{task.config.target_duration_minutes || '—'} min</span></td>
                       <td>
                         {parked ? (

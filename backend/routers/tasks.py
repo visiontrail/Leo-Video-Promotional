@@ -77,7 +77,7 @@ async def reschedule_task(task_id: str, body: TaskSchedule):
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
-    await db.update_task(task_id, scheduled_at=start_at)
+    await db.reschedule_task(task_id, start_at)
     return await db.get_task(task_id)
 
 
@@ -344,6 +344,8 @@ async def delete_task(task_id: str):
     task = await db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
+    if task.origin_type == "content_plan":
+        raise HTTPException(409, "Delete planned tasks from Content Plan to preserve provenance")
     if task.output_dir:
         out = Path(task.output_dir)
         if out.exists():

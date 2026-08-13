@@ -14,6 +14,7 @@ from backend.pipeline.orchestrator import (
     run_compose,
     run_footage_acquisition,
 )
+from backend.publishing import run_auto_publish_pipeline
 
 # A queued task carrying this marker file in its output dir should re-run only
 # the TTS stage (from an edited script) rather than the full pipeline.
@@ -126,6 +127,12 @@ async def _worker_loop():
                     else:
                         await run_pipeline(task, log=lambda message: publish_task_log(task.id, message))
                     refreshed = await get_task(task.id)
+                    if refreshed and refreshed.status == TaskStatus.COMPLETE:
+                        publication = await run_auto_publish_pipeline(refreshed)
+                        _persist_and_publish(
+                            refreshed,
+                            f"Publication pipeline: {publication.action} — {publication.reason}",
+                        )
                     finish_task_logs(task.id, refreshed.status.value if refreshed else TaskStatus.COMPLETE.value)
                 except Exception as e:
                     logger.error(f"Task {task.id} failed: {e}\n{traceback.format_exc()}")
@@ -133,7 +140,9 @@ async def _worker_loop():
                     await update_task(task.id, status=TaskStatus.FAILED.value, error_message=str(e))
                     finish_task_logs(task.id, TaskStatus.FAILED.value)
             else:
-                await asyncio.sleep(3)
+                # Keep the clock-to-execution gap tight for scheduled plans.
+                # Due scheduled tasks are also prioritized by the database.
+                await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"Worker error: {e}\n{traceback.format_exc()}")
             await asyncio.sleep(5)

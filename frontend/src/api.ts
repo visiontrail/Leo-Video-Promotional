@@ -63,7 +63,7 @@ export interface Task {
   id: string;
   created_at: string;
   updated_at: string;
-  source_type: 'youtube' | 'epub' | 'pdf';
+  source_type: 'topic' | 'youtube' | 'epub' | 'pdf';
   source_url: string | null;
   source_title: string | null;
   generated_title: string | null;
@@ -78,6 +78,65 @@ export interface Task {
   video_path: string | null;
   thumbnail_path: string | null;
   duration_seconds: number | null;
+  origin_type: 'manual' | 'content_plan';
+  origin_id: string | null;
+  origin_label: string | null;
+  planned_publish_at: string | null;
+}
+
+export type ContentPlanStatus = 'draft' | 'scheduled' | 'generating' | 'review' | 'ready' | 'published' | 'failed' | 'cancelled';
+export type PublicationStatus = 'not_ready' | 'awaiting_review' | 'approved' | 'published' | 'failed';
+
+export interface ContentSeries {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  name: string;
+  description: string;
+  theme: string;
+  archived: boolean;
+  item_count: number;
+}
+
+export interface ContentPlanItem {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  series_id: string | null;
+  series_name: string | null;
+  title: string;
+  brief: string;
+  episode_number: number | null;
+  generation_at: string | null;
+  publish_at: string | null;
+  platform: string;
+  auto_publish_requested: boolean;
+  status: ContentPlanStatus;
+  publication_status: PublicationStatus;
+  task_config: TaskConfig;
+  task_id: string | null;
+  published_at: string | null;
+  publication_url: string | null;
+  reviewed_at: string | null;
+  error_message: string | null;
+}
+
+export interface ContentPlanningStatus {
+  auto_publish_enabled: boolean;
+  publication_mode: 'automatic' | 'human_review';
+  scheduler: 'video_task_queue';
+}
+
+export interface ContentPlanInput {
+  series_id?: string | null;
+  title: string;
+  brief: string;
+  episode_number?: number | null;
+  generation_at?: string | null;
+  publish_at?: string | null;
+  platform?: string;
+  auto_publish_requested?: boolean;
+  task_config?: TaskConfig;
 }
 
 export interface FootageQuery {
@@ -313,6 +372,64 @@ export async function scheduleTask(taskId: string, scheduledAt: string | null): 
 
 export async function deleteTask(id: string): Promise<void> {
   await fetch(`${BASE}/api/tasks/${id}`, { method: 'DELETE' });
+}
+
+// ── Editorial content planning ─────────────────────────────────────
+async function planningRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}/api/content-planning${path}`, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
+  })
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null) as { detail?: string } | null
+    throw new Error(payload?.detail ?? `Request failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function fetchContentPlanningStatus(): Promise<ContentPlanningStatus> {
+  return planningRequest('/status')
+}
+
+export async function fetchContentSeries(): Promise<ContentSeries[]> {
+  const data = await planningRequest<{ series: ContentSeries[] }>('/series')
+  return data.series
+}
+
+export async function createContentSeries(input: Pick<ContentSeries, 'name' | 'description' | 'theme'>): Promise<ContentSeries> {
+  return planningRequest('/series', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function updateContentSeries(id: string, input: Partial<Pick<ContentSeries, 'name' | 'description' | 'theme' | 'archived'>>): Promise<ContentSeries> {
+  return planningRequest(`/series/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export async function fetchContentPlanItems(): Promise<ContentPlanItem[]> {
+  const data = await planningRequest<{ items: ContentPlanItem[] }>('/items')
+  return data.items
+}
+
+export async function createContentPlanItem(input: ContentPlanInput): Promise<ContentPlanItem> {
+  return planningRequest('/items', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function updateContentPlanItem(id: string, input: Partial<ContentPlanInput>): Promise<ContentPlanItem> {
+  return planningRequest(`/items/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export async function deleteContentPlanItem(id: string): Promise<void> {
+  await planningRequest(`/items/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function approveContentPlanItem(id: string): Promise<ContentPlanItem> {
+  return planningRequest(`/items/${encodeURIComponent(id)}/approve`, { method: 'POST' })
+}
+
+export async function recordContentPlanPublication(id: string, publicationUrl: string | null): Promise<ContentPlanItem> {
+  return planningRequest(`/items/${encodeURIComponent(id)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ publication_url: publicationUrl }),
+  })
 }
 
 export async function fetchSettings(): Promise<Settings> {

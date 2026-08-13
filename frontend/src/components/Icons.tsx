@@ -51,6 +51,15 @@ export function IconAtlas(p: P) {
   )
 }
 
+export function IconCalendar(p: P) {
+  return (
+    <svg {...base} {...p}>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M8 3v4M16 3v4M3 10h18M8 14h2M14 14h2M8 18h2" />
+    </svg>
+  )
+}
+
 export function IconSun(p: P) {
   return (
     <svg {...base} {...p}>

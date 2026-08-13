@@ -144,6 +144,12 @@ GROUPS: tuple[SettingGroup, ...] = (
         "the signed-in project-local OpenCLI web sessions.",
     ),
     SettingGroup(
+        "publication",
+        "Video Publication",
+        "Safety controls for post-production delivery. Automatic publication "
+        "requires this global switch and an explicit opt-in on the individual plan.",
+    ),
+    SettingGroup(
         "paths",
         "Paths & Storage",
         "Where the app reads and writes. Relative paths resolve under the "
@@ -152,6 +158,12 @@ GROUPS: tuple[SettingGroup, ...] = (
 )
 
 SPECS: tuple[SettingSpec, ...] = (
+    SettingSpec(
+        "VIDEO_AUTO_PUBLISH_ENABLED", "publication", "Enable automatic publication", "bool",
+        description="Master safety switch for the future video publishing adapter. "
+                    "It is off by default; with it off every finished plan waits for "
+                    "human review and a manually recorded publication.",
+    ),
     # ── AI engine ────────────────────────────────────────────────────────
     SettingSpec(
         "AI_BACKEND", "ai", "Backend", "choice",

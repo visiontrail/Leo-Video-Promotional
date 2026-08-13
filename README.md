@@ -186,6 +186,28 @@ ceiling. Before video direction or rendering, the Whisper/script alignment is
 a hard completeness gate: low word, line, or audio coverage stops the task
 instead of turning incomplete narration into a short final video.
 
+## Editorial content planning and publication review
+
+**Content Plan** is the editorial runway for future videos. A series groups a
+durable theme (a country, region, historical question, or any recurring lens),
+while each planned video stores a working title, editorial brief, episode
+number, generation time, target publication time, and destination.
+
+Saving a generation time transactionally creates a real video task. The task's
+`scheduled_at` is the plan's UTC generation time, and its `origin_type`,
+`origin_id`, and `origin_label` keep the relationship visible in the Tasks
+ledger and task detail page. Moving a queued task updates both clocks in one
+transaction. Topic briefs use the `topic` extractor, then enter the existing
+digest, script, title, TTS, and render pipeline.
+
+Finished planned videos always enter publication review. An editor must approve
+the result and record the manual publication (optionally with its live URL).
+The future automatic publication dispatcher is protected by two gates:
+`VIDEO_AUTO_PUBLISH_ENABLED=0` by default, plus a per-plan opt-in. No platform
+publisher is registered in this phase, so enabling only the master switch still
+cannot publish a video. The master switch is also visible under **Admin →
+System → Video Publication**.
+
 ## Video orientation and paper-collage B-roll
 
 Each new task has one final-video orientation: **16:9 landscape** (default) or **9:16 portrait**.

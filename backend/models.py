@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SourceType(str, Enum):
+    TOPIC = "topic"
     YOUTUBE = "youtube"
     EPUB = "epub"
     PDF = "pdf"
@@ -141,6 +142,12 @@ class TaskResponse(BaseModel):
     video_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
     duration_seconds: Optional[float] = None
+    # Provenance is first-class: manually created tasks remain distinguishable
+    # from tasks materialized by the editorial planning system.
+    origin_type: Literal["manual", "content_plan"] = "manual"
+    origin_id: Optional[str] = None
+    origin_label: Optional[str] = None
+    planned_publish_at: Optional[str] = None
 
 
 class TaskListResponse(BaseModel):
@@ -153,6 +160,158 @@ class ScriptUpdate(BaseModel):
 
 class FootageAcquireRequest(BaseModel):
     queries: list[str] = Field(default_factory=list, max_length=6)
+
+
+class ContentPlanStatus(str, Enum):
+    DRAFT = "draft"
+    SCHEDULED = "scheduled"
+    GENERATING = "generating"
+    REVIEW = "review"
+    READY = "ready"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class PublicationStatus(str, Enum):
+    NOT_READY = "not_ready"
+    AWAITING_REVIEW = "awaiting_review"
+    APPROVED = "approved"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+class ContentSeriesCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=3000)
+    theme: str = Field(default="", max_length=120)
+
+    @field_validator("name", "description", "theme")
+    @classmethod
+    def strip_series_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class ContentSeriesUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=3000)
+    theme: Optional[str] = Field(default=None, max_length=120)
+    archived: Optional[bool] = None
+
+    @field_validator("name", "description", "theme")
+    @classmethod
+    def strip_series_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class ContentSeriesResponse(BaseModel):
+    id: str
+    created_at: str
+    updated_at: str
+    name: str
+    description: str = ""
+    theme: str = ""
+    archived: bool = False
+    item_count: int = 0
+
+
+class ContentSeriesListResponse(BaseModel):
+    series: list[ContentSeriesResponse]
+
+
+class _ContentPlanItemFields(BaseModel):
+    series_id: Optional[str] = None
+    title: str = Field(min_length=1, max_length=180)
+    brief: str = Field(min_length=10, max_length=12000)
+    episode_number: Optional[int] = Field(default=None, ge=1, le=10000)
+    generation_at: Optional[str] = None
+    publish_at: Optional[str] = None
+    platform: str = Field(default="manual", min_length=1, max_length=80)
+    auto_publish_requested: bool = False
+    task_config: TaskConfig = Field(default_factory=TaskConfig)
+
+    @field_validator("series_id", "title", "brief", "platform")
+    @classmethod
+    def strip_item_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("generation_at", "publish_at")
+    @classmethod
+    def normalize_item_schedule(cls, value: str | None) -> str | None:
+        return normalize_schedule(value)
+
+    @model_validator(mode="after")
+    def validate_timeline(self):
+        if self.generation_at and self.publish_at:
+            generation = datetime.fromisoformat(self.generation_at)
+            publication = datetime.fromisoformat(self.publish_at)
+            if publication <= generation:
+                raise ValueError("Publication time must be after generation time")
+        return self
+
+
+class ContentPlanItemCreate(_ContentPlanItemFields):
+    pass
+
+
+class ContentPlanItemUpdate(BaseModel):
+    series_id: Optional[str] = None
+    title: Optional[str] = Field(default=None, min_length=1, max_length=180)
+    brief: Optional[str] = Field(default=None, min_length=10, max_length=12000)
+    episode_number: Optional[int] = Field(default=None, ge=1, le=10000)
+    generation_at: Optional[str] = None
+    publish_at: Optional[str] = None
+    platform: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    auto_publish_requested: Optional[bool] = None
+    task_config: Optional[TaskConfig] = None
+
+    @field_validator("series_id", "title", "brief", "platform")
+    @classmethod
+    def strip_item_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("generation_at", "publish_at")
+    @classmethod
+    def normalize_item_schedule(cls, value: str | None) -> str | None:
+        return normalize_schedule(value)
+
+
+class ContentPlanItemResponse(BaseModel):
+    id: str
+    created_at: str
+    updated_at: str
+    series_id: Optional[str] = None
+    series_name: Optional[str] = None
+    title: str
+    brief: str
+    episode_number: Optional[int] = None
+    generation_at: Optional[str] = None
+    publish_at: Optional[str] = None
+    platform: str
+    auto_publish_requested: bool = False
+    status: ContentPlanStatus
+    publication_status: PublicationStatus
+    task_config: TaskConfig
+    task_id: Optional[str] = None
+    published_at: Optional[str] = None
+    publication_url: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class ContentPlanItemListResponse(BaseModel):
+    items: list[ContentPlanItemResponse]
+
+
+class ManualPublicationRecord(BaseModel):
+    publication_url: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("publication_url")
+    @classmethod
+    def strip_publication_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 class ProviderCreate(BaseModel):
@@ -495,6 +654,10 @@ class AccountOpsStatusResponse(BaseModel):
 
 def new_task_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+
+
+def new_content_id(prefix: str) -> str:
+    return f"{prefix}-" + uuid.uuid4().hex[:12]
 
 
 def new_account_id(prefix: str) -> str:

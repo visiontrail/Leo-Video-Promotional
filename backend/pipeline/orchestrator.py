@@ -11,6 +11,7 @@ from backend.pipeline.extractors.youtube import extract_youtube
 from backend.pipeline.extractors.epub import extract_epub
 from backend.pipeline.extractors.epub_curated import extract_epub_curated
 from backend.pipeline.extractors.pdf import extract_pdf
+from backend.pipeline.extractors.topic import extract_topic
 from backend.pipeline.digester import summarize, generate_script
 from backend.pipeline.tts import generate_tts
 from backend.pipeline.composer import compose_video
@@ -169,7 +170,9 @@ async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
     task_log(f"Stage 1: Extracting from {task.source_type}")
     await update_task(task.id, status=TaskStatus.EXTRACTING.value)
 
-    if task.source_type == "epub" and task.config.processing_mode == "curated_highlights":
+    if task.source_type == "topic":
+        content = await extract_topic(task.source_title, task.source_url, log=task_log)
+    elif task.source_type == "epub" and task.config.processing_mode == "curated_highlights":
         content = await extract_epub_curated(task.source_url, str(task_dir / "isla_reader"), log=task_log)
     elif task.source_type == "youtube":
         content = await extract_youtube(task.source_url, log=task_log)
