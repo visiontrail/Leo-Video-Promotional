@@ -69,6 +69,18 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "One two three. Four five six. Seven eight.",
         )
 
+    def test_split_tts_text_moves_dangling_word_to_next_chunk(self):
+        text = "One two three four five the six seven eight."
+
+        chunks = tts._split_tts_text(text, max_words=6)
+
+        self.assertEqual(chunks, ["One two three four five", "the six seven eight."])
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+    def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
+        self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
+        self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
+
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}
 
@@ -328,7 +340,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             posts = [request for request in requests if request.method == "POST"]
             self.assertGreater(len(posts), 1)
             submitted_text = " ".join(
-                json.loads(request.content)["input"] for request in posts
+                json.loads(request.content)["input"].rstrip(".") for request in posts
             )
             self.assertEqual(submitted_text, script.read_text())
             self.assertEqual(
@@ -397,6 +409,19 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         words = [
             {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
             for index, word in enumerate(expected.rstrip(".").split())
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
+    def test_orpheus_transcript_normalizes_numeric_ordinals(self):
+        expected = "A scrap of land one-thirtieth the size."
+        spoken = "A scrap of land 1 30th the size".split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(spoken)
         ]
 
         report = tts._orpheus_transcript_report(expected, words)

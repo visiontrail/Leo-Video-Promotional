@@ -38,7 +38,7 @@ ORPHEUS_AUDIO_TOKENS_PER_SECOND = 7 * 24_000 / 2_048
 ORPHEUS_CHUNK_MIN_WPM = 90
 ORPHEUS_CHUNK_SAFETY = 0.80
 ORPHEUS_TOKEN_LIMIT_RATIO = 0.97
-ORPHEUS_MIN_EXACT_ASR_COVERAGE = 0.85
+ORPHEUS_MIN_EXACT_ASR_COVERAGE = 1.0
 ORPHEUS_MIN_ASR_WORD_RATIO = 0.75
 ORPHEUS_MAX_ASR_WORD_RATIO = 1.25
 ORPHEUS_EDGE_ANCHOR_WORDS = 3
@@ -53,6 +53,16 @@ NUMBER_WORDS = {
     "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80",
     "ninety": "90",
 }
+ORDINAL_DIGITS = {
+    "1st": "first", "2nd": "second", "3rd": "third", "4th": "fourth",
+    "5th": "fifth", "6th": "sixth", "7th": "seventh", "8th": "eighth",
+    "9th": "ninth", "10th": "tenth", "20th": "twentieth", "30th": "thirtieth",
+}
+DANGLING_CHUNK_WORDS = {
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+    "into", "nor", "of", "on", "or", "the", "to", "with",
+}
+TERMINAL_SPEECH_PUNCTUATION_RE = re.compile(r"[.!?。！？][\"'’”)]*\s*$")
 
 
 class TtsIntegrityError(RuntimeError):
@@ -95,7 +105,7 @@ def _lexical_tokens(text: str) -> list[str]:
         # the adjacent normalized number remains the acoustic anchor.
         if value == "percent":
             continue
-        normalized.append(NUMBER_WORDS.get(value, value))
+        normalized.append(ORDINAL_DIGITS.get(value, NUMBER_WORDS.get(value, value)))
     return normalized
 
 
@@ -182,8 +192,16 @@ def _split_tts_text(
         for sentence in SENTENCE_BOUNDARY_RE.split(content):
             words = sentence.strip().split()
             while words:
-                piece = " ".join(words[:max_words])
-                words = words[max_words:]
+                take = min(max_words, len(words))
+                while (
+                    take > 1
+                    and take < len(words)
+                    and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
+                    in DANGLING_CHUNK_WORDS
+                ):
+                    take -= 1
+                piece = " ".join(words[:take])
+                words = words[take:]
                 units.append(f"{speaker_label} {piece}".strip())
 
     chunks: list[str] = []
@@ -402,6 +420,12 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
         expected_seconds * ORPHEUS_AUDIO_TOKENS_PER_SECOND / ORPHEUS_CHUNK_SAFETY
     )
     return min(maximum, max(ORPHEUS_MIN_REQUEST_TOKENS, estimated))
+
+
+def _orpheus_prompt_text(text: str) -> str:
+    """Give every short LM request an explicit speech termination boundary."""
+    stripped = text.rstrip()
+    return stripped if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped) else stripped + "."
 
 
 def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
@@ -641,7 +665,7 @@ async def _generate_orpheus(
 
             request_token_budget = _orpheus_request_token_budget(chunk, token_budget)
             payload = {
-                "input": input_path.read_text(encoding="utf-8"),
+                "input": _orpheus_prompt_text(input_path.read_text(encoding="utf-8")),
                 "language": language,
                 "voice_id": voice,
                 "max_tokens": request_token_budget,
