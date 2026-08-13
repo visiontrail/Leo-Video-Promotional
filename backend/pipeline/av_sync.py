@@ -7,10 +7,12 @@ rendered WAV to word timestamps, caches the result next to the task, and lets
 ``storyboard`` force-align the canonical script to that acoustic clock.
 
 MLX Whisper is used on Apple Silicon because it is fast and can reuse the
-operator's Hugging Face cache. It is a post-TTS analyzer only: Microsoft
-The selected TTS model remains the narration source. If bounded transcription retries are
-exhausted, the caller receives a warning result and continues with estimated
-timing; HyperFrames is not used for transcription.
+operator's Hugging Face cache. It is a post-TTS analyzer only: the selected TTS
+model remains the narration source. If bounded transcription
+retries are exhausted, the caller receives a warning result and continues with
+estimated timing. If a transcript is available but covers too little of the
+script/audio, the composer blocks rendering as an incomplete narration;
+HyperFrames is not used for transcription.
 """
 
 from __future__ import annotations

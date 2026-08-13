@@ -57,6 +57,36 @@ RENDER_TIMEOUT_FLOOR = 900  # never below 15 min, regardless of how short the cl
 RENDER_STALL_TIMEOUT = 600
 
 
+def _narration_completeness_failures(alignment: dict) -> list[str]:
+    """Return only alignment failures that imply missing spoken content.
+
+    Boundary uncertainty can make captions less precise, but low word/line/audio
+    coverage means the WAV cannot represent the full script. That distinction
+    lets rendering remain available when timing is merely approximate while
+    failing closed on the one-minute-from-a-ten-minute-script failure mode.
+    """
+    if alignment.get("method") != "whisper_script_forced_alignment":
+        return []
+    failures = []
+    minimum_word_coverage = config.AV_SYNC_MIN_WORD_COVERAGE_PERCENT / 100
+    if float(alignment.get("word_coverage") or 0) < minimum_word_coverage:
+        failures.append(
+            f"matched-word coverage {float(alignment.get('word_coverage') or 0):.1%} "
+            f"is below {minimum_word_coverage:.1%}"
+        )
+    if float(alignment.get("line_coverage") or 0) < 0.75:
+        failures.append(
+            f"matched-line coverage {float(alignment.get('line_coverage') or 0):.1%} "
+            "is below 75.0%"
+        )
+    if float(alignment.get("audio_coverage") or 0) < 0.80:
+        failures.append(
+            f"transcript covers only {float(alignment.get('audio_coverage') or 0):.1%} "
+            "of the audio"
+        )
+    return failures
+
+
 def _detect_silence_boundaries(wav_path: str, log: LogCallback | None = None) -> list[float]:
     command = [
         "ffmpeg", "-i", wav_path,
@@ -315,6 +345,14 @@ async def compose_video(
     if transcription.get("failure_reasons"):
         board["alignment"]["transcription_failures"] = transcription["failure_reasons"]
     sb.write_storyboard(output_dir_path, board)
+    completeness_failures = _narration_completeness_failures(board["alignment"])
+    if completeness_failures:
+        detail = "; ".join(completeness_failures)
+        emit(f"Narration integrity failed; video render blocked: {detail}")
+        raise RuntimeError(
+            "Narration audio does not cover the full script; refusing to render "
+            f"a truncated video. {detail}"
+        )
     if board["alignment"].get("passed"):
         emit(
             "A/V sync timing: "

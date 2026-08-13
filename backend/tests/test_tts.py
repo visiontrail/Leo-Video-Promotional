@@ -1,5 +1,8 @@
+import io
+import json
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +10,20 @@ import httpx
 
 from backend import config
 from backend.pipeline import tts
+
+
+def wav_bytes(*, frames: int = 24_000, sample_rate: int = 24_000) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(b"\0\0" * frames)
+    return buffer.getvalue()
+
+
+def write_wav(path: Path, *, frames: int = 24_000, sample_rate: int = 24_000) -> None:
+    path.write_bytes(wav_bytes(frames=frames, sample_rate=sample_rate))
 
 
 class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
@@ -18,6 +35,26 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, ["One two three.\nFour five.", "Six seven eight."])
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_repeats_dialogue_metadata_without_repeating_words(self):
+        text = "Speaker 1: One two three. Four five six.\nSpeaker 2: Seven eight."
+
+        chunks = tts._split_tts_text(
+            text, max_words=4, preserve_speaker_labels=True
+        )
+
+        self.assertEqual(
+            chunks,
+            [
+                "Speaker 1: One two three.",
+                "Speaker 1: Four five six.",
+                "Speaker 2: Seven eight.",
+            ],
+        )
+        self.assertEqual(
+            " ".join(tts._strip_speaker_labels("\n".join(chunks)).split()),
+            "One two three. Four five six. Seven eight.",
+        )
+
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}
 
@@ -26,7 +63,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             command = kwargs["command"][2]
             output_dir = Path(command.split('--output_dir "', 1)[1].split('"', 1)[0])
             input_path = Path(command.split('--txt_path "', 1)[1].split('"', 1)[0])
-            (output_dir / f"{input_path.stem}_generated.wav").write_bytes(b"wav")
+            write_wav(output_dir / f"{input_path.stem}_generated.wav", frames=10)
             return 0, ""
 
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
@@ -88,7 +125,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             command = kwargs["command"][2]
             output_dir = Path(command.split('--output_dir "', 1)[1].split('"', 1)[0])
             input_path = Path(command.split('--txt_path "', 1)[1].split('"', 1)[0])
-            (output_dir / f"{input_path.stem}_generated.wav").write_bytes(b"wav")
+            write_wav(output_dir / f"{input_path.stem}_generated.wav", frames=10)
             return 0, ""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -125,13 +162,10 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_stream_subprocess(**kwargs):
             calls.append(kwargs)
-            if kwargs["name"] == "TTS concat":
-                Path(kwargs["command"][-1]).write_bytes(b"joined wav")
-                return 0, ""
             command = kwargs["command"][2]
             output_dir = Path(command.split('--output_dir "', 1)[1].split('"', 1)[0])
             input_path = Path(command.split('--txt_path "', 1)[1].split('"', 1)[0])
-            (output_dir / f"{input_path.stem}_generated.wav").write_bytes(b"wav")
+            write_wav(output_dir / f"{input_path.stem}_generated.wav", frames=10)
             return 0, ""
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -151,7 +185,8 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.dict(config.TTS_MODELS, {"test-model": runtime}, clear=True),
-                patch.object(config, "TTS_CHUNK_WORDS", 3),
+                patch.object(config, "VIBEVOICE_TTS_CHUNK_WORDS", 3),
+                patch.object(config, "TTS_RANDOM_SEED", 42),
                 patch.object(tts, "stream_subprocess", fake_stream_subprocess),
             ):
                 result = await tts.generate_tts(
@@ -161,15 +196,19 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                     tts_model="test-model",
                 )
 
-            self.assertEqual(Path(result).read_bytes(), b"joined wav")
+            self.assertEqual(tts._read_pcm_wav(Path(result)).frame_count, 30)
             self.assertEqual(
                 (root / "audio" / "tts_input.txt").read_text(),
                 script_path.read_text(),
             )
             self.assertEqual(
                 [call["name"] for call in calls],
-                ["TTS part 1/3", "TTS part 2/3", "TTS part 3/3", "TTS concat"],
+                ["TTS part 1/3", "TTS part 2/3", "TTS part 3/3"],
             )
+            self.assertIn("tts_seeded_runner.py", calls[0]["command"][2])
+            manifest = json.loads((root / "audio" / "tts_manifest.json").read_text())
+            self.assertEqual(manifest["chunk_count"], 3)
+            self.assertEqual(manifest["output_wav"]["frame_count"], 30)
             self.assertEqual(
                 [
                     len(path.read_text().split())
@@ -188,7 +227,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             if request.method == "POST":
                 return httpx.Response(202, json={"id": "job-1", "status": "queued"})
             if request.url.path.endswith("/audio"):
-                return httpx.Response(200, content=b"RIFF" + b"0" * 64)
+                return httpx.Response(200, content=wav_bytes())
             return httpx.Response(200, json={"id": "job-1", "status": "completed"})
 
         original_client = httpx.AsyncClient
@@ -208,10 +247,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                     str(script), str(root / "audio"), ["tara"], "orpheus-en"
                 )
 
-            self.assertEqual(Path(result).read_bytes(), b"RIFF" + b"0" * 64)
+            self.assertEqual(tts._read_pcm_wav(Path(result)).duration_seconds, 1.0)
             submitted = __import__("json").loads(requests[0].content)
             self.assertEqual(submitted["voice_id"], "tara")
             self.assertEqual(submitted["input"], "Remote narration.")
+            self.assertEqual(submitted["temperature"], 0.0)
+            self.assertEqual(submitted["top_p"], 1.0)
+            self.assertEqual(submitted["top_k"], 0)
+            self.assertEqual(submitted["min_p"], 0.0)
             self.assertEqual(requests[0].headers["X-API-Key"], "test-secret")
             self.assertEqual(
                 [request.url.path for request in requests],
@@ -221,6 +264,80 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                     "/v1/audio/jobs/job-1/audio",
                 ],
             )
+
+    async def test_orpheus_uses_token_budget_chunks_and_lossless_join(self):
+        requests = []
+        audio = wav_bytes(frames=1_000)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                job_id = f"job-{sum(r.method == 'POST' for r in requests)}"
+                return httpx.Response(202, json={"id": job_id})
+            if request.url.path.endswith("/audio"):
+                return httpx.Response(200, content=audio)
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text(" ".join(f"word{i}" for i in range(20)))
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "ORPHEUS_TTS_MAX_TOKENS", 512),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(
+                    tts,
+                    "_validate_wav_part",
+                    side_effect=lambda path, *_args, **_kwargs: tts._read_pcm_wav(path),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                )
+
+            posts = [request for request in requests if request.method == "POST"]
+            self.assertGreater(len(posts), 1)
+            submitted_text = " ".join(
+                json.loads(request.content)["input"] for request in posts
+            )
+            self.assertEqual(submitted_text, script.read_text())
+            self.assertEqual(
+                tts._read_pcm_wav(Path(result)).frame_count,
+                len(posts) * 1_000,
+            )
+            manifest = json.loads((root / "audio" / "tts_manifest.json").read_text())
+            self.assertEqual(manifest["source_word_count"], 20)
+            self.assertEqual(manifest["chunk_count"], len(posts))
+
+    def test_rejects_orpheus_audio_that_reaches_token_ceiling(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "part.wav"
+            token_seconds = 2_048 / tts.ORPHEUS_AUDIO_TOKENS_PER_SECOND
+            write_wav(path, frames=int(token_seconds * 24_000))
+
+            with self.assertRaisesRegex(tts.TtsIntegrityError, "max-token ceiling"):
+                tts._validate_wav_part(
+                    path,
+                    "short input",
+                    token_limit_seconds=token_seconds,
+                )
+
+    async def test_lossless_join_rejects_format_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "first.wav"
+            second = root / "second.wav"
+            write_wav(first, frames=10, sample_rate=24_000)
+            write_wav(second, frames=10, sample_rate=16_000)
+
+            with self.assertRaisesRegex(tts.TtsIntegrityError, "format changed"):
+                await tts._concat_wav_parts([first, second], root, log=None)
 
     async def test_orpheus_requires_api_key_before_network(self):
         with tempfile.TemporaryDirectory() as temp_dir:

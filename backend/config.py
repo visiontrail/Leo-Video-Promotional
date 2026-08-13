@@ -134,11 +134,14 @@ TTS_DEVICE = os.getenv("TTS_DEVICE", "mps")
 # whatever the elapsed time. TTS_TIMEOUT is only a coarse backstop.
 TTS_TIMEOUT = int(os.getenv("TTS_TIMEOUT", str(6 * 3600)))
 TTS_STALL_TIMEOUT = int(os.getenv("TTS_STALL_TIMEOUT", "600"))
-# Bound each inference context on Apple MPS. The realtime model's decode cost
-# can become superlinear late in a long, single request even while it continues
-# printing progress, so the silence watchdog alone cannot detect the failure.
-# Zero disables chunking for diagnosis or accelerator-specific tuning.
-TTS_CHUNK_WORDS = int(os.getenv("TTS_CHUNK_WORDS", "350"))
+# VibeVoice's decode cost can become superlinear late in a long Apple-MPS
+# request. This limit applies only to local VibeVoice; Orpheus derives its own
+# smaller/larger chunk size from the configured audio-token budget. Keep the old
+# env name as a compatibility seed for machines that already set it.
+VIBEVOICE_TTS_CHUNK_WORDS = int(
+    os.getenv("VIBEVOICE_TTS_CHUNK_WORDS", os.getenv("TTS_CHUNK_WORDS", "350"))
+)
+TTS_RANDOM_SEED = int(os.getenv("TTS_RANDOM_SEED", "42"))
 
 TTS_DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "vibevoice-0.5b")
 TTS_DEFAULT_VOICE_1 = os.getenv("TTS_DEFAULT_VOICE_1", "Carter")
@@ -149,7 +152,10 @@ TTS_DEFAULT_VOICE_2 = os.getenv("TTS_DEFAULT_VOICE_2", "Alice")
 ORPHEUS_TTS_URL = os.getenv("ORPHEUS_TTS_URL", "http://10.60.11.3:8088").rstrip("/")
 ORPHEUS_TTS_API_KEY = os.getenv("ORPHEUS_TTS_API_KEY", "")
 ORPHEUS_TTS_SPEED_PERCENT = int(os.getenv("ORPHEUS_TTS_SPEED_PERCENT", "100"))
-ORPHEUS_TTS_MAX_TOKENS = int(os.getenv("ORPHEUS_TTS_MAX_TOKENS", "2048"))
+# 16,384 is the current external service maximum. The client converts this
+# audio-token budget to a conservative word count for each lossless chunk;
+# sending 350 words with the old 2,048 default could only produce ~25 seconds.
+ORPHEUS_TTS_MAX_TOKENS = int(os.getenv("ORPHEUS_TTS_MAX_TOKENS", "16384"))
 ORPHEUS_TTS_N_THREADS = int(os.getenv("ORPHEUS_TTS_N_THREADS", "64"))
 ORPHEUS_TTS_POLL_SECONDS = int(os.getenv("ORPHEUS_TTS_POLL_SECONDS", "2"))
 ORPHEUS_TTS_REQUEST_TIMEOUT = int(os.getenv("ORPHEUS_TTS_REQUEST_TIMEOUT", "60"))
@@ -157,7 +163,8 @@ ORPHEUS_TTS_REQUEST_TIMEOUT = int(os.getenv("ORPHEUS_TTS_REQUEST_TIMEOUT", "60")
 # Audio/visual alignment. MLX Whisper reads the finished WAV from whichever TTS
 # provider the task selected to obtain word timestamps; it never generates or
 # replaces speech. Alignment is
-# advisory: after bounded retries the renderer continues and records a warning.
+# advisory when transcription is unavailable, but measured low script/audio
+# coverage is a hard completeness failure and blocks video rendering.
 AV_SYNC_LANGUAGE = os.getenv("AV_SYNC_LANGUAGE", "en").strip() or "en"
 AV_SYNC_MLX_MODEL = os.getenv(
     "AV_SYNC_MLX_MODEL", "mlx-community/whisper-large-v3-turbo-q4"
@@ -231,6 +238,7 @@ def _build_tts_models(root: Path) -> dict[str, dict]:
             "inference_script": root / "VibeVoice-1.5B" / "demo" / "inference_from_file.py",
             "speaker_flag": "--speaker_names",
             "single_speaker": False,
+            "requires_speaker_labels": True,
         },
         "vibevoice-0.5b": {
             "label": "0.5B (fast draft)",

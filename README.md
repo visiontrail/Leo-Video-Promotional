@@ -169,6 +169,23 @@ On the New Task form, **Format** is the first choice:
 
 The number of voice pickers follows the format automatically.
 
+### Long narration integrity
+
+Long-form TTS uses model-specific safety rules instead of one shared word
+split. Local VibeVoice is bounded by `VIBEVOICE_TTS_CHUNK_WORDS`; every chunk
+reuses the same voice preset and `TTS_RANDOM_SEED`. Remote Orpheus derives its
+chunk size from `ORPHEUS_TTS_MAX_TOKENS` using the model's 7-token/2,048-sample
+codec rate and uses deterministic greedy decoding. Both providers write PCM WAV
+parts with identical format, join every source frame without re-encoding, and
+record hashes, word counts, frame counts, and durations in
+`audio/tts_manifest.json`.
+
+Every part is rejected if its duration cannot plausibly contain its assigned
+text; Orpheus parts are also rejected if they reach the configured audio-token
+ceiling. Before video direction or rendering, the Whisper/script alignment is
+a hard completeness gate: low word, line, or audio coverage stops the task
+instead of turning incomplete narration into a short final video.
+
 ## Video orientation and paper-collage B-roll
 
 Each new task has one final-video orientation: **16:9 landscape** (default) or **9:16 portrait**.

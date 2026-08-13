@@ -199,6 +199,17 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(config.RENDER_FPS, settings_store.defaults()["RENDER_FPS"])
         self.assertEqual(config.RENDER_QUALITY, "high")
 
+    def test_legacy_tts_chunk_override_migrates_to_vibevoice(self):
+        self.store.write_text(
+            json.dumps({"version": 1, "values": {"TTS_CHUNK_WORDS": 275}}),
+            encoding="utf-8",
+        )
+
+        settings_store.apply_saved()
+
+        self.assertEqual(config.VIBEVOICE_TTS_CHUNK_WORDS, 275)
+        self.assertTrue(self.field("VIBEVOICE_TTS_CHUNK_WORDS")["is_overridden"])
+
     def test_corrupt_store_file_falls_back_to_defaults(self):
         self.store.write_text("{not json", encoding="utf-8")
         settings_store.apply_saved()

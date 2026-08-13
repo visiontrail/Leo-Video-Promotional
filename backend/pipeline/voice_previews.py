@@ -12,7 +12,7 @@ from backend.pipeline.tts import _generate_orpheus
 logger = logging.getLogger(__name__)
 
 PREVIEW_TEXT = "Hello, this is a short preview of my voice."
-PREVIEW_MAX_TOKENS = 256
+PREVIEW_MAX_TOKENS = 1024
 _locks: dict[tuple[str, str], asyncio.Lock] = {}
 
 

@@ -97,8 +97,8 @@ GROUPS: tuple[SettingGroup, ...] = (
     SettingGroup(
         "tts",
         "Voice & TTS",
-        "Local VibeVoice and remote Orpheus synthesis: runtimes, credentials, "
-        "defaults, voices, chunking, and inference limits.",
+        "Model-specific safe chunking, deterministic voices, lossless PCM "
+        "joining, runtimes, credentials, and inference limits.",
     ),
     SettingGroup(
         "av_sync",
@@ -267,11 +267,18 @@ SPECS: tuple[SettingSpec, ...] = (
         description="Second speaker, used only by dialogue scripts.",
     ),
     SettingSpec(
-        "TTS_CHUNK_WORDS", "tts", "Words per chunk", "int", unit="words",
+        "VIBEVOICE_TTS_CHUNK_WORDS", "tts", "VibeVoice words per chunk", "int",
+        unit="words",
         minimum=0, maximum=5000,
-        description="Maximum words sent to VibeVoice in one inference process. "
-                    "Long scripts are joined into one WAV afterward; 0 disables "
-                    "chunking.",
+        description="Maximum spoken words sent to each local VibeVoice process. "
+                    "Every process uses the same voice preset and random seed; "
+                    "PCM frames are joined without re-encoding. 0 disables chunking.",
+    ),
+    SettingSpec(
+        "TTS_RANDOM_SEED", "tts", "Deterministic seed", "int",
+        minimum=0, maximum=2**31 - 1,
+        description="Fixed RNG seed applied to every VibeVoice chunk so its "
+                    "diffusion decoder does not change timbre between parts.",
     ),
     SettingSpec(
         "TTS_STALL_TIMEOUT", "tts", "Stall timeout", "int", unit="seconds",
@@ -305,7 +312,9 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "ORPHEUS_TTS_MAX_TOKENS", "tts", "Orpheus max tokens", "int",
         minimum=28, maximum=16384,
-        description="Decode-token ceiling for each chunk submitted to Orpheus.",
+        description="Audio-token budget per Orpheus chunk. The application "
+                    "derives a conservative word limit from this value and "
+                    "rejects any WAV that reaches the ceiling as truncated.",
     ),
     SettingSpec(
         "ORPHEUS_TTS_N_THREADS", "tts", "Orpheus CPU threads", "int",
@@ -596,6 +605,13 @@ def _read_store() -> dict[str, Any]:
     values = payload.get("values")
     if not isinstance(values, dict):
         return {}
+    # TTS_CHUNK_WORDS used to drive every provider. Preserve an existing Admin
+    # override as the VibeVoice-only limit after the model-specific migration.
+    if (
+        "TTS_CHUNK_WORDS" in values
+        and "VIBEVOICE_TTS_CHUNK_WORDS" not in values
+    ):
+        values["VIBEVOICE_TTS_CHUNK_WORDS"] = values["TTS_CHUNK_WORDS"]
     return {k: v for k, v in values.items() if k in _SPEC_BY_KEY}
 
 
