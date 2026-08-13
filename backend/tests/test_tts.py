@@ -69,15 +69,15 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "One two three. Four five six. Seven eight.",
         )
 
-    def test_split_tts_text_moves_dangling_word_to_next_chunk(self):
+    def test_split_tts_text_avoids_dangling_boundary(self):
         text = "One two three four five the six seven eight."
 
         chunks = tts._split_tts_text(text, max_words=6)
 
-        self.assertEqual(chunks, ["One two three four five", "the six seven eight."])
+        self.assertEqual(chunks, ["One two three four five the six seven eight."])
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
-    def test_split_tts_text_balances_short_sentence_tail(self):
+    def test_split_tts_text_attaches_short_sentence_tail(self):
         text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen."
 
         chunks = tts._split_tts_text(text, max_words=12)
@@ -85,8 +85,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             chunks,
             [
-                "one two three four five six seven eight",
-                "nine ten eleven twelve thirteen fourteen fifteen sixteen.",
+                "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen.",
             ],
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)

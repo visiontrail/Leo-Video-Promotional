@@ -256,9 +256,10 @@ def _split_tts_text(
                 if 0 < remainder < 5:
                     # Avoid context-starved sentence tails such as "belonged
                     # to the state." Orpheus repeatedly drops inflections in
-                    # these fragments. Balance the final two utterances while
-                    # preserving every source word and the original order.
-                    take = math.ceil(len(words) / 2)
+                    # these fragments. Keep the final phrase attached to its
+                    # grammatical context; the bounded four-word overflow is
+                    # still independently token-budgeted and verified.
+                    take = len(words)
                 while (
                     take > 1
                     and take < len(words)
