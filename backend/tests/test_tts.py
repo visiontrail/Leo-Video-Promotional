@@ -402,6 +402,24 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report["verified"])
         self.assertIn("repeated", " ".join(report["failure_reasons"]))
 
+    def test_orpheus_transcript_report_finds_truncated_second_utterance(self):
+        expected = "The complete phrase is spoken exactly once."
+        observed = (expected.rstrip(".") + " The complete phrase").split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertEqual(report["repeat_start_seconds"], 1.4)
+
+    def test_orpheus_short_utterance_uses_reduced_token_floor(self):
+        self.assertEqual(
+            tts._orpheus_request_token_budget("one two three", 16_384),
+            512,
+        )
+
     def test_rejects_orpheus_audio_that_reaches_token_ceiling(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "part.wav"

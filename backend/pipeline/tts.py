@@ -43,6 +43,7 @@ ORPHEUS_MIN_ASR_WORD_RATIO = 0.75
 ORPHEUS_MAX_ASR_WORD_RATIO = 1.25
 ORPHEUS_EDGE_ANCHOR_WORDS = 3
 ORPHEUS_MAX_INTEGRITY_ATTEMPTS = 3
+ORPHEUS_MIN_REQUEST_TOKENS = 512
 MAX_PLAUSIBLE_SPEECH_WPM = 320
 LEXICAL_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?|[\u3400-\u9fff]")
 NUMBER_WORDS = {
@@ -116,6 +117,30 @@ def _subsequence_starts(haystack: list[str], needle: list[str]) -> list[int]:
         for index in range(len(haystack) - len(needle) + 1)
         if haystack[index:index + len(needle)] == needle
     ]
+
+
+def _repetition_start(haystack: list[str], needle: list[str]) -> int | None:
+    """Return the second utterance onset, including a truncated repetition.
+
+    Orpheus can spend the remainder of its token budget starting the requested
+    sentence again.  Waiting for a second *complete* copy misses that partial
+    duplicate, so after locating one complete utterance also look for its
+    three-word opening anchor in the trailing transcript.
+    """
+    complete = _subsequence_starts(haystack, needle)
+    if len(complete) > 1:
+        return complete[1]
+    if len(complete) != 1:
+        return None
+    anchor_size = min(ORPHEUS_EDGE_ANCHOR_WORDS, len(needle))
+    if anchor_size < 2:
+        return None
+    trailing_start = complete[0] + len(needle)
+    opening = needle[:anchor_size]
+    for index in range(trailing_start, len(haystack) - anchor_size + 1):
+        if haystack[index:index + anchor_size] == opening:
+            return index
+    return None
 
 
 def _file_sha256(path: Path) -> str:
@@ -376,7 +401,7 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
     estimated = math.ceil(
         expected_seconds * ORPHEUS_AUDIO_TOKENS_PER_SECOND / ORPHEUS_CHUNK_SAFETY
     )
-    return min(maximum, max(1_024, estimated))
+    return min(maximum, max(ORPHEUS_MIN_REQUEST_TOKENS, estimated))
 
 
 def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
@@ -403,10 +428,10 @@ def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
     leading_anchor = any(index < edge for index in matched_expected)
     trailing_anchor = any(index >= len(expected) - edge for index in matched_expected)
     speech_end = max((float(word.get("end") or 0) for word in words), default=0.0)
-    repetitions = _subsequence_starts(observed, expected)
+    repetition_start = _repetition_start(observed, expected)
     repeat_start_seconds = None
-    if len(repetitions) > 1:
-        repeat_word_index = observed_word_indexes[repetitions[1]]
+    if repetition_start is not None:
+        repeat_word_index = observed_word_indexes[repetition_start]
         repeat_start_seconds = max(0.0, float(words[repeat_word_index].get("start") or 0))
 
     failures: list[str] = []
