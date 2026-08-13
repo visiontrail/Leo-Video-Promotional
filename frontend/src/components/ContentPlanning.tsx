@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -75,6 +75,8 @@ const EMPTY_PLAN = (): PlanDraft => ({
 
 export default function ContentPlanning() {
   const queryClient = useQueryClient()
+  const seriesDialogRef = useRef<HTMLDialogElement>(null)
+  const planDialogRef = useRef<HTMLDialogElement>(null)
   const [seriesFormOpen, setSeriesFormOpen] = useState(false)
   const [planFormOpen, setPlanFormOpen] = useState(false)
   const [activeSeries, setActiveSeries] = useState<string>('all')
@@ -82,6 +84,26 @@ export default function ContentPlanning() {
   const [planDraft, setPlanDraft] = useState<PlanDraft>(EMPTY_PLAN)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [publicationUrls, setPublicationUrls] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    const dialog = seriesDialogRef.current
+    if (!dialog) return
+    if (seriesFormOpen && !dialog.open) {
+      dialog.showModal()
+      dialog.querySelector<HTMLElement>('[data-modal-autofocus]')?.focus()
+    }
+    if (!seriesFormOpen && dialog.open) dialog.close()
+  }, [seriesFormOpen])
+
+  useEffect(() => {
+    const dialog = planDialogRef.current
+    if (!dialog) return
+    if (planFormOpen && !dialog.open) {
+      dialog.showModal()
+      dialog.querySelector<HTMLElement>('[data-modal-autofocus]')?.focus()
+    }
+    if (!planFormOpen && dialog.open) dialog.close()
+  }, [planFormOpen])
 
   const { data: planningStatus } = useQuery({
     queryKey: ['content-planning-status'],
@@ -175,7 +197,21 @@ export default function ContentPlanning() {
     planMutation.mutate({ id: editingId, input })
   }
 
+  const openSeriesForm = () => {
+    setPlanFormOpen(false)
+    setEditingId(null)
+    setSeriesFormOpen(true)
+  }
+
+  const openNewPlanForm = () => {
+    setSeriesFormOpen(false)
+    setEditingId(null)
+    setPlanDraft({ ...EMPTY_PLAN(), seriesId: activeSeries === 'all' ? '' : activeSeries })
+    setPlanFormOpen(true)
+  }
+
   const editPlan = (item: ContentPlanItem) => {
+    setSeriesFormOpen(false)
     setEditingId(item.id)
     setPlanDraft({
       seriesId: item.series_id || '',
@@ -187,7 +223,6 @@ export default function ContentPlanning() {
       platform: item.platform,
     })
     setPlanFormOpen(true)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   return (
@@ -199,16 +234,8 @@ export default function ContentPlanning() {
           <p>Shape the series. Set the clock. Keep publication human.</p>
         </div>
         <div className="planning-actions">
-          <button className="btn-ghost" type="button" onClick={() => setSeriesFormOpen((open) => !open)}>
-            {seriesFormOpen ? 'Close series form' : 'New series'}
-          </button>
-          <button className="btn-primary" type="button" onClick={() => {
-            setEditingId(null)
-            setPlanDraft({ ...EMPTY_PLAN(), seriesId: activeSeries === 'all' ? '' : activeSeries })
-            setPlanFormOpen((open) => !open)
-          }}>
-            {planFormOpen && !editingId ? 'Close plan form' : 'Plan a video'}
-          </button>
+          <button className="btn-ghost" type="button" onClick={openSeriesForm}>New Series</button>
+          <button className="btn-primary" type="button" onClick={openNewPlanForm}>Plan a video</button>
         </div>
       </header>
 
@@ -219,89 +246,119 @@ export default function ContentPlanning() {
         <div><span>Published</span><strong>{counts.published}</strong><small>manually confirmed</small></div>
       </div>
 
-      {(seriesFormOpen || planFormOpen) && (
-        <div className="planning-form-deck">
-          {seriesFormOpen && (
-            <form className="planning-form series-form" onSubmit={submitSeries}>
-              <div className="planning-form-heading">
-                <span className="form-index">01</span>
-                <div><h2>Define a series</h2><p>A durable editorial lens, not a one-off title.</p></div>
+      <dialog
+        ref={seriesDialogRef}
+        className="planning-modal planning-modal--series"
+        aria-labelledby="series-form-title"
+        aria-describedby="series-form-description"
+        onClose={() => setSeriesFormOpen(false)}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) event.currentTarget.close()
+        }}
+      >
+        {seriesFormOpen && (
+          <form className="planning-form series-form" onSubmit={submitSeries}>
+            <div className="planning-form-heading">
+              <span className="form-index">01</span>
+              <div>
+                <h2 id="series-form-title">Define a series</h2>
+                <p id="series-form-description">A durable editorial lens, not a one-off title.</p>
               </div>
-              <div className="planning-field-grid">
-                <div className="form-group">
-                  <label htmlFor="series-name">Series name</label>
-                  <input id="series-name" required maxLength={120} placeholder="Borderlands" value={seriesDraft.name} onChange={(e) => setSeriesDraft({ ...seriesDraft, name: e.target.value })} />
-                </div>
-                <div className="form-group">
-                  <label htmlFor="series-theme">Theme / territory</label>
-                  <input id="series-theme" maxLength={120} placeholder="Countries, borders, identity" value={seriesDraft.theme} onChange={(e) => setSeriesDraft({ ...seriesDraft, theme: e.target.value })} />
-                </div>
-                <div className="form-group planning-span-2">
-                  <label htmlFor="series-description">Editorial promise</label>
-                  <textarea id="series-description" rows={3} placeholder="What question will every episode pursue?" value={seriesDraft.description} onChange={(e) => setSeriesDraft({ ...seriesDraft, description: e.target.value })} />
-                </div>
+              <button className="planning-modal-close" type="button" aria-label="Close new series form" onClick={() => seriesDialogRef.current?.close()}>×</button>
+            </div>
+            <div className="planning-field-grid">
+              <div className="form-group">
+                <label htmlFor="series-name">Series name</label>
+                <input id="series-name" data-modal-autofocus required maxLength={120} placeholder="Borderlands" value={seriesDraft.name} onChange={(e) => setSeriesDraft({ ...seriesDraft, name: e.target.value })} />
               </div>
-              <div className="planning-form-footer">
-                {seriesMutation.isError && <span className="planning-form-error">{(seriesMutation.error as Error).message}</span>}
-                <button className="btn-primary" disabled={seriesMutation.isPending}>{seriesMutation.isPending ? 'Creating…' : 'Create series'}</button>
+              <div className="form-group">
+                <label htmlFor="series-theme">Theme / territory</label>
+                <input id="series-theme" maxLength={120} placeholder="Countries, borders, identity" value={seriesDraft.theme} onChange={(e) => setSeriesDraft({ ...seriesDraft, theme: e.target.value })} />
               </div>
-            </form>
-          )}
+              <div className="form-group planning-span-2">
+                <label htmlFor="series-description">Editorial promise</label>
+                <textarea id="series-description" rows={3} placeholder="What question will every episode pursue?" value={seriesDraft.description} onChange={(e) => setSeriesDraft({ ...seriesDraft, description: e.target.value })} />
+              </div>
+            </div>
+            <div className="planning-form-footer">
+              {seriesMutation.isError && <span className="planning-form-error">{(seriesMutation.error as Error).message}</span>}
+              <button className="btn-ghost" type="button" onClick={() => seriesDialogRef.current?.close()}>Cancel</button>
+              <button className="btn-primary" type="submit" disabled={seriesMutation.isPending}>{seriesMutation.isPending ? 'Creating…' : 'Create series'}</button>
+            </div>
+          </form>
+        )}
+      </dialog>
 
-          {planFormOpen && (
-            <form className="planning-form plan-form" onSubmit={submitPlan}>
-              <div className="planning-form-heading">
-                <span className="form-index">{editingId ? 'REV' : '02'}</span>
-                <div><h2>{editingId ? 'Revise the plan' : 'Schedule a video'}</h2><p>The generation time creates and controls a real pipeline task.</p></div>
+      <dialog
+        ref={planDialogRef}
+        className="planning-modal planning-modal--plan"
+        aria-labelledby="plan-form-title"
+        aria-describedby="plan-form-description"
+        onClose={() => {
+          setPlanFormOpen(false)
+          setEditingId(null)
+        }}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) event.currentTarget.close()
+        }}
+      >
+        {planFormOpen && (
+          <form className="planning-form plan-form" onSubmit={submitPlan}>
+            <div className="planning-form-heading">
+              <span className="form-index">{editingId ? 'REV' : '02'}</span>
+              <div>
+                <h2 id="plan-form-title">{editingId ? 'Revise the plan' : 'Schedule a video'}</h2>
+                <p id="plan-form-description">The generation time creates and controls a real pipeline task.</p>
               </div>
-              <div className="planning-field-grid planning-field-grid--three">
-                <div className="form-group">
-                  <label htmlFor="plan-series">Series</label>
-                  <select id="plan-series" value={planDraft.seriesId} onChange={(e) => setPlanDraft({ ...planDraft, seriesId: e.target.value })}>
-                    <option value="">Standalone video</option>
-                    {series.filter((entry) => !entry.archived).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-                  </select>
-                </div>
-                <div className="form-group planning-span-2">
-                  <label htmlFor="plan-title">Working title</label>
-                  <input id="plan-title" required maxLength={180} placeholder="The country that moved its capital overnight" value={planDraft.title} onChange={(e) => setPlanDraft({ ...planDraft, title: e.target.value })} />
-                </div>
-                <div className="form-group planning-span-3">
-                  <label htmlFor="plan-brief">Editorial brief</label>
-                  <textarea id="plan-brief" required minLength={10} rows={4} placeholder="State the angle, essential facts, audience promise, and questions the script must answer." value={planDraft.brief} onChange={(e) => setPlanDraft({ ...planDraft, brief: e.target.value })} />
-                </div>
-                <div className="form-group">
-                  <label htmlFor="plan-episode">Episode number</label>
-                  <input id="plan-episode" type="number" min="1" placeholder="1" value={planDraft.episode} onChange={(e) => setPlanDraft({ ...planDraft, episode: e.target.value })} />
-                </div>
-                <div className="form-group">
-                  <label htmlFor="plan-generation">Begin generation</label>
-                  <input id="plan-generation" type="datetime-local" value={planDraft.generationAt} onInput={(e) => setPlanDraft({ ...planDraft, generationAt: e.currentTarget.value })} />
-                  <small>Creates a linked task and releases it at this exact time.</small>
-                </div>
-                <div className="form-group">
-                  <label htmlFor="plan-publish">Target publication</label>
-                  <input id="plan-publish" type="datetime-local" value={planDraft.publishAt} min={planDraft.generationAt || undefined} onInput={(e) => setPlanDraft({ ...planDraft, publishAt: e.currentTarget.value })} />
-                  <small>A deadline only; it does not post automatically.</small>
-                </div>
-                <div className="form-group planning-span-3">
-                  <label htmlFor="plan-platform">Publication destination</label>
-                  <input id="plan-platform" maxLength={80} placeholder="YouTube" value={planDraft.platform} onChange={(e) => setPlanDraft({ ...planDraft, platform: e.target.value })} />
-                </div>
+              <button className="planning-modal-close" type="button" aria-label="Close video plan form" onClick={() => planDialogRef.current?.close()}>×</button>
+            </div>
+            <div className="planning-field-grid planning-field-grid--three">
+              <div className="form-group">
+                <label htmlFor="plan-series">Series</label>
+                <select id="plan-series" value={planDraft.seriesId} onChange={(e) => setPlanDraft({ ...planDraft, seriesId: e.target.value })}>
+                  <option value="">Standalone video</option>
+                  {series.filter((entry) => !entry.archived).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+                </select>
               </div>
-              <div className="planning-safety-note">
-                <span className="safety-lock" aria-hidden="true">×</span>
-                <div><strong>Automatic publication is locked</strong><p>Every finished video must be reviewed, approved, and manually published. The global pipeline switch is {planningStatus?.auto_publish_enabled ? 'enabled, but this plan remains opted out' : 'off'}.</p></div>
+              <div className="form-group planning-span-2">
+                <label htmlFor="plan-title">Working title</label>
+                <input id="plan-title" data-modal-autofocus required maxLength={180} placeholder="The country that moved its capital overnight" value={planDraft.title} onChange={(e) => setPlanDraft({ ...planDraft, title: e.target.value })} />
               </div>
-              <div className="planning-form-footer">
-                {planMutation.isError && <span className="planning-form-error">{(planMutation.error as Error).message}</span>}
-                {editingId && <button className="btn-ghost" type="button" onClick={() => { setEditingId(null); setPlanFormOpen(false) }}>Cancel</button>}
-                <button className="btn-primary" disabled={planMutation.isPending}>{planMutation.isPending ? 'Saving…' : editingId ? 'Save changes' : 'Commit to calendar'}</button>
+              <div className="form-group planning-span-3">
+                <label htmlFor="plan-brief">Editorial brief</label>
+                <textarea id="plan-brief" required minLength={10} rows={4} placeholder="State the angle, essential facts, audience promise, and questions the script must answer." value={planDraft.brief} onChange={(e) => setPlanDraft({ ...planDraft, brief: e.target.value })} />
               </div>
-            </form>
-          )}
-        </div>
-      )}
+              <div className="form-group">
+                <label htmlFor="plan-episode">Episode number</label>
+                <input id="plan-episode" type="number" min="1" placeholder="1" value={planDraft.episode} onChange={(e) => setPlanDraft({ ...planDraft, episode: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label htmlFor="plan-generation">Begin generation</label>
+                <input id="plan-generation" type="datetime-local" value={planDraft.generationAt} onInput={(e) => setPlanDraft({ ...planDraft, generationAt: e.currentTarget.value })} />
+                <small>Creates a linked task and releases it at this exact time.</small>
+              </div>
+              <div className="form-group">
+                <label htmlFor="plan-publish">Target publication</label>
+                <input id="plan-publish" type="datetime-local" value={planDraft.publishAt} min={planDraft.generationAt || undefined} onInput={(e) => setPlanDraft({ ...planDraft, publishAt: e.currentTarget.value })} />
+                <small>A deadline only; it does not post automatically.</small>
+              </div>
+              <div className="form-group planning-span-3">
+                <label htmlFor="plan-platform">Publication destination</label>
+                <input id="plan-platform" maxLength={80} placeholder="YouTube" value={planDraft.platform} onChange={(e) => setPlanDraft({ ...planDraft, platform: e.target.value })} />
+              </div>
+            </div>
+            <div className="planning-safety-note">
+              <span className="safety-lock" aria-hidden="true">×</span>
+              <div><strong>Automatic publication is locked</strong><p>Every finished video must be reviewed, approved, and manually published. The global pipeline switch is {planningStatus?.auto_publish_enabled ? 'enabled, but this plan remains opted out' : 'off'}.</p></div>
+            </div>
+            <div className="planning-form-footer">
+              {planMutation.isError && <span className="planning-form-error">{(planMutation.error as Error).message}</span>}
+              <button className="btn-ghost" type="button" onClick={() => planDialogRef.current?.close()}>Cancel</button>
+              <button className="btn-primary" type="submit" disabled={planMutation.isPending}>{planMutation.isPending ? 'Saving…' : editingId ? 'Save changes' : 'Commit to calendar'}</button>
+            </div>
+          </form>
+        )}
+      </dialog>
 
       <div className="planning-layout">
         <aside className="series-rail">
@@ -331,7 +388,7 @@ export default function ContentPlanning() {
           {itemsLoading ? (
             <div className="rundown-empty"><span className="loading-mark" />Loading editorial calendar…</div>
           ) : visibleItems.length === 0 ? (
-            <div className="rundown-empty"><strong>No videos on this runway</strong><p>Plan the first topic and its generation task will appear here and in Tasks.</p><button className="btn-primary" onClick={() => setPlanFormOpen(true)}>Plan a video</button></div>
+            <div className="rundown-empty"><strong>No videos on this runway</strong><p>Plan the first topic and its generation task will appear here and in Tasks.</p><button className="btn-primary" onClick={openNewPlanForm}>Plan a video</button></div>
           ) : (
             <div className="rundown-list">
               {visibleItems.map((item) => {
