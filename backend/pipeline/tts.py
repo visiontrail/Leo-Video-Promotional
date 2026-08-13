@@ -61,6 +61,7 @@ ORDINAL_DIGITS = {
 # Acoustic verification cannot distinguish exact homophones. Keep this list
 # deliberately narrow; near-homophones such as ``feed``/``feet`` must still fail.
 ACOUSTIC_EQUIVALENTS = {"feat": "feet"}
+NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
     "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
     "into", "nor", "of", "on", "or", "the", "to", "with",
@@ -110,7 +111,46 @@ def _lexical_tokens(text: str) -> list[str]:
             continue
         value = ACOUSTIC_EQUIVALENTS.get(value, value)
         normalized.append(ORDINAL_DIGITS.get(value, NUMBER_WORDS.get(value, value)))
-    return normalized
+    return _canonicalize_number_tokens(normalized)
+
+
+def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
+    """Collapse acoustically identical written/spoken English number forms."""
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if (
+            tokens[index].isdigit()
+            and index + 1 < len(tokens)
+            and len(tokens[index + 1]) == 3
+            and tokens[index + 1].isdigit()
+        ):
+            result.append(tokens[index] + tokens[index + 1])
+            index += 2
+            continue
+        if (
+            tokens[index] == "a"
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in NUMBER_SCALES
+        ):
+            start = index
+            current = 1
+        elif tokens[index] in NUMBER_SCALES:
+            start = index
+            current = 1
+        else:
+            result.append(tokens[index])
+            index += 1
+            continue
+        index = start + (2 if tokens[start] == "a" else 1)
+        first_scale = tokens[index - 1]
+        current *= NUMBER_SCALES[first_scale]
+        while index < len(tokens) and tokens[index] in NUMBER_SCALES:
+            scale = NUMBER_SCALES[tokens[index]]
+            current = current * scale if scale >= 1_000 else current + scale
+            index += 1
+        result.append(str(current))
+    return result
 
 
 def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
@@ -120,7 +160,17 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
         for token in _lexical_tokens(str(word.get("text") or "")):
             tokens.append(token)
             word_indexes.append(index)
-    return tokens, word_indexes
+    canonical = _canonicalize_number_tokens(tokens)
+    if len(canonical) == len(tokens):
+        return canonical, word_indexes
+    # Canonical number collapsing is used only for lexical comparison. Timing
+    # indexes remain conservative at the first contributing Whisper word.
+    canonical_indexes: list[int] = []
+    cursor = 0
+    for token in canonical:
+        canonical_indexes.append(word_indexes[min(cursor, len(word_indexes) - 1)])
+        cursor += 2 if token.isdigit() and cursor + 1 < len(tokens) else 1
+    return canonical, canonical_indexes
 
 
 def _subsequence_starts(haystack: list[str], needle: list[str]) -> list[int]:
