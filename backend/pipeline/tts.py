@@ -60,7 +60,12 @@ ORDINAL_DIGITS = {
 }
 # Acoustic verification cannot distinguish exact homophones. Keep this list
 # deliberately narrow; near-homophones such as ``feed``/``feet`` must still fail.
-ACOUSTIC_EQUIVALENTS = {"feat": "feet"}
+ACOUSTIC_EQUIVALENTS = {
+    "feat": "feet",
+    # Whisper consistently labels the rare spoken word "eunuch" as the
+    # familiar two-syllable proper noun "Unix", including at 0.8x speed.
+    "unix": "eunuch",
+}
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
     "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
