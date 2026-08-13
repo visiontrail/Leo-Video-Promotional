@@ -1,7 +1,9 @@
 import json
 import logging
-from pathlib import Path
 from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+
 from backend import config
 from backend.database import update_task
 from backend.models import TaskResponse, TaskStatus, ScriptFormat
@@ -38,8 +40,13 @@ def append_pipeline_log(task_dir: Path, message: str):
         f.write(message.rstrip() + "\n")
 
 
+def format_pipeline_log(task_id: str, message: str, timestamp: datetime | None = None) -> str:
+    event_time = timestamp or datetime.now().astimezone()
+    return f"[{event_time.strftime('%Y%m%d-%H:%M:%S')}] [{task_id}] {message}"
+
+
 def emit_pipeline_log(task_id: str, task_dir: Path, message: str, log: LogCallback | None = None):
-    formatted = f"[{task_id}] {message}"
+    formatted = format_pipeline_log(task_id, message)
     append_pipeline_log(task_dir, formatted)
     logger.info(formatted)
     if log:

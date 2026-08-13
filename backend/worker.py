@@ -8,6 +8,7 @@ from backend.database import get_next_queued_task, get_task, update_task
 from backend.models import TaskResponse, TaskStatus
 from backend.pipeline.orchestrator import (
     append_pipeline_log,
+    format_pipeline_log,
     run_pipeline,
     run_regenerate,
     run_compose,
@@ -72,7 +73,7 @@ def finish_task_logs(task_id: str, status: str):
 
 
 def _persist_and_publish(task: TaskResponse, message: str):
-    formatted = f"[{task.id}] {message}"
+    formatted = format_pipeline_log(task.id, message)
     append_pipeline_log(_task_dir(task.id), formatted)
     publish_task_log(task.id, formatted)
 
