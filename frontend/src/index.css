@@ -3321,6 +3321,198 @@ video {
   margin-top: 10px;
 }
 
+.template-preview-trigger {
+  display: grid;
+  width: 100%;
+  min-height: 58px;
+  align-items: center;
+  gap: 11px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(105deg, color-mix(in srgb, var(--accent) 13%, transparent), transparent 60%),
+    var(--input);
+  padding: 9px 11px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.template-preview-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent) 76%, var(--border));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 12%, transparent);
+  transform: translateY(-1px);
+}
+
+.template-preview-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.template-preview-trigger > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.template-preview-trigger strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.template-preview-trigger small {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template-preview-trigger-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.template-preview-trigger-icon svg {
+  width: 15px;
+  height: 15px;
+  transform: translateX(1px);
+}
+
+.template-preview-trigger-action {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.template-preview-dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: calc(var(--radius) + 3px);
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  box-shadow: 0 32px 100px rgba(0, 0, 0, .55);
+}
+
+.template-preview-dialog::backdrop {
+  background: rgba(5, 7, 13, .76);
+  backdrop-filter: blur(10px) saturate(.7);
+}
+
+.template-preview-shell {
+  overflow: hidden;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface) 96%, #080a11);
+}
+
+.template-preview-head,
+.template-preview-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 15px 18px;
+}
+
+.template-preview-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.template-preview-head span {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.template-preview-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.template-preview-close {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--input);
+  padding: 0 0 2px;
+  color: var(--text-dim);
+  font-size: 23px;
+  font-weight: 300;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.template-preview-close:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.template-preview-dialog video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #08090d;
+  object-fit: contain;
+}
+
+.template-preview-foot {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.template-preview-foot small {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .04em;
+}
+
+@media (max-width: 620px) {
+  .template-preview-dialog {
+    width: calc(100vw - 20px);
+  }
+
+  .template-preview-head,
+  .template-preview-foot {
+    padding: 12px 13px;
+  }
+
+  .template-preview-head > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .template-preview-foot {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
 /* ── Switch stack ────────────────────────────────────────────────── */
 /* Run-level on/off decisions, one row each, in a single card. */
 .switch-stack {

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
@@ -134,6 +134,8 @@ const VIDEO_TEMPLATES: Array<{
   },
 ]
 
+const templatePreviewUrl = (template: VideoTemplate) => `/template-previews/${template}.mp4`
+
 const SOURCE_LABEL: Record<SourceType, string> = { youtube: 'YouTube', epub: 'EPUB', pdf: 'PDF' }
 
 /* Quick picks for parking a run in an idle window — TTS and the LLM both want
@@ -165,6 +167,7 @@ export default function TaskForm() {
   const [voice2, setVoice2] = useState('Alice')
   const [ttsModel, setTtsModel] = useState('')
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
+  const [previewTemplate, setPreviewTemplate] = useState<VideoTemplate | null>(null)
   const [videoOrientation, setVideoOrientation] = useState<VideoOrientation>('landscape')
   const [openingStyle, setOpeningStyle] = useState<OpeningStyle>('editorial_motion')
   const [processingMode, setProcessingMode] = useState<'full_text' | 'curated_highlights'>('full_text')
@@ -183,6 +186,12 @@ export default function TaskForm() {
   const [renderedAt] = useState(Date.now)
   const [dragover, setDragover] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const previewDialogRef = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    const dialog = previewDialogRef.current
+    if (previewTemplate && dialog && !dialog.open) dialog.showModal()
+  }, [previewTemplate])
 
   // One audio element serves both voice fields — starting a preview replaces
   // whatever was playing, so two clips can never overlap.
@@ -679,6 +688,19 @@ export default function TaskForm() {
                 ))}
               </div>
               <small className="wb-hint template-note">{activeTemplate.description}</small>
+              <button
+                type="button"
+                className="template-preview-trigger"
+                onClick={() => setPreviewTemplate(videoTemplate)}
+                aria-haspopup="dialog"
+              >
+                <span className="template-preview-trigger-icon" aria-hidden="true"><IconPlay /></span>
+                <span>
+                  <strong>Preview {activeTemplate.name}</strong>
+                  <small>Watch a short rendered style sample</small>
+                </span>
+                <span className="template-preview-trigger-action" aria-hidden="true">Open</span>
+              </button>
 
               <div className="format-direction">
                 <label>Final frame</label>
@@ -728,6 +750,51 @@ export default function TaskForm() {
                 </small>
               </div>
             </article>
+
+            <dialog
+              ref={previewDialogRef}
+              className="template-preview-dialog"
+              aria-labelledby="template-preview-title"
+              onCancel={() => setPreviewTemplate(null)}
+              onClose={() => setPreviewTemplate(null)}
+              onClick={(event) => {
+                if (event.target === event.currentTarget) event.currentTarget.close()
+              }}
+            >
+              {previewTemplate && (
+                <div className="template-preview-shell">
+                  <header className="template-preview-head">
+                    <div>
+                      <span>Rendered style sample</span>
+                      <h3 id="template-preview-title">
+                        {VIDEO_TEMPLATES.find((template) => template.key === previewTemplate)!.name}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      className="template-preview-close"
+                      onClick={() => previewDialogRef.current?.close()}
+                      aria-label="Close style preview"
+                    >
+                      ×
+                    </button>
+                  </header>
+                  <video
+                    key={previewTemplate}
+                    src={templatePreviewUrl(previewTemplate)}
+                    controls
+                    autoPlay
+                    muted
+                    playsInline
+                    preload="metadata"
+                  />
+                  <footer className="template-preview-foot">
+                    <span>{VIDEO_TEMPLATES.find((template) => template.key === previewTemplate)!.description}</span>
+                    <small>6 sec · 16:9 · muted</small>
+                  </footer>
+                </div>
+              )}
+            </dialog>
 
             {/* The run-level switches share one panel: on their own they were
                 four near-empty cards that pushed the rest of the deck apart. */}
