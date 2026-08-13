@@ -106,6 +106,8 @@ export interface ContentPlanItem {
   series_name: string | null;
   title: string;
   brief: string;
+  source_type: 'topic' | 'youtube';
+  source_url: string | null;
   episode_number: number | null;
   generation_at: string | null;
   publish_at: string | null;
@@ -131,6 +133,8 @@ export interface ContentPlanInput {
   series_id?: string | null;
   title: string;
   brief: string;
+  source_type?: 'topic' | 'youtube';
+  source_url?: string | null;
   episode_number?: number | null;
   generation_at?: string | null;
   publish_at?: string | null;

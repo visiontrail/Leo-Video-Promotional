@@ -77,6 +77,8 @@ async def update_item(item_id: str, body: ContentPlanItemUpdate):
         "series_id": current.series_id,
         "title": current.title,
         "brief": current.brief,
+        "source_type": current.source_type,
+        "source_url": current.source_url,
         "episode_number": current.episode_number,
         "generation_at": current.generation_at,
         "publish_at": current.publish_at,

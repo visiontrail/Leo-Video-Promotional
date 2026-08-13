@@ -64,6 +64,86 @@ class ContentPlanningTests(unittest.IsolatedAsyncioTestCase):
             "Borderlands · EP 03 · The border that crosses a library",
         )
 
+    async def test_youtube_plan_preserves_source_and_generation_configuration(self):
+        config = TaskConfig(
+            target_duration_minutes=20,
+            script_format="dialogue",
+            speaker_count=2,
+            tts_model="vibevoice-1.5b",
+            video_orientation="portrait",
+            captions_enabled=True,
+            footage_enabled=True,
+            footage_provider="hybrid",
+        )
+        item = await database.create_content_plan_item(
+            ContentPlanItemCreate(
+                title="A planned YouTube adaptation",
+                brief="Use the linked source while following this editorial angle closely.",
+                source_type="youtube",
+                source_url="https://www.youtube.com/watch?v=planned-source",
+                generation_at="2030-04-10T01:00:00Z",
+                task_config=config,
+            )
+        )
+
+        task = await database.get_task(item.task_id)
+        self.assertEqual(item.source_type, "youtube")
+        self.assertEqual(item.source_url, "https://www.youtube.com/watch?v=planned-source")
+        self.assertEqual(task.source_type.value, "youtube")
+        self.assertEqual(task.source_url, item.source_url)
+        self.assertEqual(task.config.target_duration_minutes, 20)
+        self.assertEqual(task.config.video_orientation, "portrait")
+        self.assertTrue(task.config.captions_enabled)
+
+    async def test_youtube_plan_requires_a_source_url(self):
+        with self.assertRaisesRegex(ValueError, "YouTube URL"):
+            ContentPlanItemCreate(
+                title="Missing source",
+                brief="This planned video intentionally omits its required source URL.",
+                source_type="youtube",
+            )
+
+        with self.assertRaisesRegex(ValueError, "valid YouTube URL"):
+            ContentPlanItemCreate(
+                title="Wrong source",
+                brief="This planned video points at a non-YouTube source URL.",
+                source_type="youtube",
+                source_url="https://example.com/video",
+            )
+
+        with self.assertRaisesRegex(ValueError, "identify a YouTube video"):
+            ContentPlanItemCreate(
+                title="YouTube home page",
+                brief="This URL has the right host but does not identify a video.",
+                source_type="youtube",
+                source_url="https://www.youtube.com/",
+            )
+
+    async def test_editing_queued_plan_updates_source_and_configuration(self):
+        item = await database.create_content_plan_item(
+            ContentPlanItemCreate(
+                title="Editable queued plan",
+                brief="Start as a research topic and then attach the final source later.",
+                generation_at="2030-04-10T01:00:00Z",
+            )
+        )
+        updated = await database.update_content_plan_item(
+            item.id,
+            ContentPlanItemCreate(
+                title=item.title,
+                brief=item.brief,
+                source_type="youtube",
+                source_url="https://youtu.be/final-source",
+                generation_at=item.generation_at,
+                task_config=TaskConfig(target_duration_minutes=15),
+            ),
+        )
+
+        task = await database.get_task(updated.task_id)
+        self.assertEqual(task.source_type.value, "youtube")
+        self.assertEqual(task.source_url, "https://youtu.be/final-source")
+        self.assertEqual(task.config.target_duration_minutes, 15)
+
     async def test_rescheduling_planned_task_moves_editorial_clock_atomically(self):
         item = await database.create_content_plan_item(
             ContentPlanItemCreate(

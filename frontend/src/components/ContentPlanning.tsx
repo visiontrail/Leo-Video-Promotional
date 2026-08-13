@@ -10,11 +10,14 @@ import {
   fetchContentPlanItems,
   fetchContentPlanningStatus,
   fetchContentSeries,
+  fetchProviders,
+  fetchTtsModels,
+  fetchVoices,
   recordContentPlanPublication,
   updateContentPlanItem,
   updateContentSeries,
 } from '../api'
-import type { ContentPlanInput, ContentPlanItem } from '../api'
+import type { ContentPlanInput, ContentPlanItem, TaskConfig } from '../api'
 import { localInputToIso, toLocalInputValue } from '../schedule'
 
 const PLAN_LABELS: Record<string, string> = {
@@ -57,20 +60,52 @@ type PlanDraft = {
   seriesId: string
   title: string
   brief: string
+  sourceType: 'topic' | 'youtube'
+  sourceUrl: string
   episode: string
   generationAt: string
   publishAt: string
   platform: string
+  taskConfig: TaskConfig
 }
+
+const DEFAULT_TASK_CONFIG = (): TaskConfig => ({
+  target_duration_minutes: 10,
+  script_format: 'monologue',
+  speaker_count: 1,
+  voice_1: 'Carter',
+  voice_2: 'Alice',
+  include_character: false,
+  captions_enabled: false,
+  tts_model: 'vibevoice-0.5b',
+  video_template: 'podcast',
+  video_orientation: 'landscape',
+  opening_style: 'editorial_motion',
+  processing_mode: 'full_text',
+  provider_id: null,
+  footage_enabled: true,
+  footage_provider: 'hybrid',
+  footage_license_policy: 'review_required',
+  footage_clip_count: 8,
+  footage_orientation: 'landscape',
+  footage_multimodal_analyzer: 'gemini_web',
+  collage_broll_enabled: false,
+  collage_broll_count: 4,
+  thumbnail_enabled: true,
+  auto_render: true,
+})
 
 const EMPTY_PLAN = (): PlanDraft => ({
   seriesId: '',
   title: '',
   brief: '',
+  sourceType: 'youtube',
+  sourceUrl: '',
   episode: '',
   generationAt: nextDate(24),
   publishAt: nextDate(48),
   platform: 'YouTube',
+  taskConfig: DEFAULT_TASK_CONFIG(),
 })
 
 export default function ContentPlanning() {
@@ -118,6 +153,21 @@ export default function ContentPlanning() {
     queryFn: fetchContentPlanItems,
     refetchInterval: 5000,
   })
+  const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: fetchProviders })
+  const { data: ttsModels = [] } = useQuery({ queryKey: ['tts-models'], queryFn: fetchTtsModels })
+  const selectedTtsModel = planDraft.taskConfig.tts_model || 'vibevoice-0.5b'
+  const { data: voices = [] } = useQuery({
+    queryKey: ['voices', selectedTtsModel],
+    queryFn: () => fetchVoices(selectedTtsModel),
+    enabled: planFormOpen,
+  })
+  const voiceNames = voices.map((voice) => voice.name)
+  const selectedVoice1 = voiceNames.includes(planDraft.taskConfig.voice_1)
+    ? planDraft.taskConfig.voice_1
+    : (voiceNames[0] || planDraft.taskConfig.voice_1)
+  const selectedVoice2 = voiceNames.includes(planDraft.taskConfig.voice_2)
+    ? planDraft.taskConfig.voice_2
+    : (voiceNames[1] || voiceNames[0] || planDraft.taskConfig.voice_2)
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['content-series'] })
@@ -188,11 +238,18 @@ export default function ContentPlanning() {
       series_id: planDraft.seriesId || null,
       title: planDraft.title,
       brief: planDraft.brief,
+      source_type: planDraft.sourceType,
+      source_url: planDraft.sourceType === 'youtube' ? planDraft.sourceUrl : null,
       episode_number: planDraft.episode ? Number(planDraft.episode) : null,
       generation_at: localInputToIso(planDraft.generationAt),
       publish_at: localInputToIso(planDraft.publishAt),
       platform: planDraft.platform || 'manual',
       auto_publish_requested: false,
+      task_config: {
+        ...planDraft.taskConfig,
+        voice_1: selectedVoice1,
+        voice_2: selectedVoice2,
+      },
     }
     planMutation.mutate({ id: editingId, input })
   }
@@ -217,12 +274,22 @@ export default function ContentPlanning() {
       seriesId: item.series_id || '',
       title: item.title,
       brief: item.brief,
+      sourceType: item.source_type,
+      sourceUrl: item.source_url || '',
       episode: item.episode_number ? String(item.episode_number) : '',
       generationAt: item.generation_at ? toLocalInputValue(new Date(item.generation_at)) : '',
       publishAt: item.publish_at ? toLocalInputValue(new Date(item.publish_at)) : '',
       platform: item.platform,
+      taskConfig: { ...DEFAULT_TASK_CONFIG(), ...item.task_config },
     })
     setPlanFormOpen(true)
+  }
+
+  const setTaskConfig = (patch: Partial<TaskConfig>) => {
+    setPlanDraft((draft) => ({
+      ...draft,
+      taskConfig: { ...draft.taskConfig, ...patch },
+    }))
   }
 
   return (
@@ -329,6 +396,26 @@ export default function ContentPlanning() {
                 <textarea id="plan-brief" required minLength={10} rows={4} placeholder="State the angle, essential facts, audience promise, and questions the script must answer." value={planDraft.brief} onChange={(e) => setPlanDraft({ ...planDraft, brief: e.target.value })} />
               </div>
               <div className="form-group">
+                <label htmlFor="plan-source-type">Video source</label>
+                <select id="plan-source-type" value={planDraft.sourceType} onChange={(e) => setPlanDraft({ ...planDraft, sourceType: e.target.value as PlanDraft['sourceType'] })}>
+                  <option value="youtube">YouTube URL</option>
+                  <option value="topic">Topic / research brief</option>
+                </select>
+              </div>
+              <div className="form-group planning-span-2">
+                <label htmlFor="plan-source-url">YouTube URL</label>
+                <input
+                  id="plan-source-url"
+                  type="url"
+                  required={planDraft.sourceType === 'youtube'}
+                  disabled={planDraft.sourceType !== 'youtube'}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  value={planDraft.sourceUrl}
+                  onChange={(e) => setPlanDraft({ ...planDraft, sourceUrl: e.target.value })}
+                />
+                <small>{planDraft.sourceType === 'youtube' ? 'This exact URL is saved on the scheduled task.' : 'The editorial brief becomes the research source.'}</small>
+              </div>
+              <div className="form-group">
                 <label htmlFor="plan-episode">Episode number</label>
                 <input id="plan-episode" type="number" min="1" placeholder="1" value={planDraft.episode} onChange={(e) => setPlanDraft({ ...planDraft, episode: e.target.value })} />
               </div>
@@ -347,6 +434,130 @@ export default function ContentPlanning() {
                 <input id="plan-platform" maxLength={80} placeholder="YouTube" value={planDraft.platform} onChange={(e) => setPlanDraft({ ...planDraft, platform: e.target.value })} />
               </div>
             </div>
+            <section className="plan-config-section" aria-labelledby="plan-config-title">
+              <div className="plan-config-heading">
+                <div><span className="eyebrow">Generation configuration</span><h3 id="plan-config-title">Build settings</h3></div>
+                <small>Saved now and applied when the scheduled task starts.</small>
+              </div>
+              <div className="planning-field-grid planning-field-grid--three">
+                <div className="form-group">
+                  <label htmlFor="plan-duration">Target duration</label>
+                  <select id="plan-duration" value={planDraft.taskConfig.target_duration_minutes} onChange={(e) => setTaskConfig({ target_duration_minutes: Number(e.target.value) })}>
+                    {[5, 10, 15, 20].map((value) => <option key={value} value={value}>{value} min</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-script-format">Script format</label>
+                  <select id="plan-script-format" value={planDraft.taskConfig.script_format} onChange={(e) => {
+                    const format = e.target.value as 'monologue' | 'dialogue'
+                    const dialogueModel = ttsModels.find((model) => !model.single_speaker)?.id
+                    setTaskConfig({
+                      script_format: format,
+                      speaker_count: format === 'monologue' ? 1 : 2,
+                      ...(format === 'dialogue' && ttsModels.find((model) => model.id === selectedTtsModel)?.single_speaker && dialogueModel ? { tts_model: dialogueModel } : {}),
+                    })
+                  }}>
+                    <option value="monologue">Solo talk-show</option>
+                    <option value="dialogue">Two-host dialogue</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-provider">AI provider</label>
+                  <select id="plan-provider" value={planDraft.taskConfig.provider_id ?? ''} onChange={(e) => setTaskConfig({ provider_id: e.target.value ? Number(e.target.value) : null })}>
+                    <option value="">Default provider</option>
+                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name} — {provider.model}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-tts-model">TTS model</label>
+                  <select id="plan-tts-model" value={selectedTtsModel} onChange={(e) => {
+                    const model = ttsModels.find((entry) => entry.id === e.target.value)
+                    setTaskConfig({
+                      tts_model: e.target.value,
+                      ...(model?.single_speaker ? { script_format: 'monologue', speaker_count: 1 } : {}),
+                    })
+                  }}>
+                    {ttsModels.length === 0 && <option value={selectedTtsModel}>{selectedTtsModel}</option>}
+                    {ttsModels.map((model) => <option key={model.id} value={model.id} disabled={planDraft.taskConfig.script_format === 'dialogue' && model.single_speaker}>{model.provider} — {model.label}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-voice-1">Host voice</label>
+                  <select id="plan-voice-1" value={selectedVoice1} onChange={(e) => setTaskConfig({ voice_1: e.target.value })}>
+                    {voices.length === 0 && <option value={selectedVoice1}>{selectedVoice1}</option>}
+                    {voices.map((voice) => <option key={voice.name} value={voice.name}>{voice.name}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-voice-2">Co-host voice</label>
+                  <select id="plan-voice-2" disabled={planDraft.taskConfig.script_format !== 'dialogue'} value={selectedVoice2} onChange={(e) => setTaskConfig({ voice_2: e.target.value })}>
+                    {voices.length === 0 && <option value={selectedVoice2}>{selectedVoice2}</option>}
+                    {voices.map((voice) => <option key={voice.name} value={voice.name}>{voice.name}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-template">Video template</label>
+                  <select id="plan-template" value={planDraft.taskConfig.video_template} onChange={(e) => setTaskConfig({ video_template: e.target.value })}>
+                    <option value="podcast">Documentary</option><option value="kinetic">Kinetic</option><option value="swiss">Swiss Grid</option><option value="minimal">Minimal</option><option value="shanshui">Shan Shui</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-orientation">Final frame</label>
+                  <select id="plan-orientation" value={planDraft.taskConfig.video_orientation} onChange={(e) => {
+                    const orientation = e.target.value as 'landscape' | 'portrait'
+                    setTaskConfig({ video_orientation: orientation, footage_orientation: orientation })
+                  }}>
+                    <option value="landscape">Landscape 16:9</option><option value="portrait">Portrait 9:16</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-opening">Opening style</label>
+                  <select id="plan-opening" value={planDraft.taskConfig.opening_style} onChange={(e) => setTaskConfig({ opening_style: e.target.value as 'editorial_motion' | 'paper_collage' })}>
+                    <option value="editorial_motion">Editorial motion</option><option value="paper_collage">Paper collage</option>
+                  </select>
+                </div>
+              </div>
+              <div className="plan-switch-grid">
+                {([
+                  ['captions_enabled', 'Captions', 'Burn concise captions into the video'],
+                  ['include_character', 'Animated character', 'Add the Lottie host overlay'],
+                  ['thumbnail_enabled', 'Viral thumbnail', 'Generate cover art before TTS'],
+                  ['auto_render', 'Auto render', 'Continue after TTS without audio approval'],
+                ] as const).map(([key, label, note]) => (
+                  <label className="plan-switch" key={key}>
+                    <input type="checkbox" checked={Boolean(planDraft.taskConfig[key])} onChange={(e) => setTaskConfig({ [key]: e.target.checked })} />
+                    <span><strong>{label}</strong><small>{note}</small></span>
+                  </label>
+                ))}
+              </div>
+              <div className="planning-field-grid planning-field-grid--three plan-media-config">
+                <label className="plan-switch">
+                  <input type="checkbox" checked={Boolean(planDraft.taskConfig.footage_enabled)} onChange={(e) => setTaskConfig({ footage_enabled: e.target.checked })} />
+                  <span><strong>Public footage</strong><small>Scout and download eligible B-roll</small></span>
+                </label>
+                <div className="form-group">
+                  <label htmlFor="plan-footage-provider">Footage source</label>
+                  <select id="plan-footage-provider" disabled={!planDraft.taskConfig.footage_enabled} value={planDraft.taskConfig.footage_provider} onChange={(e) => {
+                    const provider = e.target.value as 'wikimedia' | 'hybrid' | 'opencli_web'
+                    setTaskConfig({ footage_provider: provider, footage_license_policy: provider === 'wikimedia' ? 'open_only' : 'review_required' })
+                  }}>
+                    <option value="hybrid">Commons + YouTube</option><option value="wikimedia">Wikimedia only</option><option value="opencli_web">YouTube only</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="plan-footage-count">Footage clips</label>
+                  <input id="plan-footage-count" type="number" min="1" max="30" disabled={!planDraft.taskConfig.footage_enabled} value={planDraft.taskConfig.footage_clip_count} onChange={(e) => setTaskConfig({ footage_clip_count: Number(e.target.value) })} />
+                </div>
+                <label className="plan-switch">
+                  <input type="checkbox" checked={Boolean(planDraft.taskConfig.collage_broll_enabled)} onChange={(e) => setTaskConfig({ collage_broll_enabled: e.target.checked })} />
+                  <span><strong>Paper-collage B-roll</strong><small>Generate recurring visual metaphors</small></span>
+                </label>
+                <div className="form-group">
+                  <label htmlFor="plan-collage-count">Collage clips</label>
+                  <input id="plan-collage-count" type="number" min="2" max="10" disabled={!planDraft.taskConfig.collage_broll_enabled} value={planDraft.taskConfig.collage_broll_count} onChange={(e) => setTaskConfig({ collage_broll_count: Number(e.target.value) })} />
+                </div>
+              </div>
+            </section>
             <div className="planning-safety-note">
               <span className="safety-lock" aria-hidden="true">×</span>
               <div><strong>Automatic publication is locked</strong><p>Every finished video must be reviewed, approved, and manually published. The global pipeline switch is {planningStatus?.auto_publish_enabled ? 'enabled, but this plan remains opted out' : 'off'}.</p></div>
@@ -402,6 +613,8 @@ export default function ContentPlanning() {
                       <div className="rundown-meta">
                         <span>{item.series_name || 'Standalone'}</span>
                         {item.episode_number && <span>EP {String(item.episode_number).padStart(2, '0')}</span>}
+                        <span>{item.source_type === 'youtube' ? 'YouTube source' : 'Topic source'}</span>
+                        <span>{item.task_config.target_duration_minutes} min</span>
                         <span>{item.platform}</span>
                       </div>
                       <h3>{item.title}</h3>

@@ -4,6 +4,7 @@ from enum import Enum
 import re
 from typing import Any, Literal, Optional
 import uuid
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -223,6 +224,8 @@ class _ContentPlanItemFields(BaseModel):
     series_id: Optional[str] = None
     title: str = Field(min_length=1, max_length=180)
     brief: str = Field(min_length=10, max_length=12000)
+    source_type: Literal["topic", "youtube"] = "topic"
+    source_url: Optional[str] = Field(default=None, max_length=2000)
     episode_number: Optional[int] = Field(default=None, ge=1, le=10000)
     generation_at: Optional[str] = None
     publish_at: Optional[str] = None
@@ -230,7 +233,7 @@ class _ContentPlanItemFields(BaseModel):
     auto_publish_requested: bool = False
     task_config: TaskConfig = Field(default_factory=TaskConfig)
 
-    @field_validator("series_id", "title", "brief", "platform")
+    @field_validator("series_id", "title", "brief", "platform", "source_url")
     @classmethod
     def strip_item_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
@@ -242,6 +245,30 @@ class _ContentPlanItemFields(BaseModel):
 
     @model_validator(mode="after")
     def validate_timeline(self):
+        if self.source_type == "youtube" and not self.source_url:
+            raise ValueError("A YouTube URL is required for a YouTube source")
+        if self.source_type == "youtube" and self.source_url:
+            parsed = urlparse(self.source_url)
+            hostname = (parsed.hostname or "").lower()
+            if parsed.scheme not in {"http", "https"} or hostname not in {
+                "youtube.com",
+                "www.youtube.com",
+                "m.youtube.com",
+                "youtu.be",
+                "www.youtube-nocookie.com",
+            }:
+                raise ValueError("Source URL must be a valid YouTube URL")
+            path = parsed.path.rstrip("/")
+            has_video_id = (
+                (hostname == "youtu.be" and bool(path))
+                or (path == "/watch" and bool(parse_qs(parsed.query).get("v", [""])[0]))
+                or any(
+                    path.startswith(prefix) and len(path) > len(prefix)
+                    for prefix in ("/shorts/", "/live/", "/embed/", "/v/")
+                )
+            )
+            if not has_video_id:
+                raise ValueError("Source URL must identify a YouTube video")
         if self.generation_at and self.publish_at:
             generation = datetime.fromisoformat(self.generation_at)
             publication = datetime.fromisoformat(self.publish_at)
@@ -258,6 +285,8 @@ class ContentPlanItemUpdate(BaseModel):
     series_id: Optional[str] = None
     title: Optional[str] = Field(default=None, min_length=1, max_length=180)
     brief: Optional[str] = Field(default=None, min_length=10, max_length=12000)
+    source_type: Optional[Literal["topic", "youtube"]] = None
+    source_url: Optional[str] = Field(default=None, max_length=2000)
     episode_number: Optional[int] = Field(default=None, ge=1, le=10000)
     generation_at: Optional[str] = None
     publish_at: Optional[str] = None
@@ -265,7 +294,7 @@ class ContentPlanItemUpdate(BaseModel):
     auto_publish_requested: Optional[bool] = None
     task_config: Optional[TaskConfig] = None
 
-    @field_validator("series_id", "title", "brief", "platform")
+    @field_validator("series_id", "title", "brief", "platform", "source_url")
     @classmethod
     def strip_item_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
@@ -284,6 +313,8 @@ class ContentPlanItemResponse(BaseModel):
     series_name: Optional[str] = None
     title: str
     brief: str
+    source_type: Literal["topic", "youtube"] = "topic"
+    source_url: Optional[str] = None
     episode_number: Optional[int] = None
     generation_at: Optional[str] = None
     publish_at: Optional[str] = None

@@ -5157,6 +5157,7 @@ video {
 }
 
 .planning-modal--series { width: min(760px, calc(100vw - 32px)); }
+.planning-modal--plan { width: min(1180px, calc(100vw - 32px)); }
 
 .planning-modal::backdrop {
   background: rgba(5, 7, 13, .72);
@@ -5292,6 +5293,57 @@ video {
 
 .planning-field-grid textarea { resize: vertical; }
 .planning-field-grid small { display: block; margin-top: 5px; font-size: 9px; line-height: 1.35; }
+
+.plan-config-section {
+  margin: 8px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  padding: 18px;
+}
+
+.plan-config-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.plan-config-heading h3 {
+  margin-top: 4px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.plan-config-heading > small { color: var(--text-faint); font-size: 9px; }
+
+.plan-switch-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 4px;
+}
+
+.plan-switch {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--input) 82%, transparent);
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.plan-switch input { width: auto; flex: 0 0 auto; accent-color: var(--accent-2); }
+.plan-switch strong { display: block; color: var(--text); font-size: 10px; }
+.plan-switch small { display: block; margin-top: 2px; color: var(--text-faint); font-size: 8px; line-height: 1.35; }
+.plan-media-config { align-items: end; margin-top: 12px; }
+.plan-media-config .plan-switch { align-self: stretch; margin-bottom: 10px; }
 
 .planning-safety-note {
   display: flex;
@@ -5647,6 +5699,8 @@ video {
   .planning-modal .planning-form { padding: 20px 16px; }
   .planning-field-grid,
   .planning-field-grid--three { grid-template-columns: minmax(0, 1fr); }
+  .plan-switch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plan-config-heading { align-items: flex-start; flex-direction: column; }
   .planning-span-2,
   .planning-span-3 { grid-column: auto; }
   .rundown-head { align-items: flex-start; flex-direction: column; }

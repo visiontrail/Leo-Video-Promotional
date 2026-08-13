@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS content_plan_items (
     series_id TEXT,
     title TEXT NOT NULL,
     brief TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'topic',
+    source_url TEXT,
     episode_number INTEGER,
     generation_at TEXT,
     publish_at TEXT,
@@ -269,12 +271,28 @@ async def _migrate_account_operations(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _migrate_content_planning(db: aiosqlite.Connection) -> None:
+    rows = await db.execute_fetchall("PRAGMA table_info(content_plan_items)")
+    existing = {row["name"] for row in rows}
+    additions = {
+        "source_type": "TEXT NOT NULL DEFAULT 'topic'",
+        "source_url": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in existing:
+            await db.execute(
+                f"ALTER TABLE content_plan_items ADD COLUMN {name} {definition}"
+            )
+    await db.commit()
+
+
 async def init_db():
     db = await get_db()
     try:
         await db.executescript(SCHEMA)
         await db.commit()
         await _migrate_tasks(db)
+        await _migrate_content_planning(db)
         await _migrate_account_operations(db)
         # Seed the default provider from the AI engine settings if none exist yet.
         rows = await db.execute_fetchall("SELECT COUNT(*) AS c FROM providers")
@@ -686,6 +704,8 @@ def _row_to_content_plan_item(row: aiosqlite.Row) -> ContentPlanItemResponse:
         series_name=row["series_name"] if "series_name" in row.keys() else None,
         title=row["title"],
         brief=row["brief"],
+        source_type=row["source_type"],
+        source_url=row["source_url"],
         episode_number=row["episode_number"],
         generation_at=row["generation_at"],
         publish_at=row["publish_at"],
@@ -792,8 +812,8 @@ async def _materialize_plan_task(
     series_name: str | None,
 ) -> TaskResponse:
     return await create_task(
-        source_type="topic",
-        source_url=body.brief,
+        source_type=body.source_type,
+        source_url=body.source_url if body.source_type == "youtube" else body.brief,
         source_title=body.title,
         config=body.task_config,
         scheduled_at=body.generation_at,
@@ -821,12 +841,13 @@ async def create_content_plan_item(body: ContentPlanItemCreate) -> ContentPlanIt
         await db.execute(
             """INSERT INTO content_plan_items (
                    id, created_at, updated_at, series_id, title, brief,
-                   episode_number, generation_at, publish_at, platform,
+                   source_type, source_url, episode_number, generation_at, publish_at, platform,
                    auto_publish_requested, status, publication_status,
                    task_config_json, task_id
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 item_id, now, now, body.series_id, body.title, body.brief,
+                body.source_type, body.source_url,
                 body.episode_number, body.generation_at, body.publish_at, body.platform,
                 int(body.auto_publish_requested),
                 ContentPlanStatus.SCHEDULED.value if task else ContentPlanStatus.DRAFT.value,
@@ -892,6 +913,8 @@ async def update_content_plan_item(
             immutable_changed = any((
                 body.title != current.title,
                 body.brief != current.brief,
+                body.source_type != current.source_type,
+                body.source_url != current.source_url,
                 body.series_id != current.series_id,
                 body.episode_number != current.episode_number,
                 body.generation_at != current.generation_at,
@@ -906,11 +929,13 @@ async def update_content_plan_item(
         if task and task.status == TaskStatus.QUEUED:
             if body.generation_at:
                 await db.execute(
-                    """UPDATE tasks SET source_url = ?, source_title = ?, config_json = ?,
+                    """UPDATE tasks SET source_type = ?, source_url = ?, source_title = ?, config_json = ?,
                        scheduled_at = ?, origin_label = ?, planned_publish_at = ?, updated_at = ?
                        WHERE id = ?""",
                     (
-                        body.brief, body.title, body.task_config.model_dump_json(),
+                        body.source_type,
+                        body.source_url if body.source_type == "youtube" else body.brief,
+                        body.title, body.task_config.model_dump_json(),
                         body.generation_at,
                         _plan_origin_label(series.name if series else None, body.title, body.episode_number),
                         body.publish_at, datetime.now(timezone.utc).isoformat(), task.id,
@@ -929,13 +954,13 @@ async def update_content_plan_item(
 
         await db.execute(
             """UPDATE content_plan_items SET
-               series_id = ?, title = ?, brief = ?, episode_number = ?,
+               series_id = ?, title = ?, brief = ?, source_type = ?, source_url = ?, episode_number = ?,
                generation_at = ?, publish_at = ?, platform = ?,
                auto_publish_requested = ?, task_config_json = ?, task_id = ?,
                status = ?, publication_status = ?, updated_at = ?
                WHERE id = ?""",
             (
-                body.series_id, body.title, body.brief, body.episode_number,
+                body.series_id, body.title, body.brief, body.source_type, body.source_url, body.episode_number,
                 body.generation_at, body.publish_at, body.platform,
                 int(body.auto_publish_requested), body.task_config.model_dump_json(), task_id,
                 status, publication_status, datetime.now(timezone.utc).isoformat(), item_id,
