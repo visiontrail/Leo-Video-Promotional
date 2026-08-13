@@ -573,6 +573,7 @@ async def _verify_orpheus_part(
         path,
         verification_dir,
         log=None,
+        minimum_words=1,
     )
     if not words:
         failures = "; ".join(transcription.get("failure_reasons") or [])
@@ -592,6 +593,7 @@ async def _verify_orpheus_part(
             path,
             verification_dir,
             log=None,
+            minimum_words=1,
         )
         if not words:
             raise TtsIntegrityError(

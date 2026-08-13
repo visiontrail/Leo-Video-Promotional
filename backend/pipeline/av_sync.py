@@ -77,12 +77,12 @@ def _load_words(path: Path) -> list[dict]:
     return words
 
 
-def _transcript_quality(words: list[dict]) -> tuple[bool, str]:
+def _transcript_quality(words: list[dict], *, minimum_words: int = 3) -> tuple[bool, str]:
     # Short promos can legitimately contain fewer than ten spoken words. The
     # later forced-alignment gate compares transcript coverage with the actual
     # script, so this preflight only needs enough samples to reject empty or
     # obviously broken Whisper output without rejecting complete short clips.
-    if len(words) < 3:
+    if len(words) < minimum_words:
         return False, f"only {len(words)} timestamped words"
     non_speech = sum(1 for word in words if word["text"].strip() in NON_SPEECH_TOKENS)
     ratio = non_speech / len(words)
@@ -156,6 +156,7 @@ async def ensure_word_transcript(
     task_dir: str | Path,
     *,
     log: LogCallback | None = None,
+    minimum_words: int = 3,
 ) -> tuple[list[dict], dict]:
     """Return MLX word timestamps or a non-fatal warning result."""
     audio = Path(audio_path).resolve()
@@ -165,7 +166,7 @@ async def ensure_word_transcript(
 
     if _cache_is_current(directory, audio):
         words = _load_words(transcript_path)
-        good, reason = _transcript_quality(words)
+        good, reason = _transcript_quality(words, minimum_words=minimum_words)
         if good:
             _emit(log, f"A/V sync: reusing {len(words)} cached word timestamps")
             return words, {"backend": "cache", "word_count": len(words), "passed": True}
@@ -213,7 +214,7 @@ async def ensure_word_transcript(
             )
             continue
         words = _load_words(transcript_path)
-        good, reason = _transcript_quality(words)
+        good, reason = _transcript_quality(words, minimum_words=minimum_words)
         if not good:
             failures.append(f"mlx-whisper attempt {attempt}: {reason}")
             continue
