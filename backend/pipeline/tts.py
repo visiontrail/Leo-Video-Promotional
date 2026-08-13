@@ -574,7 +574,7 @@ async def _verify_orpheus_part(
         verification_dir,
         log=None,
     )
-    if not transcription.get("passed") or not words:
+    if not words:
         failures = "; ".join(transcription.get("failure_reasons") or [])
         raise TtsIntegrityError(
             "Orpheus narration cannot be integrity-verified because acoustic "
@@ -593,7 +593,7 @@ async def _verify_orpheus_part(
             verification_dir,
             log=None,
         )
-        if not transcription.get("passed") or not words:
+        if not words:
             raise TtsIntegrityError(
                 "Orpheus narration could not be transcribed after repetition trimming"
             )

@@ -416,6 +416,25 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    async def test_orpheus_verifier_accepts_exact_two_word_transcript(self):
+        words = [
+            {"text": "to", "start": 0.0, "end": 0.2},
+            {"text": "die", "start": 0.2, "end": 0.5},
+        ]
+        with patch(
+            "backend.pipeline.av_sync.ensure_word_transcript",
+            AsyncMock(return_value=(words, {"passed": False, "failure_reasons": ["only 2 words"]})),
+        ):
+            report = await tts._verify_orpheus_part(
+                Path("short.wav"),
+                "to die.",
+                Path("verification"),
+                emit=lambda _message: None,
+            )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["matched_exact_words"], 2)
+
     def test_orpheus_transcript_normalizes_numeric_ordinals(self):
         expected = "A scrap of land one-thirtieth the size."
         spoken = "A scrap of land 1 30th the size".split()
