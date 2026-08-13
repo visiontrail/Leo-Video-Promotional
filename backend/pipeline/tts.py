@@ -58,6 +58,9 @@ ORDINAL_DIGITS = {
     "5th": "fifth", "6th": "sixth", "7th": "seventh", "8th": "eighth",
     "9th": "ninth", "10th": "tenth", "20th": "twentieth", "30th": "thirtieth",
 }
+# Acoustic verification cannot distinguish exact homophones. Keep this list
+# deliberately narrow; near-homophones such as ``feed``/``feet`` must still fail.
+ACOUSTIC_EQUIVALENTS = {"feat": "feet"}
 DANGLING_CHUNK_WORDS = {
     "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
     "into", "nor", "of", "on", "or", "the", "to", "with",
@@ -105,6 +108,7 @@ def _lexical_tokens(text: str) -> list[str]:
         # the adjacent normalized number remains the acoustic anchor.
         if value == "percent":
             continue
+        value = ACOUSTIC_EQUIVALENTS.get(value, value)
         normalized.append(ORDINAL_DIGITS.get(value, NUMBER_WORDS.get(value, value)))
     return normalized
 

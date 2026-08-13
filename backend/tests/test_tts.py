@@ -429,6 +429,25 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_accepts_exact_homophone_but_not_near_homophone(self):
+        expected = "The ground under your feet has killed people."
+
+        feat_words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(
+                "The ground under your feat has killed people".split()
+            )
+        ]
+        feed_words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(
+                "The ground under your feed has killed people".split()
+            )
+        ]
+
+        self.assertTrue(tts._orpheus_transcript_report(expected, feat_words)["verified"])
+        self.assertFalse(tts._orpheus_transcript_report(expected, feed_words)["verified"])
+
     async def test_orpheus_integrity_failure_retries_generation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
