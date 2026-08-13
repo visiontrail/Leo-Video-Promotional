@@ -701,7 +701,9 @@ async def _generate_orpheus(
                 expected_part,
                 chunk,
                 token_limit_seconds=(
-                    request_token_budget
+                    None
+                    if verify_text
+                    else request_token_budget
                     / ORPHEUS_AUDIO_TOKENS_PER_SECOND
                     / (config.ORPHEUS_TTS_SPEED_PERCENT / 100)
                 ),

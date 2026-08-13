@@ -340,6 +340,40 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manifest["chunk_count"], len(posts))
             self.assertEqual(manifest["integrity"]["verified_source_coverage"], 1.0)
 
+    async def test_verified_orpheus_audio_reaching_ceiling_gets_acoustic_check(self):
+        requests = []
+        audio = wav_bytes(frames=12 * 24_000)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-ceiling"})
+            if request.url.path.endswith("/audio"):
+                return httpx.Response(200, content=audio)
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("One complete short sentence reaches the model token ceiling.")
+            verifier = AsyncMock(side_effect=self.verified_report)
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "ORPHEUS_TTS_MAX_TOKENS", 1_024),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "_verify_orpheus_part", verifier),
+            ):
+                await tts.generate_tts(
+                    str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                )
+
+            verifier.assert_awaited_once()
+
     def test_orpheus_transcript_report_rejects_audio_that_skips_the_opening(self):
         expected = (
             "The opening sentence must be present. "
