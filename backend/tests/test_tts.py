@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -27,6 +27,20 @@ def write_wav(path: Path, *, frames: int = 24_000, sample_rate: int = 24_000) ->
 
 
 class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def verified_report(_path, text, _verification_dir, **_kwargs):
+        count = len(tts._lexical_tokens(text))
+        return {
+            "verified": True,
+            "expected_words": count,
+            "transcript_words": count,
+            "matched_exact_words": count,
+            "exact_asr_word_coverage": 1.0,
+            "leading_anchor": True,
+            "trailing_anchor": True,
+            "failure_reasons": [],
+        }
+
     def test_split_tts_text_prefers_sentence_boundaries(self):
         text = "One two three. Four five. Six seven eight."
 
@@ -242,6 +256,11 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
                 patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
             ):
                 result = await tts.generate_tts(
                     str(script), str(root / "audio"), ["tara"], "orpheus-en"
@@ -251,10 +270,10 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             submitted = __import__("json").loads(requests[0].content)
             self.assertEqual(submitted["voice_id"], "tara")
             self.assertEqual(submitted["input"], "Remote narration.")
-            self.assertEqual(submitted["temperature"], 0.0)
-            self.assertEqual(submitted["top_p"], 1.0)
-            self.assertEqual(submitted["top_k"], 0)
-            self.assertEqual(submitted["min_p"], 0.0)
+            self.assertEqual(submitted["temperature"], 0.8)
+            self.assertEqual(submitted["top_p"], 0.95)
+            self.assertEqual(submitted["top_k"], 40)
+            self.assertEqual(submitted["min_p"], 0.05)
             self.assertEqual(requests[0].headers["X-API-Key"], "test-secret")
             self.assertEqual(
                 [request.url.path for request in requests],
@@ -293,6 +312,11 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(tts.httpx, "AsyncClient", client_factory),
                 patch.object(
                     tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+                patch.object(
+                    tts,
                     "_validate_wav_part",
                     side_effect=lambda path, *_args, **_kwargs: tts._read_pcm_wav(path),
                 ),
@@ -314,6 +338,69 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             manifest = json.loads((root / "audio" / "tts_manifest.json").read_text())
             self.assertEqual(manifest["source_word_count"], 20)
             self.assertEqual(manifest["chunk_count"], len(posts))
+            self.assertEqual(manifest["integrity"]["verified_source_coverage"], 1.0)
+
+    def test_orpheus_transcript_report_rejects_audio_that_skips_the_opening(self):
+        expected = (
+            "The opening sentence must be present. "
+            "The middle sentence must also be present. "
+            "The closing sentence must be present."
+        )
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(
+                "Middle sentence must also be present The closing sentence must be present".split()
+            )
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertFalse(report["verified"])
+        self.assertIn("opening words", " ".join(report["failure_reasons"]))
+
+    def test_orpheus_transcript_report_accepts_complete_short_utterance(self):
+        expected = "Every requested word remains in this finished audio sentence."
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(expected.rstrip(".").split())
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
+    async def test_orpheus_integrity_failure_retries_generation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("A retryable utterance.")
+            generate = AsyncMock(
+                side_effect=[tts.TtsIntegrityError("repeated speech"), "/verified.wav"]
+            )
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts, "_generate_orpheus", generate),
+            ):
+                result = await tts.generate_tts(
+                    str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                )
+
+            self.assertEqual(result, "/verified.wav")
+            self.assertEqual(generate.await_count, 2)
+
+    def test_orpheus_transcript_report_rejects_repeated_utterance(self):
+        expected = "The complete phrase is spoken once."
+        repeated = (expected.rstrip(".") + " " + expected.rstrip(".")).split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(repeated)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertFalse(report["verified"])
+        self.assertIn("repeated", " ".join(report["failure_reasons"]))
 
     def test_rejects_orpheus_audio_that_reaches_token_ceiling(self):
         with tempfile.TemporaryDirectory() as temp_dir:

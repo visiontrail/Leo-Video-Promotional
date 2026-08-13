@@ -174,17 +174,23 @@ The number of voice pickers follows the format automatically.
 Long-form TTS uses model-specific safety rules instead of one shared word
 split. Local VibeVoice is bounded by `VIBEVOICE_TTS_CHUNK_WORDS`; every chunk
 reuses the same voice preset and `TTS_RANDOM_SEED`. Remote Orpheus derives its
-chunk size from `ORPHEUS_TTS_MAX_TOKENS` using the model's 7-token/2,048-sample
-codec rate and uses deterministic greedy decoding. Both providers write PCM WAV
+per-request ceiling from the model's 7-token/2,048-sample codec rate, while
+`ORPHEUS_TTS_CHUNK_WORDS` keeps each prompt at ordinary utterance length. Both
+providers write PCM WAV
 parts with identical format, join every source frame without re-encoding, and
 record hashes, word counts, frame counts, and durations in
 `audio/tts_manifest.json`.
 
 Every part is rejected if its duration cannot plausibly contain its assigned
 text; Orpheus parts are also rejected if they reach the configured audio-token
-ceiling. Before video direction or rendering, the Whisper/script alignment is
-a hard completeness gate: low word, line, or audio coverage stops the task
-instead of turning incomplete narration into a short final video.
+ceiling. Each Orpheus utterance is independently transcribed and must contain
+opening and closing acoustic anchors plus high exact-word coverage. Verified
+parts are cached so a restart resumes instead of repeating hours of CPU work.
+Orpheus uses its supported sampling defaults; greedy decoding is deliberately
+avoided because it can collapse valid prompts into unrelated repeated speech.
+Before video direction or rendering, the manifest must prove 100% verified
+source-utterance coverage, an unchanged script hash, and an unchanged WAV hash;
+the whole-audio Whisper/script alignment remains a second completeness gate.
 
 ## Editorial content planning and publication review
 

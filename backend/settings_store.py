@@ -324,9 +324,14 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "ORPHEUS_TTS_MAX_TOKENS", "tts", "Orpheus max tokens", "int",
         minimum=28, maximum=16384,
-        description="Audio-token budget per Orpheus chunk. The application "
-                    "derives a conservative word limit from this value and "
-                    "rejects any WAV that reaches the ceiling as truncated.",
+        description="Maximum audio-token ceiling. Each short utterance gets a "
+                    "smaller derived budget and a ceiling-truncation check.",
+    ),
+    SettingSpec(
+        "ORPHEUS_TTS_CHUNK_WORDS", "tts", "Orpheus chunk words", "int",
+        minimum=8, maximum=80,
+        description="Maximum spoken words sent in one Orpheus utterance. Short "
+                    "utterances prevent the CPU model from silently skipping text.",
     ),
     SettingSpec(
         "ORPHEUS_TTS_N_THREADS", "tts", "Orpheus CPU threads", "int",

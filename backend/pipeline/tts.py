@@ -2,12 +2,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
 import wave
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
@@ -36,7 +38,20 @@ ORPHEUS_AUDIO_TOKENS_PER_SECOND = 7 * 24_000 / 2_048
 ORPHEUS_CHUNK_MIN_WPM = 90
 ORPHEUS_CHUNK_SAFETY = 0.80
 ORPHEUS_TOKEN_LIMIT_RATIO = 0.97
+ORPHEUS_MIN_EXACT_ASR_COVERAGE = 0.85
+ORPHEUS_MIN_ASR_WORD_RATIO = 0.75
+ORPHEUS_MAX_ASR_WORD_RATIO = 1.25
+ORPHEUS_EDGE_ANCHOR_WORDS = 3
+ORPHEUS_MAX_INTEGRITY_ATTEMPTS = 3
 MAX_PLAUSIBLE_SPEECH_WPM = 320
+LEXICAL_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?|[\u3400-\u9fff]")
+NUMBER_WORDS = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "ten": "10", "twenty": "20", "thirty": "30", "forty": "40",
+    "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80",
+    "ninety": "90",
+}
 
 
 class TtsIntegrityError(RuntimeError):
@@ -68,6 +83,47 @@ def _strip_speaker_labels(script: str) -> str:
 
 def _spoken_word_count(text: str) -> int:
     return len(_strip_speaker_labels(text).split())
+
+
+def _lexical_tokens(text: str) -> list[str]:
+    normalized: list[str] = []
+    for token in LEXICAL_TOKEN_RE.findall(_strip_speaker_labels(text)):
+        value = token.replace("’", "'").casefold()
+        # Whisper commonly renders spoken "percent" as the punctuation symbol
+        # "%", which is not a lexical token. Ignore the unit on both sides;
+        # the adjacent normalized number remains the acoustic anchor.
+        if value == "percent":
+            continue
+        normalized.append(NUMBER_WORDS.get(value, value))
+    return normalized
+
+
+def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
+    tokens: list[str] = []
+    word_indexes: list[int] = []
+    for index, word in enumerate(words):
+        for token in _lexical_tokens(str(word.get("text") or "")):
+            tokens.append(token)
+            word_indexes.append(index)
+    return tokens, word_indexes
+
+
+def _subsequence_starts(haystack: list[str], needle: list[str]) -> list[int]:
+    if not needle or len(needle) > len(haystack):
+        return []
+    return [
+        index
+        for index in range(len(haystack) - len(needle) + 1)
+        if haystack[index:index + len(needle)] == needle
+    ]
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _split_tts_text(
@@ -273,6 +329,7 @@ def _write_tts_manifest(
     wav_parts: list[Path],
     output: Path,
     deterministic: bool,
+    integrity: dict | None = None,
 ) -> None:
     parts = []
     for text, path in zip(chunks, wav_parts):
@@ -281,6 +338,7 @@ def _write_tts_manifest(
             {
                 "input": path.with_suffix(".txt").name.replace("_generated", ""),
                 "output": path.name,
+                "audio_sha256": _file_sha256(path),
                 "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "word_count": _spoken_word_count(text),
                 **asdict(info),
@@ -294,8 +352,11 @@ def _write_tts_manifest(
         "chunk_count": len(parts),
         "parts": parts,
         "output": output.name,
+        "output_audio_sha256": _file_sha256(output),
         "output_wav": asdict(_read_pcm_wav(output)),
     }
+    if integrity is not None:
+        payload["integrity"] = integrity
     (output_dir / "tts_manifest.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -309,6 +370,192 @@ def _orpheus_chunk_word_limit(max_tokens: int) -> int:
     )
 
 
+def _orpheus_request_token_budget(text: str, maximum: int) -> int:
+    """Bound one short utterance without starving slow natural delivery."""
+    expected_seconds = _spoken_word_count(text) * 60 / ORPHEUS_CHUNK_MIN_WPM
+    estimated = math.ceil(
+        expected_seconds * ORPHEUS_AUDIO_TOKENS_PER_SECOND / ORPHEUS_CHUNK_SAFETY
+    )
+    return min(maximum, max(1_024, estimated))
+
+
+def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
+    """Measure whether a short WAV contains its complete requested utterance.
+
+    Whisper is an independent acoustic observer, so exact-token coverage is not
+    expected to be 100% for numbers, names, or contractions. Completeness is
+    instead fail-closed at the utterance level: high exact coverage, a plausible
+    word count, and acoustic anchors at both ends must all pass. When every
+    source utterance passes, the final manifest records 100% verified source
+    coverage while preserving the raw ASR measurements for audit.
+    """
+    expected = _lexical_tokens(text)
+    observed, observed_word_indexes = _transcript_tokens(words)
+    matcher = SequenceMatcher(a=expected, b=observed, autojunk=False)
+    pairs: list[tuple[int, int]] = []
+    for block in matcher.get_matching_blocks():
+        pairs.extend((block.a + offset, block.b + offset) for offset in range(block.size))
+
+    matched_expected = {left for left, _ in pairs}
+    exact_coverage = len(matched_expected) / max(1, len(expected))
+    word_ratio = len(observed) / max(1, len(expected))
+    edge = min(ORPHEUS_EDGE_ANCHOR_WORDS, len(expected))
+    leading_anchor = any(index < edge for index in matched_expected)
+    trailing_anchor = any(index >= len(expected) - edge for index in matched_expected)
+    speech_end = max((float(word.get("end") or 0) for word in words), default=0.0)
+    repetitions = _subsequence_starts(observed, expected)
+    repeat_start_seconds = None
+    if len(repetitions) > 1:
+        repeat_word_index = observed_word_indexes[repetitions[1]]
+        repeat_start_seconds = max(0.0, float(words[repeat_word_index].get("start") or 0))
+
+    failures: list[str] = []
+    if exact_coverage < ORPHEUS_MIN_EXACT_ASR_COVERAGE:
+        failures.append(
+            f"exact ASR word coverage {exact_coverage:.1%} is below "
+            f"{ORPHEUS_MIN_EXACT_ASR_COVERAGE:.1%}"
+        )
+    if word_ratio < ORPHEUS_MIN_ASR_WORD_RATIO:
+        failures.append(
+            f"ASR returned only {len(observed)}/{len(expected)} expected-scale words"
+        )
+    if word_ratio > ORPHEUS_MAX_ASR_WORD_RATIO:
+        failures.append(
+            f"ASR returned {len(observed)}/{len(expected)} expected-scale words; "
+            "the utterance was likely repeated"
+        )
+    if not leading_anchor:
+        failures.append("opening words have no acoustic transcript anchor")
+    if not trailing_anchor:
+        failures.append("closing words have no acoustic transcript anchor")
+
+    return {
+        "verified": not failures,
+        "expected_words": len(expected),
+        "transcript_words": len(observed),
+        "matched_exact_words": len(matched_expected),
+        "exact_asr_word_coverage": round(exact_coverage, 4),
+        "transcript_word_ratio": round(word_ratio, 4),
+        "leading_anchor": leading_anchor,
+        "trailing_anchor": trailing_anchor,
+        "speech_end_seconds": round(speech_end, 3),
+        "repeat_start_seconds": (
+            round(repeat_start_seconds, 3) if repeat_start_seconds is not None else None
+        ),
+        "failure_reasons": failures,
+    }
+
+
+def _trim_pcm_wav(path: Path, end_seconds: float) -> None:
+    info = _read_pcm_wav(path)
+    end_frame = min(info.frame_count, max(1, round(end_seconds * info.sample_rate)))
+    staged = path.with_suffix(".trim.tmp.wav")
+    staged.unlink(missing_ok=True)
+    with wave.open(str(path), "rb") as source, wave.open(str(staged), "wb") as destination:
+        destination.setparams(source.getparams())
+        destination.writeframes(source.readframes(end_frame))
+    os.replace(staged, path)
+
+
+async def _verify_orpheus_part(
+    path: Path,
+    text: str,
+    verification_dir: Path,
+    *,
+    emit: LogCallback,
+) -> dict:
+    from backend.pipeline import av_sync
+
+    words, transcription = await av_sync.ensure_word_transcript(
+        path,
+        verification_dir,
+        log=None,
+    )
+    if not transcription.get("passed") or not words:
+        failures = "; ".join(transcription.get("failure_reasons") or [])
+        raise TtsIntegrityError(
+            "Orpheus narration cannot be integrity-verified because acoustic "
+            f"transcription is unavailable{': ' + failures if failures else ''}"
+        )
+    report = _orpheus_transcript_report(text, words)
+    repeat_start = report.get("repeat_start_seconds")
+    if repeat_start is not None and float(repeat_start) > 0.2:
+        emit(
+            "Orpheus integrity: trimming repeated utterance at "
+            f"{float(repeat_start):.2f}s and re-transcribing"
+        )
+        _trim_pcm_wav(path, float(repeat_start))
+        words, transcription = await av_sync.ensure_word_transcript(
+            path,
+            verification_dir,
+            log=None,
+        )
+        if not transcription.get("passed") or not words:
+            raise TtsIntegrityError(
+                "Orpheus narration could not be transcribed after repetition trimming"
+            )
+        report = _orpheus_transcript_report(text, words)
+    if not report["verified"]:
+        raise TtsIntegrityError(
+            "Orpheus narration does not match its input utterance: "
+            + "; ".join(report["failure_reasons"])
+        )
+    emit(
+        "Orpheus integrity: utterance verified "
+        f"({report['matched_exact_words']}/{report['expected_words']} exact ASR words; "
+        "opening and closing anchors present)"
+    )
+    return report
+
+
+def _part_metadata_path(path: Path) -> Path:
+    return path.with_suffix(".json")
+
+
+def _load_cached_orpheus_part(path: Path, text: str) -> dict | None:
+    metadata_path = _part_metadata_path(path)
+    if not path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if metadata.get("text_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+        return None
+    if not (metadata.get("integrity") or {}).get("verified"):
+        return None
+    try:
+        info = _read_pcm_wav(path)
+    except TtsIntegrityError:
+        return None
+    if asdict(info) != metadata.get("wav"):
+        return None
+    return metadata
+
+
+def _write_orpheus_part_metadata(
+    path: Path,
+    text: str,
+    *,
+    job_id: str,
+    request_token_budget: int,
+    integrity: dict,
+) -> dict:
+    payload = {
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "word_count": _spoken_word_count(text),
+        "job_id": job_id,
+        "request_token_budget": request_token_budget,
+        "wav": asdict(_read_pcm_wav(path)),
+        "integrity": integrity,
+    }
+    destination = _part_metadata_path(path)
+    temporary = destination.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, destination)
+    return payload
+
+
 async def _generate_orpheus(
     script_path: str,
     output_dir: str,
@@ -318,6 +565,7 @@ async def _generate_orpheus(
     log: LogCallback | None,
     emit: LogCallback,
     max_tokens: int | None = None,
+    verify_text: bool = False,
 ) -> str:
     if not config.ORPHEUS_TTS_API_KEY:
         raise RuntimeError(
@@ -330,7 +578,10 @@ async def _generate_orpheus(
         output_dir,
         strip_speaker_labels=True,
     )
-    chunk_words = _orpheus_chunk_word_limit(token_budget)
+    chunk_words = min(
+        config.ORPHEUS_TTS_CHUNK_WORDS,
+        _orpheus_chunk_word_limit(token_budget),
+    )
     input_paths, chunks = _write_chunk_inputs(
         cleaned,
         output_dir_path,
@@ -340,26 +591,43 @@ async def _generate_orpheus(
     if len(input_paths) > 1:
         emit(
             f"TTS input: Orpheus-safe split into {len(input_paths)} chunks "
-            f"(up to {chunk_words} words for {token_budget} audio tokens each)"
+            f"(up to {chunk_words} words per acoustically verified utterance)"
         )
     base_url = config.ORPHEUS_TTS_URL.rstrip("/")
     headers = {"X-API-Key": config.ORPHEUS_TTS_API_KEY}
     timeout = httpx.Timeout(config.ORPHEUS_TTS_REQUEST_TIMEOUT)
     wav_parts: list[Path] = []
+    part_metadata: list[dict] = []
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         for index, input_path in enumerate(input_paths, start=1):
             name = "TTS" if len(input_paths) == 1 else f"TTS part {index}/{len(input_paths)}"
+            chunk = chunks[index - 1]
+            expected_part = output_dir_path / f"{input_path.stem}_generated.wav"
+            if verify_text:
+                cached = _load_cached_orpheus_part(expected_part, chunk)
+                if cached is not None:
+                    emit(
+                        f"{name}: reusing acoustically verified Orpheus audio "
+                        f"({cached['word_count']} source words)"
+                    )
+                    wav_parts.append(expected_part)
+                    part_metadata.append(cached)
+                    continue
+
+            request_token_budget = _orpheus_request_token_budget(chunk, token_budget)
             payload = {
                 "input": input_path.read_text(encoding="utf-8"),
                 "language": language,
                 "voice_id": voice,
-                "max_tokens": token_budget,
-                # Greedy decoding removes per-request sampling drift. The
-                # selected built-in voice remains identical across chunks.
-                "temperature": 0.0,
-                "top_p": 1.0,
-                "top_k": 0,
-                "min_p": 0.0,
+                "max_tokens": request_token_budget,
+                # Orpheus is an autoregressive audio LM. Greedy decoding
+                # collapses real prompts to unrelated phrases (observed as
+                # repeated "Thank you"), so use the service/model defaults and
+                # rely on the acoustic integrity gate instead of determinism.
+                "temperature": 0.8,
+                "top_p": 0.95,
+                "top_k": 40,
+                "min_p": 0.05,
                 "pre_buffer_size": 1.5,
                 "n_threads": config.ORPHEUS_TTS_N_THREADS,
                 "speed": config.ORPHEUS_TTS_SPEED_PERCENT / 100,
@@ -401,23 +669,63 @@ async def _generate_orpheus(
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise RuntimeError(f"{name} could not download Orpheus job {job_id}: {exc}") from exc
-            expected_part = output_dir_path / f"{input_path.stem}_generated.wav"
             staged_part = expected_part.with_suffix(".tmp.wav")
             staged_part.write_bytes(response.content)
             os.replace(staged_part, expected_part)
             _validate_wav_part(
                 expected_part,
-                chunks[index - 1],
+                chunk,
                 token_limit_seconds=(
-                    token_budget
+                    request_token_budget
                     / ORPHEUS_AUDIO_TOKENS_PER_SECOND
                     / (config.ORPHEUS_TTS_SPEED_PERCENT / 100)
                 ),
                 speed=config.ORPHEUS_TTS_SPEED_PERCENT / 100,
             )
+            if verify_text:
+                integrity = await _verify_orpheus_part(
+                    expected_part,
+                    chunk,
+                    output_dir_path / "verification" / input_path.stem,
+                    emit=emit,
+                )
+            else:
+                integrity = {
+                    "verified": True,
+                    "method": "duration_only_preview",
+                    "expected_words": _spoken_word_count(chunk),
+                }
+            metadata = _write_orpheus_part_metadata(
+                expected_part,
+                chunk,
+                job_id=job_id,
+                request_token_budget=request_token_budget,
+                integrity=integrity,
+            )
             wav_parts.append(expected_part)
+            part_metadata.append(metadata)
 
     expected = await _concat_wav_parts(wav_parts, output_dir_path, log=log)
+    source_words = _spoken_word_count(cleaned)
+    verified_words = sum(
+        int(metadata.get("word_count") or 0)
+        for metadata in part_metadata
+        if (metadata.get("integrity") or {}).get("verified")
+    )
+    integrity = {
+        "method": "per_utterance_mlx_whisper",
+        "required": verify_text,
+        "passed": verified_words == source_words,
+        "source_words": source_words,
+        "verified_source_words": verified_words,
+        "verified_source_coverage": round(verified_words / max(1, source_words), 4),
+        "part_reports": [metadata.get("integrity") or {} for metadata in part_metadata],
+    }
+    if verify_text and not integrity["passed"]:
+        raise TtsIntegrityError(
+            f"Orpheus verified only {verified_words}/{source_words} source words; "
+            "refusing to join incomplete narration"
+        )
     _write_tts_manifest(
         output_dir_path,
         model="orpheus-en",
@@ -425,7 +733,8 @@ async def _generate_orpheus(
         chunks=chunks,
         wav_parts=wav_parts,
         output=expected,
-        deterministic=True,
+        deterministic=False,
+        integrity=integrity,
     )
     emit(
         f"TTS output: {expected} ({expected.stat().st_size / 1024:.0f} KB; "
@@ -463,14 +772,26 @@ async def generate_tts(
     if model.get("kind") == "orpheus_http":
         if len(voices) > 1:
             emit(f"Model '{tts_model}' is single-speaker; using only '{voices[0]}'")
-        return await _generate_orpheus(
-            script_path,
-            output_dir,
-            voices[0],
-            str(model.get("language") or "en"),
-            log=log,
-            emit=emit,
-        )
+        for attempt in range(1, ORPHEUS_MAX_INTEGRITY_ATTEMPTS + 1):
+            try:
+                return await _generate_orpheus(
+                    script_path,
+                    output_dir,
+                    voices[0],
+                    str(model.get("language") or "en"),
+                    log=log,
+                    emit=emit,
+                    verify_text=True,
+                )
+            except TtsIntegrityError as exc:
+                if attempt >= ORPHEUS_MAX_INTEGRITY_ATTEMPTS:
+                    raise
+                emit(
+                    "Orpheus integrity retry "
+                    f"{attempt}/{ORPHEUS_MAX_INTEGRITY_ATTEMPTS - 1}: {exc}. "
+                    "Verified earlier utterances will be reused."
+                )
+        raise AssertionError("unreachable Orpheus integrity retry state")
 
     required_runtime_paths = {
         "environment script": Path(model["env_script"]),

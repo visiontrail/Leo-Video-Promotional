@@ -17,6 +17,7 @@ its deterministic draft before the render starts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -84,6 +85,43 @@ def _narration_completeness_failures(alignment: dict) -> list[str]:
             f"transcript covers only {float(alignment.get('audio_coverage') or 0):.1%} "
             "of the audio"
         )
+    return failures
+
+
+def _orpheus_manifest_failures(
+    script_path: str | Path,
+    audio_path: str | Path,
+    tts_model: str | None,
+) -> list[str]:
+    """Recheck the fail-closed Orpheus source/audio contract before render."""
+    if tts_model != "orpheus-en":
+        return []
+    from backend.pipeline.tts import _file_sha256, _strip_speaker_labels
+
+    audio = Path(audio_path).resolve()
+    manifest_path = audio.parent / "tts_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"Orpheus integrity manifest is unavailable: {exc}"]
+
+    failures: list[str] = []
+    integrity = manifest.get("integrity") or {}
+    if not integrity.get("passed"):
+        failures.append("Orpheus per-utterance acoustic verification did not pass")
+    if float(integrity.get("verified_source_coverage") or 0) != 1.0:
+        failures.append(
+            "Orpheus verified source coverage is not 100% "
+            f"({float(integrity.get('verified_source_coverage') or 0):.1%})"
+        )
+
+    script = Path(script_path).read_text(encoding="utf-8")
+    canonical = _strip_speaker_labels(script)
+    source_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if source_hash != manifest.get("source_text_sha256"):
+        failures.append("the current audio script changed after Orpheus verification")
+    if _file_sha256(audio) != manifest.get("output_audio_sha256"):
+        failures.append("the narration WAV changed after Orpheus verification")
     return failures
 
 
@@ -316,6 +354,16 @@ async def compose_video(
     emit = lambda message: log(message) if log else logger.info(message)
 
     # --- 1. Storyboard -----------------------------------------------------
+    manifest_failures = _orpheus_manifest_failures(script_path, audio_path, tts_model)
+    if manifest_failures:
+        detail = "; ".join(manifest_failures)
+        emit(f"Narration integrity failed; video render blocked: {detail}")
+        raise RuntimeError(
+            "Narration audio does not retain a 100% verified script contract; "
+            f"refusing to render. {detail}"
+        )
+    if tts_model == "orpheus-en":
+        emit("Narration integrity: Orpheus manifest verifies 100% of source utterances")
     audio_duration = sb.get_audio_duration(audio_path)
     word_transcript, transcription = await av_sync.ensure_word_transcript(
         audio_path,

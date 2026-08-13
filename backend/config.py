@@ -156,10 +156,13 @@ TTS_DEFAULT_VOICE_2 = os.getenv("TTS_DEFAULT_VOICE_2", "Alice")
 ORPHEUS_TTS_URL = os.getenv("ORPHEUS_TTS_URL", "http://10.60.11.3:8088").rstrip("/")
 ORPHEUS_TTS_API_KEY = os.getenv("ORPHEUS_TTS_API_KEY", "")
 ORPHEUS_TTS_SPEED_PERCENT = int(os.getenv("ORPHEUS_TTS_SPEED_PERCENT", "100"))
-# 16,384 is the current external service maximum. The client converts this
-# audio-token budget to a conservative word count for each lossless chunk;
-# sending 350 words with the old 2,048 default could only produce ~25 seconds.
+# 16,384 is the current external service maximum. It is only a ceiling: the
+# client derives a much smaller request budget for each short utterance so a
+# bad generation cannot burn through minutes of unrelated audio tokens.
 ORPHEUS_TTS_MAX_TOKENS = int(os.getenv("ORPHEUS_TTS_MAX_TOKENS", "16384"))
+# Orpheus is trained on utterances, not chapter-sized prompts. Long prompts can
+# silently skip their opening while still returning a syntactically valid WAV.
+ORPHEUS_TTS_CHUNK_WORDS = int(os.getenv("ORPHEUS_TTS_CHUNK_WORDS", "12"))
 ORPHEUS_TTS_N_THREADS = int(os.getenv("ORPHEUS_TTS_N_THREADS", "64"))
 ORPHEUS_TTS_POLL_SECONDS = int(os.getenv("ORPHEUS_TTS_POLL_SECONDS", "2"))
 ORPHEUS_TTS_REQUEST_TIMEOUT = int(os.getenv("ORPHEUS_TTS_REQUEST_TIMEOUT", "60"))
