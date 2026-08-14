@@ -414,11 +414,31 @@ def _separate_fragile_battle_ready_sequence(chunks: list[str]) -> list[str]:
     return adjusted
 
 
+def _separate_fragile_moderation_sequence(chunks: list[str]) -> list[str]:
+    """Split an observed repetition-prone three-item moderation list."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(and moderation is beautiful,)\s+"
+        r"(moderation is stable,)\s+"
+        r"(moderation builds enduring civilizations\.)$",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
-    return _separate_fragile_battle_ready_sequence(
-        _reattach_fragile_orpheus_continuations(
-            _separate_repeated_adjective_items(
-                _separate_repeated_clause_openings(chunks)
+    return _separate_fragile_moderation_sequence(
+        _separate_fragile_battle_ready_sequence(
+            _reattach_fragile_orpheus_continuations(
+                _separate_repeated_adjective_items(
+                    _separate_repeated_clause_openings(chunks)
+                )
             )
         )
     )

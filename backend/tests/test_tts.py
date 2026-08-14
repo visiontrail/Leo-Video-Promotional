@@ -281,6 +281,24 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_separates_repeated_moderation_items(self):
+        text = (
+            "And moderation is beautiful, moderation is stable, moderation builds "
+            "enduring civilizations."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "And moderation is beautiful,",
+                "moderation is stable,",
+                "moderation builds enduring civilizations.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}
 
