@@ -615,6 +615,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # A repeated clause opening separated only by a comma makes the model loop
+    # on the first clause (observed as several copies of "no matter how
+    # suicidal"). A sentence pause preserves the exact words while preventing
+    # the autoregressive continuation from treating the first ending as a cue.
+    stripped = re.sub(
+        r"\b(no matter how [^,\n]+),\s+(?=no matter how\b)",
+        r"\1. ",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped):
         return stripped
     # A canonical chunk may end at a comma/semicolon chosen for semantic
