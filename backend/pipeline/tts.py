@@ -605,6 +605,16 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
 def _orpheus_prompt_text(text: str) -> str:
     """Give every short LM request an explicit speech termination boundary."""
     stripped = text.rstrip()
+    # In a comma-separated adjective list Orpheus repeatedly drops the final
+    # /d/ from "disciplined" and speaks the noun "discipline" instead. Give
+    # that exact observed transition a stronger, unspoken articulation pause;
+    # the canonical text and the acoustic words being verified stay unchanged.
+    stripped = re.sub(
+        r"\b(disciplined),\s+(formidable)\b",
+        lambda match: f"{match.group(1)}. {match.group(2).capitalize()}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped):
         return stripped
     # A canonical chunk may end at a comma/semicolon chosen for semantic
