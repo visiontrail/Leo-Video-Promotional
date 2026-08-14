@@ -630,6 +630,13 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+        observed = "He directly shaped Bergman Sorsese Tarantino George Lucas".split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+        self.assertTrue(tts._orpheus_transcript_report(expected, words)["verified"])
+
     def test_orpheus_transcript_normalizes_spoken_and_comma_number(self):
         expected = "Feet has killed a hundred thousand people."
         observed = "Feet has killed 100 000 people".split()
@@ -747,6 +754,33 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(tts._load_cached_orpheus_part(path, text))
             with patch.object(config, "ORPHEUS_TTS_SPEED_PERCENT", 140):
                 self.assertIsNone(tts._load_cached_orpheus_part(path, text))
+
+    async def test_orpheus_recovers_downloaded_wav_without_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "part.wav"
+            text = "A complete recovered utterance."
+            write_wav(path, frames=24_000)
+            integrity = self.verified_report(None, text, None)
+            messages = []
+            with patch.object(
+                tts,
+                "_verify_orpheus_part",
+                AsyncMock(return_value=integrity),
+            ) as verify:
+                metadata = await tts._recover_orpheus_part(
+                    path,
+                    text,
+                    root / "verification",
+                    request_token_budget=512,
+                    emit=messages.append,
+                )
+
+            self.assertIsNotNone(metadata)
+            self.assertEqual(metadata["job_id"], "recovered-local-output")
+            self.assertIsNotNone(tts._load_cached_orpheus_part(path, text))
+            verify.assert_awaited_once()
+            self.assertTrue(any("accepted existing WAV" in item for item in messages))
 
     def test_rejects_orpheus_audio_that_reaches_token_ceiling(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -73,6 +73,7 @@ ACOUSTIC_EQUIVALENTS = {
     # spelling alias avoids regenerating otherwise complete Orpheus audio;
     # unrelated near-matches remain rejected.
     "suarcese": "scorsese",
+    "sorsese": "scorsese",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
@@ -842,6 +843,49 @@ def _write_orpheus_part_metadata(
     return payload
 
 
+async def _recover_orpheus_part(
+    path: Path,
+    text: str,
+    verification_dir: Path,
+    *,
+    request_token_budget: int,
+    emit: LogCallback,
+) -> dict | None:
+    """Verify a downloaded part left without valid cache metadata.
+
+    A process restart, or an exact-ASR spelling correction deployed after a
+    rejected sample, can leave a complete WAV on disk without a sidecar.  Run
+    the same fail-closed acoustic gate before submitting another slow remote
+    CPU job.  Truly stale or incomplete audio is ignored and regenerated.
+    """
+    if not path.is_file():
+        return None
+    try:
+        _validate_wav_part(
+            path,
+            text,
+            speed=config.ORPHEUS_TTS_SPEED_PERCENT / 100,
+        )
+        integrity = await _verify_orpheus_part(
+            path,
+            text,
+            verification_dir,
+            emit=emit,
+        )
+    except TtsIntegrityError as exc:
+        emit(f"Orpheus recovery: existing WAV rejected ({exc}); regenerating")
+        return None
+    metadata = _write_orpheus_part_metadata(
+        path,
+        text,
+        job_id="recovered-local-output",
+        request_token_budget=request_token_budget,
+        integrity=integrity,
+    )
+    emit("Orpheus recovery: accepted existing WAV after acoustic verification")
+    return metadata
+
+
 async def _generate_orpheus(
     script_path: str,
     output_dir: str,
@@ -889,6 +933,7 @@ async def _generate_orpheus(
             name = "TTS" if len(input_paths) == 1 else f"TTS part {index}/{len(input_paths)}"
             chunk = chunks[index - 1]
             expected_part = output_dir_path / f"{input_path.stem}_generated.wav"
+            request_token_budget = _orpheus_request_token_budget(chunk, token_budget)
             if verify_text:
                 cached = _load_cached_orpheus_part(expected_part, chunk)
                 if cached is not None:
@@ -899,8 +944,19 @@ async def _generate_orpheus(
                     wav_parts.append(expected_part)
                     part_metadata.append(cached)
                     continue
+                recovered = await _recover_orpheus_part(
+                    expected_part,
+                    chunk,
+                    output_dir_path / "verification" / input_path.stem,
+                    request_token_budget=request_token_budget,
+                    emit=emit,
+                )
+                if recovered is not None:
+                    emit(f"{name}: reusing recovered acoustically verified Orpheus audio")
+                    wav_parts.append(expected_part)
+                    part_metadata.append(recovered)
+                    continue
 
-            request_token_budget = _orpheus_request_token_budget(chunk, token_budget)
             payload = {
                 "input": _orpheus_prompt_text(input_path.read_text(encoding="utf-8")),
                 "language": language,
