@@ -302,6 +302,28 @@ def _split_parallel_clause(sentence: str) -> list[str]:
     return [sentence]
 
 
+def _separate_repeated_clause_openings(chunks: list[str]) -> list[str]:
+    """Force repetition-prone mirrored openings into separate utterances."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"\bno matter how [^,\n]+,\s+(?=no matter how\b)",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.search(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        boundary = match.end()
+        left = chunk[:boundary].rstrip()
+        right = chunk[boundary:].lstrip()
+        if left and right:
+            separated.extend((left, right))
+        else:
+            separated.append(chunk)
+    return separated
+
+
 def _split_tts_text(
     text: str,
     max_words: int,
@@ -316,7 +338,12 @@ def _split_tts_text(
     dropped.
     """
     if max_words <= 0 or _spoken_word_count(text) <= max_words:
-        return [text]
+        chunks = [text]
+        return (
+            chunks
+            if preserve_speaker_labels
+            else _separate_repeated_clause_openings(chunks)
+        )
 
     units: list[str] = []
     for line in text.splitlines():
@@ -402,7 +429,11 @@ def _split_tts_text(
         current.append(unit)
         current_words += word_count
     flush()
-    return chunks
+    return (
+        chunks
+        if preserve_speaker_labels
+        else _separate_repeated_clause_openings(chunks)
+    )
 
 
 def _prepare_tts_input(
@@ -612,16 +643,6 @@ def _orpheus_prompt_text(text: str) -> str:
     stripped = re.sub(
         r"\b(disciplined),\s+(formidable)\b",
         lambda match: f"{match.group(1)}. {match.group(2).capitalize()}",
-        stripped,
-        flags=re.IGNORECASE,
-    )
-    # A repeated clause opening separated only by a comma makes the model loop
-    # on the first clause (observed as several copies of "no matter how
-    # suicidal"). A sentence pause preserves the exact words while preventing
-    # the autoregressive continuation from treating the first ending as a cue.
-    stripped = re.sub(
-        r"\b(no matter how [^,\n]+),\s+(?=no matter how\b)",
-        r"\1. ",
         stripped,
         flags=re.IGNORECASE,
     )

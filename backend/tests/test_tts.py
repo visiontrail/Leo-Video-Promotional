@@ -174,16 +174,22 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "same kind of disciplined. Formidable, militaristic society.",
         )
 
-    def test_orpheus_prompt_separates_repeated_clause_openings(self):
+    def test_split_tts_text_separates_repeated_clause_openings(self):
         text = (
             "no matter how suicidal, no matter how strategically insane.\n"
             "Same discipline."
         )
 
         self.assertEqual(
-            tts._orpheus_prompt_text(text),
-            "no matter how suicidal. no matter how strategically insane.\n"
-            "Same discipline.",
+            tts._split_tts_text(text, max_words=12),
+            [
+                "no matter how suicidal,",
+                "no matter how strategically insane.\nSame discipline.",
+            ],
+        )
+        self.assertEqual(
+            " ".join(" ".join(tts._split_tts_text(text, max_words=12)).split()),
+            " ".join(text.split()),
         )
 
     async def test_resolves_application_paths_before_changing_cwd(self):
