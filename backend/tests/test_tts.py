@@ -141,6 +141,26 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_keeps_preposition_with_proper_noun_clause_object(self):
+        text = (
+            "Now here's where the comparison gets really uncomfortable, because "
+            "you look at Germany, same era, same kind of disciplined, formidable, "
+            "militaristic society, and you'd think, same story, right?"
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "Now here's where the comparison gets really uncomfortable, "
+                "because you look at Germany,",
+                "same era, same kind of disciplined, formidable, militaristic "
+                "society, and you'd think, same story, right?",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
         self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")

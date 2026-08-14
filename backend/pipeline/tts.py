@@ -335,6 +335,20 @@ def _split_tts_text(
                 words = clause.strip().split()
                 while words:
                     take = min(max_words, len(words))
+                    if (
+                        take < len(words)
+                        and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
+                        == "at"
+                        and words[take][:1].isupper()
+                        and words[take].rstrip("\"'’”)]}").endswith(",")
+                    ):
+                        # Keep a one-word proper-noun object with a trailing
+                        # preposition when it also closes the clause. Sending
+                        # "at Germany, ..." as a standalone Orpheus prompt
+                        # repeatedly changes the later adjective "disciplined"
+                        # to the noun "discipline". The bounded one-word
+                        # overflow produces the natural "... look at Germany."
+                        take += 1
                     remainder = len(words) - take
                     if 0 < remainder < 5:
                         # Avoid context-starved sentence tails such as "belonged
