@@ -617,6 +617,19 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_whisper_scorsese_spelling(self):
+        expected = "He directly shaped Bergman, Scorsese, Tarantino, George Lucas."
+        observed = "He directly shaped Bergman Suarcese Tarantino George Lucas".split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
     def test_orpheus_transcript_normalizes_spoken_and_comma_number(self):
         expected = "Feet has killed a hundred thousand people."
         observed = "Feet has killed 100 000 people".split()

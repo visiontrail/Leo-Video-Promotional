@@ -68,6 +68,11 @@ ACOUSTIC_EQUIVALENTS = {
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",
+    # Whisper large-v3-turbo spells the correctly pronounced surname
+    # "Scorsese" as "Suarcese" in this narration.  This exact, observed
+    # spelling alias avoids regenerating otherwise complete Orpheus audio;
+    # unrelated near-matches remain rejected.
+    "suarcese": "scorsese",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
