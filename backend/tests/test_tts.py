@@ -496,6 +496,32 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_spoken_year(self):
+        expected = "First gamble, eighteen ninety-five. Japan goes to war."
+        observed = "First gamble 1895 Japan goes to war".split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
+    def test_orpheus_transcript_normalizes_oh_year(self):
+        expected = "Second gamble, nineteen oh five. Japan goes to war."
+        observed = "Second gamble 1905 Japan goes to war".split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
     def test_orpheus_transcript_accepts_exact_homophone_but_not_near_homophone(self):
         expected = "The ground under your feet has killed people."
 

@@ -49,7 +49,10 @@ LEXICAL_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?|[\u3400-\u9f
 NUMBER_WORDS = {
     "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
-    "ten": "10", "twenty": "20", "thirty": "30", "forty": "40",
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "oh": "0", "twenty": "20",
+    "thirty": "30", "forty": "40",
     "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80",
     "ninety": "90",
 }
@@ -131,9 +134,53 @@ def _lexical_tokens(text: str) -> list[str]:
 
 def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
     """Collapse acoustically identical written/spoken English number forms."""
+    # Whisper writes spoken years as one numeric token ("1895"), while the
+    # script commonly spells them as "eighteen ninety-five". First collapse a
+    # tens+ones pair, then combine two two-digit year halves. Also support the
+    # conventional "nineteen oh five" pronunciation.
+    simple: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (
+            token.isdigit()
+            and 20 <= int(token) <= 90
+            and int(token) % 10 == 0
+            and index + 1 < len(tokens)
+            and tokens[index + 1].isdigit()
+            and 1 <= int(tokens[index + 1]) <= 9
+        ):
+            simple.append(str(int(token) + int(tokens[index + 1])))
+            index += 2
+            continue
+        simple.append(token)
+        index += 1
+    tokens = simple
+
     result: list[str] = []
     index = 0
     while index < len(tokens):
+        if (
+            tokens[index].isdigit()
+            and len(tokens[index]) == 2
+            and index + 1 < len(tokens)
+            and tokens[index + 1].isdigit()
+            and len(tokens[index + 1]) == 2
+        ):
+            result.append(str(int(tokens[index]) * 100 + int(tokens[index + 1])))
+            index += 2
+            continue
+        if (
+            tokens[index].isdigit()
+            and len(tokens[index]) == 2
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "0"
+            and tokens[index + 2].isdigit()
+            and 1 <= int(tokens[index + 2]) <= 9
+        ):
+            result.append(str(int(tokens[index]) * 100 + int(tokens[index + 2])))
+            index += 3
+            continue
         if (
             tokens[index].isdigit()
             and index + 1 < len(tokens)
