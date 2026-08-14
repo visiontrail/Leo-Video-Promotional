@@ -90,9 +90,27 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_avoids_dangling_quantifier_after_clause(self):
+        text = (
+            "Japan took tea ceremony, calligraphy, the game of go, flower "
+            "arrangement, all of it, absorbed it, made it their own."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "Japan took tea ceremony, calligraphy, the game of go, flower arrangement,",
+                "all of it, absorbed it, made it their own.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
         self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
+        self.assertEqual(tts._orpheus_prompt_text("A complete clause,"), "A complete clause.")
 
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}

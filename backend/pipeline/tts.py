@@ -68,10 +68,11 @@ ACOUSTIC_EQUIVALENTS = {
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
-    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+    "a", "all", "an", "and", "as", "at", "but", "by", "for", "from", "in",
     "into", "nor", "of", "on", "or", "the", "to", "with",
 }
 TERMINAL_SPEECH_PUNCTUATION_RE = re.compile(r"[.!?。！？][\"'’”)]*\s*$")
+TRAILING_CLAUSE_PUNCTUATION_RE = re.compile(r"[,;:，；：]+([\"'’”)]*)\s*$")
 
 
 class TtsIntegrityError(RuntimeError):
@@ -492,7 +493,13 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
 def _orpheus_prompt_text(text: str) -> str:
     """Give every short LM request an explicit speech termination boundary."""
     stripped = text.rstrip()
-    return stripped if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped) else stripped + "."
+    if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped):
+        return stripped
+    # A canonical chunk may end at a comma/semicolon chosen for semantic
+    # splitting.  Replace that delimiter only in the provider prompt; appending
+    # a period would otherwise create the malformed sequence `,.`.
+    clause_terminated = TRAILING_CLAUSE_PUNCTUATION_RE.sub(r".\1", stripped)
+    return clause_terminated if clause_terminated != stripped else stripped + "."
 
 
 def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
