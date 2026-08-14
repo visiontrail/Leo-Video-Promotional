@@ -182,6 +182,31 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "and they passed. That love to their kids.",
         )
 
+    def test_orpheus_prompt_exposes_disproportionate_morpheme_boundary(self):
+        text = "Why does this island produce disproportionate art,"
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Why does this island produce dis-proportionate art.",
+        )
+
+    def test_orpheus_transcript_accepts_only_exact_disproportionate_morphemes(self):
+        expected = "This island produces disproportionate art."
+
+        correct = "This island produces dis proportionate art".split()
+        wrong = "This island produces dis precautionate art".split()
+        correct_words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(correct)
+        ]
+        wrong_words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(wrong)
+        ]
+
+        self.assertTrue(tts._orpheus_transcript_report(expected, correct_words)["verified"])
+        self.assertFalse(tts._orpheus_transcript_report(expected, wrong_words)["verified"])
+
     def test_split_tts_text_separates_repeated_clause_openings(self):
         text = (
             "no matter how suicidal, no matter how strategically insane.\n"

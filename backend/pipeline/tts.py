@@ -228,6 +228,27 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
         for token in _lexical_tokens(str(word.get("text") or "")):
             tokens.append(token)
             word_indexes.append(index)
+    # A provider-only pronunciation hint may lead Whisper to retain the
+    # morpheme boundary. The pair is acoustically and lexically identical to
+    # the canonical word; a different second morpheme remains a hard failure.
+    acoustic_tokens: list[str] = []
+    acoustic_indexes: list[int] = []
+    cursor = 0
+    while cursor < len(tokens):
+        if (
+            tokens[cursor] == "dis"
+            and cursor + 1 < len(tokens)
+            and tokens[cursor + 1] == "proportionate"
+        ):
+            acoustic_tokens.append("disproportionate")
+            acoustic_indexes.append(word_indexes[cursor])
+            cursor += 2
+            continue
+        acoustic_tokens.append(tokens[cursor])
+        acoustic_indexes.append(word_indexes[cursor])
+        cursor += 1
+    tokens = acoustic_tokens
+    word_indexes = acoustic_indexes
     canonical = _canonicalize_number_tokens(tokens)
     if len(canonical) == len(tokens):
         return canonical, word_indexes
@@ -706,6 +727,16 @@ def _orpheus_prompt_text(text: str) -> str:
     stripped = re.sub(
         r"\b(passed)\s+(that love)\b",
         lambda match: f"{match.group(1)}. {match.group(2).capitalize()}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    # The speech LM repeatedly substitutes "precautionate" for the middle of
+    # this uncommon word. Expose the real morpheme boundary to its tokenizer;
+    # the canonical script remains unchanged and ASR must still recover the
+    # exact word (or the exact `dis` + `proportionate` acoustic pair).
+    stripped = re.sub(
+        r"\bdisproportionate\b",
+        "dis-proportionate",
         stripped,
         flags=re.IGNORECASE,
     )
