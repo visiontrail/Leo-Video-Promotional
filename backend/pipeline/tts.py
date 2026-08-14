@@ -277,6 +277,31 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _split_parallel_clause(sentence: str) -> list[str]:
+    """Separate mirrored clauses that make Orpheus repeat the first ending.
+
+    Keep this deliberately narrow: both comma-separated clauses must have the
+    same lexical frame after removing their distinct subject and final word.
+    For example, ``Japanese go ... die, Chinese go ... win`` becomes two
+    independently verified utterances instead of a prompt that the speech LM
+    repeatedly expands as ``... die, ... die, ... win``.
+    """
+    if sentence.count(",") != 1:
+        return [sentence]
+    left, right = (part.strip() for part in sentence.split(",", 1))
+    left_tokens = _lexical_tokens(left)
+    right_tokens = _lexical_tokens(right)
+    if (
+        len(left_tokens) >= 5
+        and len(left_tokens) == len(right_tokens)
+        and left_tokens[0] != right_tokens[0]
+        and left_tokens[-1] != right_tokens[-1]
+        and left_tokens[1:-1] == right_tokens[1:-1]
+    ):
+        return [f"{left},", right]
+    return [sentence]
+
+
 def _split_tts_text(
     text: str,
     max_words: int,
@@ -306,43 +331,44 @@ def _split_tts_text(
                 speaker_label = match.group(1).strip()
                 content = match.group(2).strip()
         for sentence in SENTENCE_BOUNDARY_RE.split(content):
-            words = sentence.strip().split()
-            while words:
-                take = min(max_words, len(words))
-                remainder = len(words) - take
-                if 0 < remainder < 5:
-                    # Avoid context-starved sentence tails such as "belonged
-                    # to the state." Orpheus repeatedly drops inflections in
-                    # these fragments. Keep the final phrase attached to its
-                    # grammatical context; the bounded four-word overflow is
-                    # still independently token-budgeted and verified.
-                    take = len(words)
-                while (
-                    take > 1
-                    and take < len(words)
-                    and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
-                    in DANGLING_CHUNK_WORDS
-                ):
-                    take -= 1
-                if (
-                    take > 1
-                    and take < len(words)
-                    and words[take].strip(".,!?;:\"'’”()[]{}").casefold()
-                    in BAD_LEADING_CHUNK_WORDS
-                ):
-                    # Do not strand an attached preposition/conjunction at the
-                    # start of the next speech-LM request. Move its phrase head
-                    # (and an immediately preceding determiner) with it.
-                    take -= 1
+            for clause in _split_parallel_clause(sentence):
+                words = clause.strip().split()
+                while words:
+                    take = min(max_words, len(words))
+                    remainder = len(words) - take
+                    if 0 < remainder < 5:
+                        # Avoid context-starved sentence tails such as "belonged
+                        # to the state." Orpheus repeatedly drops inflections in
+                        # these fragments. Keep the final phrase attached to its
+                        # grammatical context; the bounded four-word overflow is
+                        # still independently token-budgeted and verified.
+                        take = len(words)
                     while (
                         take > 1
+                        and take < len(words)
                         and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
-                        in CHUNK_DETERMINERS
+                        in DANGLING_CHUNK_WORDS
                     ):
                         take -= 1
-                piece = " ".join(words[:take])
-                words = words[take:]
-                units.append(f"{speaker_label} {piece}".strip())
+                    if (
+                        take > 1
+                        and take < len(words)
+                        and words[take].strip(".,!?;:\"'’”()[]{}").casefold()
+                        in BAD_LEADING_CHUNK_WORDS
+                    ):
+                        # Do not strand an attached preposition/conjunction at the
+                        # start of the next speech-LM request. Move its phrase head
+                        # (and an immediately preceding determiner) with it.
+                        take -= 1
+                        while (
+                            take > 1
+                            and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
+                            in CHUNK_DETERMINERS
+                        ):
+                            take -= 1
+                    piece = " ".join(words[:take])
+                    words = words[take:]
+                    units.append(f"{speaker_label} {piece}".strip())
 
     chunks: list[str] = []
     current: list[str] = []
