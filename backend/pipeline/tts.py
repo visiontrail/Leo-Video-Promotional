@@ -699,6 +699,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # Orpheus repeatedly realizes "passed that love" as present-tense
+    # "pass that love", even when the subject is present.  A provider-only
+    # sentence pause makes the final /t/ audible while preserving exactly the
+    # same lexical script for verification and concatenation.
+    stripped = re.sub(
+        r"\b(passed)\s+(that love)\b",
+        lambda match: f"{match.group(1)}. {match.group(2).capitalize()}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped):
         return stripped
     # A canonical chunk may end at a comma/semicolon chosen for semantic

@@ -174,6 +174,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "same kind of disciplined. Formidable, militaristic society.",
         )
 
+    def test_orpheus_prompt_articulates_fragile_passed_inflection(self):
+        text = "and they passed that love to their kids."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "and they passed. That love to their kids.",
+        )
+
     def test_split_tts_text_separates_repeated_clause_openings(self):
         text = (
             "no matter how suicidal, no matter how strategically insane.\n"
