@@ -390,10 +390,36 @@ def _reattach_fragile_orpheus_continuations(chunks: list[str]) -> list[str]:
     return adjusted
 
 
+def _separate_fragile_battle_ready_sequence(chunks: list[str]) -> list[str]:
+    """Keep an observed compound phrase intact in shorter utterances."""
+    adjusted = list(chunks)
+    index = 0
+    pattern = re.compile(
+        r"^(.*?the most unrestrained,)\s+"
+        r"(a battle-ready death cult, sexually open, transformed by drink,)\s+"
+        r"(willing to cross any line in art or war\.)$",
+        re.IGNORECASE,
+    )
+    while index < len(adjusted) - 1:
+        match = pattern.match(f"{adjusted[index]} {adjusted[index + 1]}")
+        if match is None:
+            index += 1
+            continue
+        adjusted[index : index + 2] = [
+            match.group(1),
+            match.group(2),
+            match.group(3),
+        ]
+        index += 3
+    return adjusted
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
-    return _reattach_fragile_orpheus_continuations(
-        _separate_repeated_adjective_items(
-            _separate_repeated_clause_openings(chunks)
+    return _separate_fragile_battle_ready_sequence(
+        _reattach_fragile_orpheus_continuations(
+            _separate_repeated_adjective_items(
+                _separate_repeated_clause_openings(chunks)
+            )
         )
     )
 

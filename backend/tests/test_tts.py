@@ -259,6 +259,28 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_keeps_battle_ready_death_cult_together(self):
+        text = (
+            "Japan is simultaneously the most reserved society on earth, hidden "
+            "chimneys, kneeling on floors, whispering on trains, and the most "
+            "unrestrained, a battle-ready death cult, sexually open, transformed "
+            "by drink, willing to cross any line in art or war."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "Japan is simultaneously the most reserved society on earth, "
+                "hidden chimneys, kneeling",
+                "on floors, whispering on trains, and the most unrestrained,",
+                "a battle-ready death cult, sexually open, transformed by drink,",
+                "willing to cross any line in art or war.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}
 
