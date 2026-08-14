@@ -78,6 +78,10 @@ TRAILING_CLAUSE_PUNCTUATION_RE = re.compile(r"[,;:，；：]+([\"'’”)]*)\s*$
 class TtsIntegrityError(RuntimeError):
     """A provider returned audio that cannot contain the requested narration."""
 
+    def __init__(self, message: str, *, part_key: str | None = None):
+        super().__init__(message)
+        self.part_key = part_key
+
 
 @dataclass(frozen=True)
 class WavInfo:
@@ -800,25 +804,31 @@ async def _generate_orpheus(
             staged_part = expected_part.with_suffix(".tmp.wav")
             staged_part.write_bytes(response.content)
             os.replace(staged_part, expected_part)
-            _validate_wav_part(
-                expected_part,
-                chunk,
-                token_limit_seconds=(
-                    None
-                    if verify_text
-                    else request_token_budget
-                    / ORPHEUS_AUDIO_TOKENS_PER_SECOND
-                    / (config.ORPHEUS_TTS_SPEED_PERCENT / 100)
-                ),
-                speed=config.ORPHEUS_TTS_SPEED_PERCENT / 100,
-            )
-            if verify_text:
-                integrity = await _verify_orpheus_part(
+            try:
+                _validate_wav_part(
                     expected_part,
                     chunk,
-                    output_dir_path / "verification" / input_path.stem,
-                    emit=emit,
+                    token_limit_seconds=(
+                        None
+                        if verify_text
+                        else request_token_budget
+                        / ORPHEUS_AUDIO_TOKENS_PER_SECOND
+                        / (config.ORPHEUS_TTS_SPEED_PERCENT / 100)
+                    ),
+                    speed=config.ORPHEUS_TTS_SPEED_PERCENT / 100,
                 )
+            except TtsIntegrityError as exc:
+                raise TtsIntegrityError(str(exc), part_key=input_path.name) from exc
+            if verify_text:
+                try:
+                    integrity = await _verify_orpheus_part(
+                        expected_part,
+                        chunk,
+                        output_dir_path / "verification" / input_path.stem,
+                        emit=emit,
+                    )
+                except TtsIntegrityError as exc:
+                    raise TtsIntegrityError(str(exc), part_key=input_path.name) from exc
             else:
                 integrity = {
                     "verified": True,
@@ -885,7 +895,11 @@ async def generate_tts(
 
     # Mirror to the task log (pipeline.log + LogPanel) when available, else the
     # module logger (start.sh log). Prefer the callback to avoid double-logging.
-    emit = lambda message: log(message) if log else logger.info(message)
+    def emit(message: str) -> None:
+        if log:
+            log(message)
+        else:
+            logger.info(message)
 
     model = config.TTS_MODELS.get(tts_model)
     if model is None:
@@ -902,7 +916,8 @@ async def generate_tts(
     if model.get("kind") == "orpheus_http":
         if len(voices) > 1:
             emit(f"Model '{tts_model}' is single-speaker; using only '{voices[0]}'")
-        for attempt in range(1, ORPHEUS_MAX_INTEGRITY_ATTEMPTS + 1):
+        integrity_attempts: dict[str, int] = {}
+        while True:
             try:
                 return await _generate_orpheus(
                     script_path,
@@ -914,14 +929,16 @@ async def generate_tts(
                     verify_text=True,
                 )
             except TtsIntegrityError as exc:
+                part_key = exc.part_key or "complete narration"
+                attempt = integrity_attempts.get(part_key, 0) + 1
+                integrity_attempts[part_key] = attempt
                 if attempt >= ORPHEUS_MAX_INTEGRITY_ATTEMPTS:
                     raise
                 emit(
-                    "Orpheus integrity retry "
+                    f"Orpheus integrity retry for {part_key} "
                     f"{attempt}/{ORPHEUS_MAX_INTEGRITY_ATTEMPTS - 1}: {exc}. "
                     "Verified earlier utterances will be reused."
                 )
-        raise AssertionError("unreachable Orpheus integrity retry state")
 
     required_runtime_paths = {
         "environment script": Path(model["env_script"]),

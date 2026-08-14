@@ -543,6 +543,31 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result, "/verified.wav")
             self.assertEqual(generate.await_count, 2)
 
+    async def test_orpheus_integrity_retry_budget_is_independent_per_part(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Two independently retryable utterances.")
+            generate = AsyncMock(
+                side_effect=[
+                    tts.TtsIntegrityError("bad first sample", part_key="part-001"),
+                    tts.TtsIntegrityError("bad first retry", part_key="part-001"),
+                    tts.TtsIntegrityError("bad second sample", part_key="part-002"),
+                    tts.TtsIntegrityError("bad second retry", part_key="part-002"),
+                    "/verified.wav",
+                ]
+            )
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts, "_generate_orpheus", generate),
+            ):
+                result = await tts.generate_tts(
+                    str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                )
+
+            self.assertEqual(result, "/verified.wav")
+            self.assertEqual(generate.await_count, 5)
+
     def test_orpheus_transcript_report_rejects_repeated_utterance(self):
         expected = "The complete phrase is spoken once."
         repeated = (expected.rstrip(".") + " " + expected.rstrip(".")).split()
