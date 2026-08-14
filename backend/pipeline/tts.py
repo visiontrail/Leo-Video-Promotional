@@ -71,6 +71,11 @@ DANGLING_CHUNK_WORDS = {
     "a", "all", "an", "and", "as", "at", "but", "by", "for", "from", "in",
     "into", "nor", "of", "on", "or", "the", "to", "with",
 }
+# Orpheus repeatedly drops an isolated leading "of" while conjunction-led
+# continuations remain reliable. Keep this intervention deliberately narrow so
+# existing verified chunk identities do not churn.
+BAD_LEADING_CHUNK_WORDS = {"of"}
+CHUNK_DETERMINERS = {"a", "an", "the"}
 TERMINAL_SPEECH_PUNCTUATION_RE = re.compile(r"[.!?。！？][\"'’”)]*\s*$")
 TRAILING_CLAUSE_PUNCTUATION_RE = re.compile(r"[,;:，；：]+([\"'’”)]*)\s*$")
 
@@ -272,6 +277,22 @@ def _split_tts_text(
                     in DANGLING_CHUNK_WORDS
                 ):
                     take -= 1
+                if (
+                    take > 1
+                    and take < len(words)
+                    and words[take].strip(".,!?;:\"'’”()[]{}").casefold()
+                    in BAD_LEADING_CHUNK_WORDS
+                ):
+                    # Do not strand an attached preposition/conjunction at the
+                    # start of the next speech-LM request. Move its phrase head
+                    # (and an immediately preceding determiner) with it.
+                    take -= 1
+                    while (
+                        take > 1
+                        and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
+                        in CHUNK_DETERMINERS
+                    ):
+                        take -= 1
                 piece = " ".join(words[:take])
                 words = words[take:]
                 units.append(f"{speaker_label} {piece}".strip())
