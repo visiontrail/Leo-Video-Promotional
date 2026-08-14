@@ -192,6 +192,23 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             " ".join(text.split()),
         )
 
+    def test_split_tts_text_keeps_past_tense_continuation_with_subject(self):
+        text = (
+            "They grew up on Japanese animation, and they love it, and they "
+            "passed that love to their kids."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "They grew up on Japanese animation, and they love it,",
+                "and they passed that love to their kids.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}
 

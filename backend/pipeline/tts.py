@@ -330,6 +330,29 @@ def _separate_repeated_clause_openings(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _reattach_fragile_orpheus_continuations(chunks: list[str]) -> list[str]:
+    """Keep an observed past-tense continuation with its stranded subject."""
+    adjusted = list(chunks)
+    for index in range(len(adjusted) - 1):
+        left = adjusted[index]
+        right = adjusted[index + 1]
+        subject = re.search(r"(?i)(?:^|\s)(and they)$", left)
+        if subject is None or re.match(r"(?i)passed\b", right) is None:
+            continue
+        prefix = left[: subject.start(1)].rstrip()
+        if not prefix:
+            continue
+        adjusted[index] = prefix
+        adjusted[index + 1] = f"{subject.group(1)} {right}"
+    return adjusted
+
+
+def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
+    return _reattach_fragile_orpheus_continuations(
+        _separate_repeated_clause_openings(chunks)
+    )
+
+
 def _split_tts_text(
     text: str,
     max_words: int,
@@ -348,7 +371,7 @@ def _split_tts_text(
         return (
             chunks
             if preserve_speaker_labels
-            else _separate_repeated_clause_openings(chunks)
+            else _stabilize_orpheus_chunks(chunks)
         )
 
     units: list[str] = []
@@ -438,7 +461,7 @@ def _split_tts_text(
     return (
         chunks
         if preserve_speaker_labels
-        else _separate_repeated_clause_openings(chunks)
+        else _stabilize_orpheus_chunks(chunks)
     )
 
 
