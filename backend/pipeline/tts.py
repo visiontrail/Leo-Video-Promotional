@@ -330,6 +330,28 @@ def _separate_repeated_clause_openings(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _separate_repeated_adjective_items(chunks: list[str]) -> list[str]:
+    """Split an observed repetition-prone three-item adjective list."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"\bdisproportionate\s+[^,\n]+,\s+(?=disproportionate\b)",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.search(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        boundary = match.end()
+        left = chunk[:boundary].rstrip()
+        right = chunk[boundary:].lstrip()
+        if left and right:
+            separated.extend((left, right))
+        else:
+            separated.append(chunk)
+    return separated
+
+
 def _reattach_fragile_orpheus_continuations(chunks: list[str]) -> list[str]:
     """Keep an observed past-tense continuation with its stranded subject."""
     adjusted = list(chunks)
@@ -349,7 +371,9 @@ def _reattach_fragile_orpheus_continuations(chunks: list[str]) -> list[str]:
 
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     return _reattach_fragile_orpheus_continuations(
-        _separate_repeated_clause_openings(chunks)
+        _separate_repeated_adjective_items(
+            _separate_repeated_clause_openings(chunks)
+        )
     )
 
 

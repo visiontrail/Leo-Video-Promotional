@@ -209,6 +209,23 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_separates_repeated_adjective_items(self):
+        text = (
+            "Why does this one island produce disproportionate art, "
+            "disproportionate culture, disproportionate aesthetic influence?"
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "Why does this one island produce disproportionate art,",
+                "disproportionate culture, disproportionate aesthetic influence?",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     async def test_resolves_application_paths_before_changing_cwd(self):
         captured = {}
 
