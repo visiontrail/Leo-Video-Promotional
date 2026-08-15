@@ -1,7 +1,8 @@
+import asyncio
 import json
 from pathlib import Path
 
-from backend.pipeline import scene_kit, visual_plan
+from backend.pipeline import digester, scene_kit, visual_plan
 
 
 def board(n: int = 3) -> dict:
@@ -310,3 +311,22 @@ def test_visual_plan_payload_does_not_expose_the_working_title_as_scene_copy():
 
     assert "episode_title" not in payload
     assert "VIDEO 042" not in json.dumps(payload)
+
+
+def test_visual_planner_does_not_load_unrelated_project_skills(monkeypatch):
+    observed: dict = {}
+
+    async def fake_resolve_provider(*_args, **_kwargs):
+        return "http://provider.test", "model", "key"
+
+    async def fake_chat(*_args, **kwargs):
+        observed.update(kwargs)
+        return "[]"
+
+    monkeypatch.setattr(digester, "_resolve_provider", fake_resolve_provider)
+    monkeypatch.setattr(digester, "_chat", fake_chat)
+
+    plans = asyncio.run(visual_plan.plan_scene_visuals(board(1)))
+
+    assert observed["enable_skills"] is False
+    assert len(plans) == 1

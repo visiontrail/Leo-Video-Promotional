@@ -365,6 +365,7 @@ async def plan_scene_visuals(
                 api_key,
                 log,
                 f"Visual plan {n}/{len(batches)}",
+                enable_skills=False,
             )
             entries = _first_json_array(reply) or []
         except Exception as exc:  # noqa: BLE001 - one bad batch must not lose the rest
