@@ -65,6 +65,10 @@ ORDINAL_DIGITS = {
 # deliberately narrow; near-homophones such as ``feed``/``feet`` must still fail.
 ACOUSTIC_EQUIVALENTS = {
     "feat": "feet",
+    # Possessive "its" and the contraction "it's" are exact homophones.
+    # Whisper uses the contraction spelling for either meaning, so spelling
+    # cannot be used as acoustic evidence that the narration is wrong.
+    "it's": "its",
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",

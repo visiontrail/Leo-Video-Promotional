@@ -711,6 +711,19 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(tts._orpheus_transcript_report(expected, feat_words)["verified"])
         self.assertFalse(tts._orpheus_transcript_report(expected, feed_words)["verified"])
 
+    def test_orpheus_transcript_accepts_its_contraction_homophone(self):
+        expected = "The things we admire in a culture, its art."
+        observed = "The things we admire in a culture it's art".split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
     def test_orpheus_transcript_normalizes_whisper_eunuch_bias(self):
         expected = "The eunuch system, not interested."
         observed = "The Unix system not interested".split()
