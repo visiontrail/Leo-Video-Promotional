@@ -29,6 +29,10 @@ LogCallback = Callable[[str], None]
 # Scenes per model call. Large enough that the model can shape an arc across a
 # stretch of the episode, small enough to stay inside a single response.
 PLAN_BATCH_SIZE = 12
+# Thinking providers need room for both internal reasoning and the JSON plan.
+# The default 4,096-token ceiling was exhausted before message content on the
+# full 12-scene batches exercised by a ten-minute composition.
+VISUAL_PLAN_MAX_TOKENS = 8192
 
 # Accent rotation used by the fallback and as a sanity default. Consecutive
 # scenes never share an accent, which alone gives the video a sense of movement.
@@ -365,6 +369,7 @@ async def plan_scene_visuals(
                 api_key,
                 log,
                 f"Visual plan {n}/{len(batches)}",
+                max_tokens=VISUAL_PLAN_MAX_TOKENS,
                 enable_skills=False,
             )
             entries = _first_json_array(reply) or []
