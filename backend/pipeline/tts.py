@@ -201,6 +201,14 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             index += 2
             continue
         if (
+            tokens[index].isdigit()
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in NUMBER_SCALES
+        ):
+            start = index
+            current = int(tokens[index])
+            index += 1
+        elif (
             tokens[index] == "a"
             and index + 1 < len(tokens)
             and tokens[index + 1] in NUMBER_SCALES
@@ -214,9 +222,13 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             result.append(tokens[index])
             index += 1
             continue
-        index = start + (2 if tokens[start] == "a" else 1)
-        first_scale = tokens[index - 1]
+        if tokens[start] == "a":
+            index = start + 1
+        elif tokens[start] in NUMBER_SCALES:
+            index = start
+        first_scale = tokens[index]
         current *= NUMBER_SCALES[first_scale]
+        index += 1
         while index < len(tokens) and tokens[index] in NUMBER_SCALES:
             scale = NUMBER_SCALES[tokens[index]]
             current = current * scale if scale >= 1_000 else current + scale

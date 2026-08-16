@@ -770,6 +770,26 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_spelled_thousands(self):
+        expected = (
+            "three thousand nautical miles across open ocean without anyone noticing. "
+            "It worked."
+        )
+        observed = (
+            "3 000 nautical miles across open ocean without anyone noticing it worked"
+        ).split()
+        words = [
+            {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+            for index, word in enumerate(observed)
+        ]
+
+        report = tts._orpheus_transcript_report(expected, words)
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["expected_words"], 11)
+        self.assertEqual(report["transcript_words"], 11)
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+
     async def test_orpheus_integrity_failure_retries_generation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
