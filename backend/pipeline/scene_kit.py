@@ -827,14 +827,13 @@ def _render_quote(plan: ScenePlan) -> str:
 
 
 def _render_footage(plan: ScenePlan) -> str:
-    """Full-bleed media plate; generated collage keeps its locked-off camera."""
+    """Render a full-bleed media plate that remains populated for the full scene."""
     accent = accent_hex(plan.accent, plan.theme)
     if plan.footage_kind == "video":
-        loop_attr = "" if plan.collage_broll else " loop"
         media = (
             f'      <video id="{plan.id}-media" class="clip media" src="{_esc(plan.footage_src)}" '
             f'data-start="0" data-duration="{plan.duration:.2f}" data-track-index="0" '
-            f'muted playsinline{loop_attr} crossorigin="anonymous"></video>\n'
+            f'muted playsinline loop crossorigin="anonymous"></video>\n'
         )
     else:
         media = f'      <img id="{plan.id}-media" class="media" src="{_esc(plan.footage_src)}" alt="">\n'

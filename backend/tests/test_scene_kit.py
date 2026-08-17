@@ -173,7 +173,7 @@ def test_collage_footage_is_clean_locked_off_full_bleed():
     assert 'class="stage"' not in html
     assert "scale: 1.16" not in html
     video = re.search(r"<video[^>]*>", html).group(0)
-    assert " loop" not in video
+    assert " loop" in video
 
 
 def test_portrait_scene_uses_portrait_root_contract():

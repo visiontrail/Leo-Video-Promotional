@@ -3,8 +3,10 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from PIL import Image, ImageDraw
+
 from backend.pipeline import collage_broll
-from backend.pipeline.video_format import LANDSCAPE, PORTRAIT
+from backend.pipeline.video_format import FrameSpec, LANDSCAPE, PORTRAIT
 
 
 def _board(count: int = 6) -> dict:
@@ -252,3 +254,75 @@ def test_generate_falls_back_locally_when_web_still_fails(tmp_path: Path):
     assert manifest["ready_count"] == 1
     assert manifest["items"][0]["still_provider"] == "deterministic_local_paper_collage"
     assert manifest["items"][0]["video_provider"] == "deterministic_local_paper_assembly"
+
+
+def test_local_animation_moves_throughout_the_loop_cycle(tmp_path: Path):
+    frame = FrameSpec("landscape", "16:9", 320, 180, 320, 180, "landscape")
+    first = tmp_path / "first.png"
+    last = tmp_path / "last.png"
+    Image.new("RGB", (320, 180), "#315F4C").save(first)
+    completed = Image.new("RGB", (320, 180), "#F2E7CF")
+    draw = ImageDraw.Draw(completed)
+    draw.rectangle((18, 20, 145, 155), fill="#202124")
+    draw.ellipse((155, 22, 298, 165), fill="#43B9C4")
+    draw.polygon(((92, 12), (230, 88), (80, 172)), fill="#D2A928")
+    completed.save(last)
+
+    raw = asyncio.run(collage_broll._animate_still_locally(first, last, tmp_path, frame))
+    qa = asyncio.run(collage_broll.probe_video(raw, frame))
+
+    assert qa["passed"] is True
+    assert qa["checks"]["sustained_motion"] is True
+    assert qa["motion"]["active_seconds"] >= 4
+
+
+def test_motion_probe_rejects_a_video_that_becomes_static(tmp_path: Path):
+    frame = FrameSpec("landscape", "16:9", 320, 180, 320, 180, "landscape")
+    first = tmp_path / "first.png"
+    last = tmp_path / "last.png"
+    Image.new("RGB", (320, 180), "#315F4C").save(first)
+    Image.new("RGB", (320, 180), "#D2A928").save(last)
+    raw = tmp_path / "legacy.mp4"
+    asyncio.run(
+        collage_broll._media_command(
+            [
+                "ffmpeg",
+                "-y",
+                "-loop",
+                "1",
+                "-framerate",
+                str(collage_broll.CLIP_FPS),
+                "-t",
+                str(collage_broll.CLIP_SECONDS),
+                "-i",
+                str(first),
+                "-loop",
+                "1",
+                "-framerate",
+                str(collage_broll.CLIP_FPS),
+                "-t",
+                str(collage_broll.CLIP_SECONDS),
+                "-i",
+                str(last),
+                "-filter_complex",
+                "[0:v][1:v]xfade=transition=wiperight:duration=0.8:offset=0.35[out]",
+                "-map",
+                "[out]",
+                "-t",
+                str(collage_broll.CLIP_SECONDS),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(raw),
+            ],
+            timeout=120,
+        )
+    )
+
+    qa = asyncio.run(collage_broll.probe_video(raw, frame))
+
+    assert qa["passed"] is False
+    assert qa["checks"]["sustained_motion"] is False
+    assert qa["motion"]["active_seconds"] < 4

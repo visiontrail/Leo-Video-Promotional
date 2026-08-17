@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from backend import config
 from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
@@ -28,6 +28,7 @@ SOURCE_REPOSITORY = "https://github.com/pyang5166/gbro-collage-broll"
 SOURCE_COMMIT = "a1a4ee2e2abf7d44e460026b706d0c72c2cf8a91"
 CLIP_SECONDS = 5
 CLIP_FPS = 24
+MOTION_SAMPLE_FPS = 4
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _COLORS = ("#D96B35", "#D2A928", "#315F4C", "#594080", "#188C85", "#B73D3D")
@@ -439,26 +440,128 @@ async def _render_local_still(spec: dict[str, Any], item_dir: Path, frame: Frame
 async def _animate_still_locally(
     first: Path, last: Path, item_dir: Path, frame: FrameSpec
 ) -> Path:
-    """Turn the empty and completed frames into a deterministic five-second reveal."""
+    """Animate a still as staggered paper tiles with motion across all five seconds."""
     video_dir = item_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
     raw = video_dir / "local-paper-assembly.mp4"
-    await _media_command(
-        [
-            "ffmpeg", "-y",
-            "-loop", "1", "-framerate", str(CLIP_FPS), "-t", str(CLIP_SECONDS), "-i", str(first),
-            "-loop", "1", "-framerate", str(CLIP_FPS), "-t", str(CLIP_SECONDS), "-i", str(last),
-            "-filter_complex",
-            (
-                f"[0:v]scale={frame.media_width}:{frame.media_height},format=yuv420p[a];"
-                f"[1:v]scale={frame.media_width}:{frame.media_height},format=yuv420p[b];"
-                "[a][b]xfade=transition=wiperight:duration=0.8:offset=0.35,format=yuv420p[out]"
-            ),
-            "-map", "[out]", "-t", str(CLIP_SECONDS), "-an", "-c:v", "libx264",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(raw),
-        ],
-        timeout=300,
+    width, height = frame.media_width, frame.media_height
+    with Image.open(first) as source:
+        background = ImageOps.fit(source.convert("RGB"), (width, height))
+    with Image.open(last) as source:
+        completed = ImageOps.fit(source.convert("RGB"), (width, height))
+
+    tile_specs: list[dict[str, Any]] = []
+    columns, rows = 3, 2
+    directions = ((-1, 0), (0, -1), (1, 0), (-1, 0), (0, 1), (1, 0))
+    for row in range(rows):
+        for column in range(columns):
+            index = row * columns + column
+            left = round(column * width / columns)
+            top = round(row * height / rows)
+            right = round((column + 1) * width / columns)
+            bottom = round((row + 1) * height / rows)
+            tile = completed.crop((left, top, right, bottom)).convert("RGBA")
+            tile_specs.append(
+                {
+                    "image": tile,
+                    "target": (left, top),
+                    "direction": directions[index],
+                    "rotation": (-1.4, 0.8, -0.5, 1.1, -0.9, 0.5)[index],
+                    "phase": index * 0.91,
+                }
+            )
+
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "rgb24",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        str(CLIP_FPS),
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(raw),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
+    assert process.stdin is not None
+    total_frames = CLIP_SECONDS * CLIP_FPS
+    try:
+        for frame_index in range(total_frames):
+            progress = frame_index / max(1, total_frames - 1)
+            canvas = background.copy().convert("RGBA")
+            for index, tile_spec in enumerate(tile_specs):
+                entrance_start = 0.06 + index * 0.095
+                entrance_progress = min(1.0, max(0.0, (progress - entrance_start) / 0.25))
+                exit_start = 0.72 + (len(tile_specs) - index - 1) * 0.035
+                exit_progress = min(1.0, max(0.0, (progress - exit_start) / 0.105))
+                if entrance_progress <= 0 or exit_progress >= 1:
+                    continue
+                # Back-ease gives each paper piece a physical snap on arrival.
+                shifted = entrance_progress - 1
+                eased = 1 + 2.70158 * shifted**3 + 1.70158 * shifted**2
+                exit_eased = exit_progress * exit_progress * (3 - 2 * exit_progress)
+                direction_x, direction_y = tile_spec["direction"]
+                target_x, target_y = tile_spec["target"]
+                travel = 1 - eased + exit_eased
+                travel_x = direction_x * width * 0.72 * travel
+                travel_y = direction_y * height * 0.72 * travel
+                ambient = max(0.0, entrance_progress - 0.75) / 0.25
+                drift_x = math.sin(progress * math.tau * 1.15 + tile_spec["phase"]) * 4 * ambient
+                drift_y = math.cos(progress * math.tau * 0.9 + tile_spec["phase"]) * 3 * ambient
+                rotation = tile_spec["rotation"] + travel * direction_x * 10
+                piece = tile_spec["image"].rotate(
+                    rotation,
+                    resample=Image.Resampling.BICUBIC,
+                    expand=True,
+                )
+                shadow = Image.new("RGBA", piece.size, (0, 0, 0, 0))
+                shadow.putalpha(piece.getchannel("A").filter(ImageFilter.GaussianBlur(7)))
+                shadow_layer = Image.new("RGBA", piece.size, (0, 0, 0, 72))
+                shadow_layer.putalpha(shadow.getchannel("A"))
+                x = round(target_x + travel_x + drift_x - (piece.width - tile_spec["image"].width) / 2)
+                y = round(target_y + travel_y + drift_y - (piece.height - tile_spec["image"].height) / 2)
+                canvas.alpha_composite(shadow_layer, (x + 7, y + 9))
+                canvas.alpha_composite(piece, (x, y))
+
+            # A reversible camera push keeps the assembled hold alive and returns
+            # to the exact starting scale at the seamless loop boundary.
+            zoom = 1.0 + 0.025 * math.sin(math.pi * progress)
+            if zoom > 1:
+                enlarged = canvas.resize(
+                    (round(width * zoom), round(height * zoom)),
+                    Image.Resampling.BICUBIC,
+                )
+                x_offset = (enlarged.width - width) // 2
+                y_offset = (enlarged.height - height) // 2
+                canvas = enlarged.crop((x_offset, y_offset, x_offset + width, y_offset + height))
+            process.stdin.write(canvas.convert("RGB").tobytes())
+            if frame_index % 4 == 3:
+                await process.stdin.drain()
+        process.stdin.close()
+        await process.stdin.wait_closed()
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+    except Exception:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise
+    if process.returncode:
+        raise RuntimeError(stderr.decode(errors="replace")[-1600:])
     return raw
 
 
@@ -519,11 +622,13 @@ async def probe_video(path: Path, frame: FrameSpec) -> dict[str, Any]:
     rate = str(stream.get("avg_frame_rate") or "0/1").split("/")
     fps = float(rate[0]) / max(1.0, float(rate[1]))
     duration = float(data.get("format", {}).get("duration") or stream.get("duration") or 0)
+    motion = await _probe_motion(path, width=int(stream.get("width") or 0), height=int(stream.get("height") or 0))
     checks = {
         "dimensions": (stream.get("width"), stream.get("height")) == (frame.media_width, frame.media_height),
         "duration": abs(duration - CLIP_SECONDS) <= 0.15,
         "fps": abs(fps - CLIP_FPS) <= 0.1,
         "no_audio": not audio,
+        "sustained_motion": motion["active_seconds"] >= 4,
     }
     return {
         "passed": all(checks.values()),
@@ -533,7 +638,47 @@ async def probe_video(path: Path, frame: FrameSpec) -> dict[str, Any]:
         "duration": round(duration, 3),
         "fps": round(fps, 3),
         "audio_streams": len(audio),
+        "motion": motion,
     }
+
+
+async def _probe_motion(path: Path, *, width: int, height: int) -> dict[str, Any]:
+    """Measure low-resolution frame deltas and reject clips that settle into a still."""
+    if width <= 0 or height <= 0:
+        return {"active_seconds": 0, "second_scores": []}
+    sample_width = 96
+    sample_height = max(2, round(height * sample_width / width))
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        str(path),
+        "-vf",
+        f"fps={MOTION_SAMPLE_FPS},scale={sample_width}:{sample_height},format=gray",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode:
+        raise RuntimeError(stderr.decode(errors="replace")[-800:])
+    frame_size = sample_width * sample_height
+    frames = [stdout[offset : offset + frame_size] for offset in range(0, len(stdout), frame_size)]
+    frames = [sample for sample in frames if len(sample) == frame_size]
+    second_scores: list[float] = []
+    for second in range(CLIP_SECONDS):
+        start = second * MOTION_SAMPLE_FPS
+        end = min(len(frames) - 1, (second + 1) * MOTION_SAMPLE_FPS)
+        deltas: list[float] = []
+        for index in range(start, end):
+            before, after = frames[index], frames[index + 1]
+            deltas.append(sum(abs(left - right) for left, right in zip(before, after, strict=True)) / frame_size)
+        second_scores.append(round(sum(deltas) / len(deltas), 3) if deltas else 0.0)
+    active_seconds = sum(score >= 0.35 for score in second_scores)
+    return {"active_seconds": active_seconds, "second_scores": second_scores}
 
 
 async def _contact_sheet(video: Path, item_dir: Path, frame: FrameSpec) -> Path:
