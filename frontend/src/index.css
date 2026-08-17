@@ -4694,9 +4694,9 @@ video {
 .detail-progress {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: clamp(16px, 2vw, 30px);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
   margin: clamp(16px, 2vw, 26px) 0;
 }
 
@@ -4706,14 +4706,20 @@ video {
 
 .detail-facts {
   display: flex;
+  min-width: 0;
   gap: 10px;
 }
 
 .detail-facts div {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
   padding: 7px 14px;
+}
+
+.detail-facts div:last-child {
+  flex: 1;
 }
 
 .detail-facts dt {
