@@ -439,7 +439,17 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
     used: set[str] = set()
     attached = 0
 
-    for clip in clips:
+    # Web-scouted clips carry the exact narration excerpt they were selected
+    # for. Place those before broad Commons search results so a generic query
+    # such as "Pearl Harbor attack" cannot consume the scene that an excerpt-
+    # grounded clip was explicitly selected to illustrate.
+    ordered_clips = sorted(
+        clips,
+        key=lambda clip: bool(str(clip.get("script_excerpt") or "").strip()),
+        reverse=True,
+    )
+
+    for clip in ordered_clips:
         local = clip.get("local_path") or clip.get("path")
         if not local:
             continue
@@ -455,6 +465,17 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
 
         analysis = clip.get("analysis") or {}
         confidence = float(analysis.get("confidence") or 1.0)
+        # The deterministic-safe-offset analyzer is used only after search and
+        # download have already selected a result for an exact script excerpt.
+        # Its 0.25 score means "trim not visually reviewed", not "unrelated
+        # footage". Treat the excerpt match as the minimum admissible grounding
+        # confidence while retaining the manifest's raw analyzer confidence.
+        fallback_excerpt = (
+            str(analysis.get("status") or "").lower() == "fallback"
+            and bool(str(clip.get("script_excerpt") or "").strip())
+        )
+        if fallback_excerpt:
+            confidence = max(confidence, 0.65)
         if analysis and confidence < 0.65:
             continue
         if _NEGATIVE_ANALYSIS.search(str(analysis.get("reason") or "")):
@@ -510,6 +531,11 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
         plan["footage_script_match_terms"] = best_excerpt_matches
         plan["footage_match_score"] = best_score
         plan["footage_confidence"] = round(confidence, 3)
+        if fallback_excerpt:
+            plan["footage_analysis_confidence"] = round(
+                float(analysis.get("confidence") or 0), 3
+            )
+            plan["footage_analysis_status"] = "fallback"
         used.add(best_id)
         attached += 1
 

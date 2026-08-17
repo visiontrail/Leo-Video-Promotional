@@ -279,6 +279,53 @@ def test_footage_script_excerpt_prevents_query_based_reassignment(tmp_path: Path
     assert len(plans[1]["footage_script_match_terms"]) >= 3
 
 
+def test_fallback_analyzed_excerpt_clips_are_all_placed_before_generic_results(
+    tmp_path: Path,
+):
+    data = board(4)
+    excerpts = [
+        "Copper gears reveal the hidden harbor mechanism.",
+        "Paper wings cross the midnight carrier deck.",
+        "Factory sparks ignite an industrial furnace.",
+    ]
+    for index, scene in enumerate(data["scenes"]):
+        scene["keywords"] = ["shared", f"beat-{index}"]
+        if index < len(excerpts):
+            scene["text"] = excerpts[index]
+    plans = visual_plan.fallback_plan(data)
+    footage_dir = tmp_path / "footage"
+    footage_dir.mkdir()
+    clips = [
+        {
+            "local_path": "footage/generic.mp4",
+            "query": "shared scene",
+            "title": "Generic scene",
+        }
+    ]
+    (footage_dir / "generic.mp4").write_bytes(b"x")
+    for index, excerpt in enumerate(excerpts, start=1):
+        name = f"selected-{index}.mp4"
+        (footage_dir / name).write_bytes(b"x")
+        clips.append(
+            {
+                "local_path": f"footage/{name}",
+                "query": f"shared beat-{index - 1}",
+                "script_excerpt": excerpt,
+                "analysis": {
+                    "confidence": 0.25,
+                    "status": "fallback",
+                    "reason": "visual analyzer unavailable",
+                },
+            }
+        )
+
+    assert visual_plan.attach_footage(plans, data, {"clips": clips}, tmp_path) == 3
+    placed = [plan for plan in plans if plan["archetype"] == "footage"]
+    assert [plan["id"] for plan in placed] == ["scene-01", "scene-02", "scene-03"]
+    assert all(plan["footage_confidence"] == 0.65 for plan in placed)
+    assert all(plan["footage_analysis_confidence"] == 0.25 for plan in placed)
+
+
 def test_visual_grounding_report_requires_every_scene_and_grounded_footage():
     data = board(1)
     plans = visual_plan.fallback_plan(data)

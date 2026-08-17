@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
+import random
 import re
 import shutil
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageDraw, ImageFilter
 
 from backend import config
 from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
@@ -343,6 +348,120 @@ async def _prepare_frames(source: Path, item_dir: Path, color: str, frame: Frame
     return first, last
 
 
+def _color(value: str, fallback: str) -> str:
+    aliases = {
+        "amber": "#D2A928",
+        "charcoal": "#27272A",
+        "cream": "#F2E7CF",
+        "cyan": "#43B9C4",
+        "gold": "#D2A928",
+        "teal": "#188C85",
+        "violet": "#7257A8",
+        "warm cream": "#F2E7CF",
+    }
+    text = str(value or "").strip().lower()
+    return str(value).upper() if _HEX.fullmatch(str(value or "")) else aliases.get(text, fallback)
+
+
+async def _render_local_still(spec: dict[str, Any], item_dir: Path, frame: FrameSpec) -> Path:
+    """Render a deterministic paper-cut collage when the web still is unavailable."""
+    still_dir = item_dir / "stills"
+    still_dir.mkdir(parents=True, exist_ok=True)
+    output = still_dir / "local-paper-collage.png"
+    width, height = frame.media_width, frame.media_height
+    background = _color(str(spec.get("background_hex") or ""), "#315F4C")
+    image = Image.new("RGB", (width, height), background)
+    draw = ImageDraw.Draw(image, "RGBA")
+
+    # Quiet paper fibre and registration marks keep the fallback recognisably
+    # editorial without relying on fonts, logos, or network assets.
+    for y in range(8, height, 24):
+        alpha = 10 if (y // 24) % 2 else 7
+        draw.line((0, y, width, y + 2), fill=(255, 255, 255, alpha), width=1)
+
+    seed_source = json.dumps(spec, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    rng = random.Random(int(hashlib.sha256(seed_source).hexdigest()[:16], 16))
+    accents = [
+        _color(value, "#43B9C4") for value in (spec.get("accent_colors") or [])
+    ] or ["#43B9C4", "#D2A928"]
+    paper_colors = ["#F2E7CF", "#202124", *accents]
+    element_count = min(6, max(3, len(spec.get("elements") or [])))
+    center_x, center_y = width // 2, height // 2
+
+    for index in range(element_count):
+        piece_w = int(width * rng.uniform(0.12, 0.24))
+        piece_h = int(height * rng.uniform(0.15, 0.34))
+        angle = (index / max(1, element_count)) * math.tau + rng.uniform(-0.35, 0.35)
+        radius_x = width * rng.uniform(0.10, 0.27)
+        radius_y = height * rng.uniform(0.08, 0.24)
+        x = int(center_x + radius_x * math.cos(angle) - piece_w / 2)
+        y = int(center_y + radius_y * math.sin(angle) - piece_h / 2)
+        x = max(40, min(width - piece_w - 40, x))
+        y = max(40, min(height - piece_h - 40, y))
+
+        piece = Image.new("RGBA", (piece_w + 48, piece_h + 48), (0, 0, 0, 0))
+        mask = Image.new("L", piece.size, 0)
+        mask_draw = ImageDraw.Draw(mask)
+        bounds = (24, 24, 24 + piece_w, 24 + piece_h)
+        shape = index % 3
+        if shape == 0:
+            mask_draw.rounded_rectangle(bounds, radius=max(14, piece_w // 10), fill=255)
+        elif shape == 1:
+            mask_draw.ellipse(bounds, fill=255)
+        else:
+            mask_draw.polygon(
+                [(24 + piece_w // 2, 24), (24 + piece_w, 24 + piece_h), (24, 24 + piece_h)],
+                fill=255,
+            )
+        shadow = Image.new("RGBA", piece.size, (0, 0, 0, 0))
+        shadow.putalpha(mask.filter(ImageFilter.GaussianBlur(12)))
+        shadow_color = Image.new("RGBA", piece.size, (0, 0, 0, 95))
+        shadow_color.putalpha(shadow.getchannel("A"))
+        piece.alpha_composite(shadow_color, (8, 10))
+
+        color = paper_colors[index % len(paper_colors)]
+        fill = Image.new("RGBA", piece.size, color)
+        fill.putalpha(mask)
+        piece.alpha_composite(fill)
+        piece_draw = ImageDraw.Draw(piece, "RGBA")
+        if index % 2 == 0:
+            for dot_y in range(32, piece_h + 24, 16):
+                for dot_x in range(32, piece_w + 24, 16):
+                    if mask.getpixel((dot_x, dot_y)) > 0:
+                        piece_draw.ellipse((dot_x - 2, dot_y - 2, dot_x + 2, dot_y + 2), fill=(0, 0, 0, 95))
+        rotated = piece.rotate(rng.uniform(-8, 8), resample=Image.Resampling.BICUBIC, expand=True)
+        image.paste(rotated, (x - 24, y - 24), rotated)
+
+    image.save(output, format="PNG", optimize=True)
+    return output
+
+
+async def _animate_still_locally(
+    first: Path, last: Path, item_dir: Path, frame: FrameSpec
+) -> Path:
+    """Turn the empty and completed frames into a deterministic five-second reveal."""
+    video_dir = item_dir / "video"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    raw = video_dir / "local-paper-assembly.mp4"
+    await _media_command(
+        [
+            "ffmpeg", "-y",
+            "-loop", "1", "-framerate", str(CLIP_FPS), "-t", str(CLIP_SECONDS), "-i", str(first),
+            "-loop", "1", "-framerate", str(CLIP_FPS), "-t", str(CLIP_SECONDS), "-i", str(last),
+            "-filter_complex",
+            (
+                f"[0:v]scale={frame.media_width}:{frame.media_height},format=yuv420p[a];"
+                f"[1:v]scale={frame.media_width}:{frame.media_height},format=yuv420p[b];"
+                "[a][b]xfade=transition=wiperight:duration=0.8:offset=0.35,format=yuv420p[out]"
+            ),
+            "-map", "[out]", "-t", str(CLIP_SECONDS), "-an", "-c:v", "libx264",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(raw),
+        ],
+        timeout=300,
+    )
+    return raw
+
+
 async def _generate_video(prompt: str, first: Path, last: Path, item_dir: Path, frame: FrameSpec) -> tuple[Path, str]:
     video_dir = item_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -464,18 +583,50 @@ async def generate_collage_broll(
         "items": [],
         "errors": [],
     }
+    specs_path = root / "visual-spec.json"
+    cached_specs: list[dict[str, Any]] = []
+    if specs_path.is_file():
+        try:
+            payload = json.loads(specs_path.read_text(encoding="utf-8"))
+            valid_scene_ids = {
+                str(scene.get("id") or "") for scene in storyboard.get("scenes") or []
+            }
+            if (
+                isinstance(payload, list)
+                and len(payload) == min(max(1, count), len(valid_scene_ids))
+                and (
+                    not force_opening
+                    or (
+                        bool(payload)
+                        and str(payload[0].get("scene_id") or "")
+                        == str((storyboard.get("scenes") or [{}])[0].get("id") or "")
+                    )
+                )
+                and all(
+                    isinstance(item, dict)
+                    and str(item.get("scene_id") or "") in valid_scene_ids
+                    for item in payload
+                )
+            ):
+                cached_specs = payload
+        except (OSError, json.JSONDecodeError):
+            cached_specs = []
     _write_json(manifest_path, manifest)
-    specs = await plan_specs(
-        storyboard,
-        count=count,
-        force_opening=force_opening,
-        frame=frame,
-        provider_id=provider_id,
-        ai_endpoint=ai_endpoint,
-        ai_model=ai_model,
-        log=log,
-    )
-    _write_json(root / "visual-spec.json", specs)
+    if cached_specs:
+        specs = cached_specs
+        _log(log, f"Collage B-roll: reusing {len(specs)} existing visual spec(s)")
+    else:
+        specs = await plan_specs(
+            storyboard,
+            count=count,
+            force_opening=force_opening,
+            frame=frame,
+            provider_id=provider_id,
+            ai_endpoint=ai_endpoint,
+            ai_model=ai_model,
+            log=log,
+        )
+    _write_json(specs_path, specs)
     manifest["status"] = "generating"
     _write_json(manifest_path, manifest)
 
@@ -497,16 +648,61 @@ async def generate_collage_broll(
             "chatgpt_url": "",
             "gemini_url": "",
             "qa": {},
+            "generation_warnings": [],
             "error": None,
         }
         manifest["items"].append(item)
         _write_json(manifest_path, manifest)
         try:
+            cached_final = item_dir / "video" / "final-5s-noaudio.mp4"
+            if cached_final.is_file():
+                cached_qa = await probe_video(cached_final, frame)
+                if cached_qa["passed"]:
+                    cached_sheet = item_dir / "video" / "contact-sheet.jpg"
+                    if not cached_sheet.is_file():
+                        cached_sheet = await _contact_sheet(cached_final, item_dir, frame)
+                    cached_still = item_dir / "frames" / "last-frame.jpg"
+                    item.update(
+                        {
+                            "status": "ready",
+                            "still_path": (
+                                str(cached_still.relative_to(task_dir))
+                                if cached_still.is_file()
+                                else ""
+                            ),
+                            "video_path": str(cached_final.relative_to(task_dir)),
+                            "contact_sheet": str(cached_sheet.relative_to(task_dir)),
+                            "still_provider": "existing_verified_artifact",
+                            "video_provider": "existing_verified_artifact",
+                            "qa": cached_qa,
+                        }
+                    )
+                    _log(log, f"Collage B-roll {index}/{len(specs)}: reused verified clip for {scene_id}")
+                    _write_json(manifest_path, manifest)
+                    continue
             _log(log, f"Collage B-roll {index}/{len(specs)}: generating {frame.aspect_ratio} still for {scene_id}")
-            still, chatgpt_url = await _generate_still(still_prompt, item_dir)
+            try:
+                still, chatgpt_url = await _generate_still(still_prompt, item_dir)
+                item["still_provider"] = "chatgpt_web_via_opencli"
+            except Exception as exc:  # noqa: BLE001 - local renderer preserves requested count
+                warning = f"Web still unavailable ({exc}); used deterministic local paper collage"
+                item["generation_warnings"].append(warning)
+                _log(log, f"Collage B-roll {index}/{len(specs)}: {warning}")
+                still = await _render_local_still(spec, item_dir, frame)
+                chatgpt_url = ""
+                item["still_provider"] = "deterministic_local_paper_collage"
             first, last = await _prepare_frames(still, item_dir, spec["background_hex"], frame)
             _log(log, f"Collage B-roll {index}/{len(specs)}: animating {scene_id} in Gemini Web Create Video")
-            raw, gemini_url = await _generate_video(motion_prompt, first, last, item_dir, frame)
+            try:
+                raw, gemini_url = await _generate_video(motion_prompt, first, last, item_dir, frame)
+                item["video_provider"] = "gemini_web_create_video_via_opencli"
+            except Exception as exc:  # noqa: BLE001 - local animation preserves requested count
+                warning = f"Web video unavailable ({exc}); used deterministic local paper assembly"
+                item["generation_warnings"].append(warning)
+                _log(log, f"Collage B-roll {index}/{len(specs)}: {warning}")
+                raw = await _animate_still_locally(first, last, item_dir, frame)
+                gemini_url = ""
+                item["video_provider"] = "deterministic_local_paper_assembly"
             final = await _normalize_video(raw, item_dir, frame)
             qa = await probe_video(final, frame)
             if not qa["passed"]:
@@ -541,15 +737,39 @@ async def generate_collage_broll(
 def attach_collage(plans: list[dict], manifest: dict | None, task_dir: Path) -> int:
     """Promote successful generated items to clean, full-bleed scene plates."""
     by_id = {plan.get("id"): plan for plan in plans}
+    plan_positions = {plan.get("id"): index for index, plan in enumerate(plans)}
+    occupied = {
+        str(plan.get("id"))
+        for plan in plans
+        if plan.get("archetype") == "footage" and plan.get("footage_src")
+    }
     attached = 0
     for item in (manifest or {}).get("items") or []:
         if item.get("status") != "ready":
             continue
-        plan = by_id.get(item.get("scene_id"))
+        preferred_id = str(item.get("scene_id") or "")
+        plan = by_id.get(preferred_id)
         raw = str(item.get("video_path") or "")
         path = task_dir / raw
         if not plan or not raw or not path.is_file():
             continue
+        if preferred_id in occupied:
+            preferred_position = plan_positions.get(preferred_id, 0)
+            candidates = [
+                candidate
+                for candidate in plans
+                if str(candidate.get("id") or "") not in occupied
+            ]
+            if not candidates:
+                continue
+            plan = min(
+                candidates,
+                key=lambda candidate: abs(
+                    plan_positions.get(str(candidate.get("id") or ""), 0)
+                    - preferred_position
+                ),
+            )
+        placed_scene_id = str(plan.get("id") or "")
         plan.update(
             {
                 "archetype": "footage",
@@ -563,5 +783,10 @@ def attach_collage(plans: list[dict], manifest: dict | None, task_dir: Path) -> 
                 "collage_qa": item.get("qa", {}),
             }
         )
+        item["placed_scene_id"] = placed_scene_id
+        occupied.add(placed_scene_id)
         attached += 1
+    if manifest is not None:
+        manifest["placed_count"] = attached
+        _write_json(task_dir / "collage_broll" / "manifest.json", manifest)
     return attached

@@ -425,6 +425,8 @@ async def compose_video(
     attached = visual_plan.attach_footage(plans, board, manifest, output_dir_path)
     if attached:
         emit(f"Footage: {attached} manifest clip(s) placed as full-bleed scenes")
+    requested_footage = int((manifest or {}).get("requested_clip_count") or 0)
+    acquired_footage = len((manifest or {}).get("clips") or [])
 
     force_collage_opening = opening_style == "paper_collage"
     if collage_broll_enabled or force_collage_opening:
@@ -447,6 +449,30 @@ async def compose_video(
             f"Collage B-roll: {collage_attached}/{requested_collages} generated "
             f"clip(s) placed as {frame.aspect_ratio} full-bleed scenes"
         )
+
+    final_public_footage = sum(
+        1
+        for plan in plans
+        if plan.get("archetype") == "footage" and not plan.get("collage_broll")
+    )
+    final_collages = sum(1 for plan in plans if plan.get("collage_broll"))
+    if requested_footage and final_public_footage != requested_footage:
+        raise RuntimeError(
+            "Public-footage placement incomplete: "
+            f"{acquired_footage}/{requested_footage} clips were acquired and "
+            f"{final_public_footage}/{requested_footage} reached final scenes"
+        )
+    if collage_broll_enabled or force_collage_opening:
+        if final_collages != requested_collages:
+            raise RuntimeError(
+                "Collage B-roll placement incomplete: "
+                f"{final_collages}/{requested_collages} requested clips reached final scenes"
+            )
+    emit(
+        "Final B-roll inventory: "
+        f"{final_public_footage} public footage clip(s), "
+        f"{final_collages} paper-collage clip(s)"
+    )
 
     scene_plans = list(plans)
     visual_grounding = visual_plan.visual_grounding_report(scene_plans, board)
