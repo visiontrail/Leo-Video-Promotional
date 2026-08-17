@@ -223,6 +223,10 @@ export default function TaskDetail() {
             <dt>Target release</dt>
             <dd>{task.planned_publish_at ? formatStart(task.planned_publish_at) : 'Not planned'}</dd>
           </div>
+          <div>
+            <dt>Spoken ending</dt>
+            <dd title={task.config.closing_remarks}>{task.config.closing_remarks || 'Default close'}</dd>
+          </div>
         </dl>
       </div>
 

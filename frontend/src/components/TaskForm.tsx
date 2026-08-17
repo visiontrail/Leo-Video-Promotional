@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { createTask, fetchProviders, fetchTtsModels, fetchVoices, voicePreviewUrl } from '../api'
+import { DEFAULT_CLOSING_REMARKS, createTask, fetchProviders, fetchTtsModels, fetchVoices, voicePreviewUrl } from '../api'
 import type { TaskConfig, TtsModelOption, VoiceOption } from '../api'
 import { countdown, formatStart, localInputToIso, toLocalInputValue } from '../schedule'
 import { IconPlay, IconStop } from './Icons'
@@ -137,7 +137,6 @@ const VIDEO_TEMPLATES: Array<{
 const templatePreviewUrl = (template: VideoTemplate) => `/template-previews/${template}.mp4`
 
 const SOURCE_LABEL: Record<SourceType, string> = { youtube: 'YouTube', epub: 'EPUB', pdf: 'PDF' }
-
 /* Quick picks for parking a run in an idle window — TTS and the LLM both want
    the machine to themselves, so "tonight" is the common case. */
 const START_PRESETS: Array<{ label: string; at: () => Date }> = [
@@ -165,6 +164,7 @@ export default function TaskForm() {
   const [scriptFormat, setScriptFormat] = useState<ScriptFormat>('monologue')
   const [voice1, setVoice1] = useState('Carter')
   const [voice2, setVoice2] = useState('Alice')
+  const [closingRemarks, setClosingRemarks] = useState(DEFAULT_CLOSING_REMARKS)
   const [ttsModel, setTtsModel] = useState('')
   const [videoTemplate, setVideoTemplate] = useState<VideoTemplate>('podcast')
   const [previewTemplate, setPreviewTemplate] = useState<VideoTemplate | null>(null)
@@ -294,6 +294,7 @@ export default function TaskForm() {
         speaker_count: isMonologue ? 1 : 2,
         voice_1: selectedVoice1,
         voice_2: selectedVoice2,
+        closing_remarks: closingRemarks.trim(),
         tts_model: selectedTtsModel,
         video_template: videoTemplate,
         video_orientation: videoOrientation,
@@ -331,7 +332,7 @@ export default function TaskForm() {
     (sourceType === 'youtube' && !!url.trim()) ||
     ((sourceType === 'epub' || sourceType === 'pdf') && !!file)
   const startReady = startMode === 'now' || !!scheduled
-  const canSubmit = sourceReady && startReady
+  const canSubmit = sourceReady && startReady && !!closingRemarks.trim()
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault()
@@ -381,6 +382,7 @@ export default function TaskForm() {
     ['Start', scheduled && !scheduleIsPast ? startLabel : 'Now'],
     ['Length', `${duration} min`],
     ['Style', isMonologue ? 'Solo' : 'Two-host'],
+    ['Ending', closingRemarks.trim() ? 'Spoken close' : 'Missing'],
     ['Voice', isMonologue ? selectedVoice1 : `${selectedVoice1} · ${selectedVoice2}`],
     ['Engine', `${activeTtsModel.provider} · ${activeTtsModel.label}`],
     ['Template', activeTemplate.name],
@@ -605,6 +607,24 @@ export default function TaskForm() {
                     ? 'Solo talk-show uses a single voice. Hit ▶ to hear a sample.'
                     : 'Two-host dialogue uses two voices — a host and a co-host. Hit ▶ to hear a sample.'}
               </small>
+            </article>
+
+            <article className="wb-panel wb-wide">
+              <h3>Spoken ending</h3>
+              <div className="form-group">
+                <label htmlFor="closing-remarks">Closing remarks</label>
+                <textarea
+                  id="closing-remarks"
+                  rows={3}
+                  maxLength={500}
+                  required
+                  value={closingRemarks}
+                  onChange={(event) => setClosingRemarks(event.target.value)}
+                />
+                <small className="wb-hint">
+                  Spoken verbatim at the end, then timed into the final video scenes. Keep it concise and use one clear call to action.
+                </small>
+              </div>
             </article>
 
             <article className="wb-panel">

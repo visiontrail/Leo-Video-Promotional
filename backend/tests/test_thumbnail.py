@@ -128,6 +128,7 @@ class ThumbnailPipelineOrderTests(unittest.IsolatedAsyncioTestCase):
 
             async def fake_script(*args, **kwargs):
                 events.append("script")
+                self.assertEqual(kwargs["closing_remarks"], task.config.closing_remarks)
                 return "Final audio script"
 
             async def fake_thumbnail(*args, **kwargs):

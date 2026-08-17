@@ -35,6 +35,12 @@ class ScriptFormat(str, Enum):
     DIALOGUE = "dialogue"    # two-host back-and-forth conversation
 
 
+DEFAULT_CLOSING_REMARKS = (
+    "If this gave you something to think about, subscribe for more. "
+    "Thanks for watching, and I'll see you in the next one."
+)
+
+
 class TaskConfig(BaseModel):
     target_duration_minutes: int = 10
     # Solo talk-show is the primary product direction; dialogue is the secondary
@@ -44,6 +50,9 @@ class TaskConfig(BaseModel):
     speaker_count: int = 1
     voice_1: str = "Carter"
     voice_2: str = "Alice"
+    # Spoken verbatim at the end of the generated script, so it flows through
+    # TTS, storyboard timing, visual planning, and the final composition.
+    closing_remarks: str = Field(default=DEFAULT_CLOSING_REMARKS, min_length=1, max_length=500)
     include_character: bool = False
     # Captions are off by default; opt in explicitly when needed.
     captions_enabled: bool = False
@@ -77,6 +86,14 @@ class TaskConfig(BaseModel):
     # Skip the audio review pause and go straight from TTS into compose by
     # default. Clients can still opt into a manual review explicitly.
     auto_render: bool = True
+
+    @field_validator("closing_remarks")
+    @classmethod
+    def normalize_closing_remarks(cls, value: str) -> str:
+        normalized = "\n".join(line.strip() for line in value.splitlines() if line.strip())
+        if not normalized:
+            raise ValueError("Closing remarks cannot be blank")
+        return normalized
 
     @model_validator(mode="after")
     def sync_media_orientation(self) -> "TaskConfig":

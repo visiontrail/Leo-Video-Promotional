@@ -16,6 +16,7 @@ import {
   recordContentPlanPublication,
   updateContentPlanItem,
   updateContentSeries,
+  DEFAULT_CLOSING_REMARKS,
 } from '../api'
 import type { ContentPlanInput, ContentPlanItem, TaskConfig } from '../api'
 import { localInputToIso, toLocalInputValue } from '../schedule'
@@ -75,6 +76,7 @@ const DEFAULT_TASK_CONFIG = (): TaskConfig => ({
   speaker_count: 1,
   voice_1: 'Carter',
   voice_2: 'Alice',
+  closing_remarks: DEFAULT_CLOSING_REMARKS,
   include_character: false,
   captions_enabled: false,
   tts_model: 'vibevoice-0.5b',
@@ -515,6 +517,18 @@ export default function ContentPlanning() {
                   <select id="plan-opening" value={planDraft.taskConfig.opening_style} onChange={(e) => setTaskConfig({ opening_style: e.target.value as 'editorial_motion' | 'paper_collage' })}>
                     <option value="editorial_motion">Editorial motion</option><option value="paper_collage">Paper collage</option>
                   </select>
+                </div>
+                <div className="form-group planning-span-3">
+                  <label htmlFor="plan-closing-remarks">Closing remarks</label>
+                  <textarea
+                    id="plan-closing-remarks"
+                    rows={3}
+                    maxLength={500}
+                    required
+                    value={planDraft.taskConfig.closing_remarks ?? DEFAULT_CLOSING_REMARKS}
+                    onChange={(e) => setTaskConfig({ closing_remarks: e.target.value })}
+                  />
+                  <small>Spoken verbatim and included in the final timed video scenes.</small>
                 </div>
               </div>
               <div className="plan-switch-grid">

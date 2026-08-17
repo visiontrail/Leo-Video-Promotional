@@ -62,5 +62,57 @@ class ChatDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat_http.await_count, 0)
 
 
+class ScriptClosingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_closing_is_prompted_and_appended_when_model_omits_it(self):
+        resolve_provider = AsyncMock(return_value=("http://x/v1", "model", "key"))
+        chat = AsyncMock(return_value="A sharp opening.\nA useful final takeaway.")
+
+        with (
+            patch.object(digester, "_resolve_provider", resolve_provider),
+            patch.object(digester, "_chat", chat),
+        ):
+            result = await digester.generate_script(
+                {"title": "Test"},
+                closing_remarks="Thanks for watching. See you next time.",
+            )
+
+        system_prompt = chat.await_args.args[0]
+        self.assertIn("End the script with the exact spoken text below", system_prompt)
+        self.assertTrue(result.endswith("Thanks for watching. See you next time."))
+
+    async def test_configured_closing_is_not_duplicated_when_model_includes_it(self):
+        closing = "Thanks for watching. See you next time."
+        resolve_provider = AsyncMock(return_value=("http://x/v1", "model", "key"))
+        chat = AsyncMock(return_value=f"A sharp opening.\n{closing}")
+
+        with (
+            patch.object(digester, "_resolve_provider", resolve_provider),
+            patch.object(digester, "_chat", chat),
+        ):
+            result = await digester.generate_script(
+                {"title": "Test"},
+                closing_remarks=closing,
+            )
+
+        self.assertEqual(result.count(closing), 1)
+
+    async def test_model_line_break_inside_closing_does_not_duplicate_it(self):
+        closing = "Thanks for watching. See you next time."
+        resolve_provider = AsyncMock(return_value=("http://x/v1", "model", "key"))
+        chat = AsyncMock(return_value="A sharp opening.\nThanks for watching.\nSee you next time.")
+
+        with (
+            patch.object(digester, "_resolve_provider", resolve_provider),
+            patch.object(digester, "_chat", chat),
+        ):
+            result = await digester.generate_script(
+                {"title": "Test"},
+                closing_remarks=closing,
+            )
+
+        self.assertEqual(result.count("Thanks for watching."), 1)
+        self.assertEqual(result.count("See you next time."), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

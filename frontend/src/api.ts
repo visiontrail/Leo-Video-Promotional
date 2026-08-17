@@ -1,11 +1,14 @@
 const BASE = '';
 
+export const DEFAULT_CLOSING_REMARKS = "If this gave you something to think about, subscribe for more. Thanks for watching, and I'll see you in the next one."
+
 export interface TaskConfig {
   target_duration_minutes: number;
   script_format?: 'monologue' | 'dialogue';
   speaker_count: number;
   voice_1: string;
   voice_2: string;
+  closing_remarks: string;
   include_character: boolean;
   captions_enabled?: boolean;
   tts_model?: string;

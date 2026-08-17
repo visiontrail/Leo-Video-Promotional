@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.models import TaskConfig
+from backend.models import DEFAULT_CLOSING_REMARKS, TaskConfig
 
 
 def test_captions_are_off_by_default():
@@ -10,6 +10,16 @@ def test_captions_are_off_by_default():
 
 def test_audio_review_is_skipped_by_default():
     assert TaskConfig().auto_render is True
+
+
+def test_task_has_a_spoken_closing_by_default():
+    assert TaskConfig().closing_remarks == DEFAULT_CLOSING_REMARKS
+
+
+def test_closing_remarks_are_trimmed_and_cannot_be_blank():
+    assert TaskConfig(closing_remarks="  Thanks for watching.  ").closing_remarks == "Thanks for watching."
+    with pytest.raises(ValidationError, match="Closing remarks cannot be blank"):
+        TaskConfig(closing_remarks=" \n ")
 
 
 def test_task_config_defaults_to_landscape_and_four_optional_collages():

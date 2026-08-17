@@ -202,6 +202,7 @@ async def run_pipeline(task: TaskResponse, log: LogCallback | None = None):
         ai_endpoint=ai_endpoint,
         ai_model=ai_model,
         provider_id=provider_id,
+        closing_remarks=task.config.closing_remarks,
         log=task_log,
     )
     script_path = str(task_dir / "script.txt")

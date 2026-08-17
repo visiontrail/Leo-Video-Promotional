@@ -310,6 +310,28 @@ def _normalize_script_lines(script: str, script_format: str, log: LogCallback | 
     return lines
 
 
+def _ensure_closing_remarks(
+    lines: list[str],
+    closing_remarks: str,
+    script_format: str,
+    log: LogCallback | None = None,
+) -> list[str]:
+    """Guarantee that the configured spoken close is the final script beat."""
+    closing_lines = _normalize_script_lines(closing_remarks, script_format)
+    if not closing_lines:
+        return lines
+
+    spoken_script = " ".join(" ".join(lines).split()).casefold()
+    spoken_closing = " ".join(" ".join(closing_lines).split()).casefold()
+    if spoken_script.endswith(spoken_closing):
+        # Line wrapping is only a pacing hint. Do not duplicate an otherwise
+        # verbatim close merely because the model split it across two beats.
+        return lines
+
+    _dlog(log, "Added the configured closing remarks to the final narration")
+    return [*lines, *closing_lines]
+
+
 def _summary_from_curated_highlights(content: ExtractedContent) -> dict:
     highlights = content.metadata.get("curated_highlights") or []
     talking_points = []
@@ -414,6 +436,7 @@ async def generate_script(
     ai_endpoint: str | None = None,
     ai_model: str | None = None,
     provider_id: int | None = None,
+    closing_remarks: str = "",
     log: LogCallback | None = None,
 ) -> str:
     word_count = target_duration_minutes * 150
@@ -428,6 +451,14 @@ async def generate_script(
     system_prompt = (config.PROMPTS_DIR / prompt_file).read_text()
     system_prompt = system_prompt.replace("{word_count}", str(word_count))
     system_prompt = system_prompt.replace("{duration_minutes}", str(target_duration_minutes))
+    if closing_remarks:
+        system_prompt += (
+            "\n\nClosing Remarks (MANDATORY):\n"
+            "- End the script with the exact spoken text below, verbatim.\n"
+            "- Treat it as the final beat of the narrative, with no spoken text after it.\n"
+            "- The target word count includes this closing text.\n\n"
+            f"{closing_remarks}"
+        )
 
     user_content = json.dumps(summary, indent=2, ensure_ascii=False)
     script_tokens = _script_max_tokens(word_count)
@@ -471,6 +502,9 @@ async def generate_script(
             raise RuntimeError("English repair produced no spoken lines")
         if _contains_cjk(joined):
             raise RuntimeError("Generated script still contains non-English/CJK text after repair")
+
+    lines = _ensure_closing_remarks(lines, closing_remarks, script_format, log)
+    joined = "\n".join(lines)
 
     _dlog(log, f"Script generated: {len(lines)} speaker turns, {len(' '.join(lines).split())} words")
     return joined
