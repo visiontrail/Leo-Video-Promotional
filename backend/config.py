@@ -69,6 +69,10 @@ THUMBNAIL_CHATGPT_TIMEOUT = int(os.getenv("THUMBNAIL_CHATGPT_TIMEOUT", "360"))
 # Video. These are browser waits, not API-key-backed provider timeouts.
 COLLAGE_CHATGPT_TIMEOUT = int(os.getenv("COLLAGE_CHATGPT_TIMEOUT", "420"))
 COLLAGE_GEMINI_TIMEOUT = int(os.getenv("COLLAGE_GEMINI_TIMEOUT", "1800"))
+# Gemini Web currently returns at most one eight-second Veo clip per Create
+# Video job. Keep the provider ceiling configurable so a future Gemini change
+# does not require rewriting the per-scene duration policy.
+COLLAGE_GEMINI_MAX_SECONDS = int(os.getenv("COLLAGE_GEMINI_MAX_SECONDS", "8"))
 WEB_FOOTAGE_ENABLED = _env_bool("WEB_FOOTAGE_ENABLED", "1")
 WEB_FOOTAGE_GEMINI_ENABLED = _env_bool("WEB_FOOTAGE_GEMINI_ENABLED", "1")
 WEB_FOOTAGE_GEMINI_TIMEOUT = int(os.getenv("WEB_FOOTAGE_GEMINI_TIMEOUT", "120"))

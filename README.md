@@ -222,17 +222,21 @@ caption safe areas, and the final HyperFrames render; the pipeline does not gene
 cross-crop to the other.
 
 The optional **Paper-collage B-roll** switch defaults to off and, when enabled, defaults to four
-five-second clips. The task's Agent provider selects narration beats and designs visual metaphors,
-ChatGPT Web generates the completed stills, and Gemini Web **Create Video** assembles each scene from
-an empty paper field. Both web stages run through the signed-in project-local OpenCLI session, with
-no `GEMINI_API_KEY` or `google-genai` dependency and no intermediate approval pauses. Choosing
-**Paper collage** as the opening style always generates at least the opening clip, even when the
-general collage switch is off. Successful clips are mounted full-bleed in HyperFrames; failed items
-leave the deterministic scene intact and are recorded in `collage_broll/manifest.json`.
+clips. Each clip targets the duration of its selected narration scene, capped by Gemini's configured
+single-generation limit (eight seconds by default). The task's Agent provider selects narration
+beats and designs visual metaphors, ChatGPT Web generates the completed stills, and Gemini Web
+**Create Video** assembles each scene from an empty paper field. Both web stages run through the
+signed-in project-local OpenCLI session, with no `GEMINI_API_KEY` or `google-genai` dependency and no
+intermediate approval pauses. Choosing **Paper collage** as the opening style always generates at
+least the opening clip, even when the general collage switch is off. Successful clips are mounted
+full-bleed in HyperFrames and play once; a shorter generated clip holds its completed last frame for
+the remainder of a longer narration scene instead of looping. Failed items leave the deterministic
+scene intact and are recorded in `collage_broll/manifest.json`.
 
 Browser timeouts have safe defaults of 420 seconds for ChatGPT stills and 1800 seconds for Gemini
-video generation. They are editable under **Admin → System → Paper-collage B-roll** as
-`COLLAGE_CHATGPT_TIMEOUT` and `COLLAGE_GEMINI_TIMEOUT`.
+video generation. The per-generation duration ceiling defaults to eight seconds. All three values
+are editable under **Admin → System → Paper-collage B-roll** as `COLLAGE_CHATGPT_TIMEOUT`,
+`COLLAGE_GEMINI_TIMEOUT`, and `COLLAGE_GEMINI_MAX_SECONDS`.
 
 ## Footage scout: Commons + YouTube
 

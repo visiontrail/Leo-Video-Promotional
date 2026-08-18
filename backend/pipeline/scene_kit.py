@@ -830,10 +830,14 @@ def _render_footage(plan: ScenePlan) -> str:
     """Render a full-bleed media plate that remains populated for the full scene."""
     accent = accent_hex(plan.accent, plan.theme)
     if plan.footage_kind == "video":
+        # Public footage may loop to cover a longer narration beat. Generated
+        # paper-collage motion is a one-pass assembly: once it reaches the end,
+        # the browser keeps the completed last frame visible for the scene.
+        loop_attribute = "" if plan.collage_broll else " loop"
         media = (
             f'      <video id="{plan.id}-media" class="clip media" src="{_esc(plan.footage_src)}" '
             f'data-start="0" data-duration="{plan.duration:.2f}" data-track-index="0" '
-            f'muted playsinline loop crossorigin="anonymous"></video>\n'
+            f'muted playsinline{loop_attribute} crossorigin="anonymous"></video>\n'
         )
     else:
         media = f'      <img id="{plan.id}-media" class="media" src="{_esc(plan.footage_src)}" alt="">\n'
