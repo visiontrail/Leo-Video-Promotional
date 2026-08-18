@@ -808,6 +808,19 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # This three-part list repeatedly makes Orpheus pluralize the final gerund
+    # as the non-word "declarings". Provider-only sentence boundaries retain
+    # every lexical token while removing the misleading noun-list prosody.
+    stripped = re.sub(
+        r"\b(proxy conflicts),\s+(aid without troops),\s+"
+        r"(arming without declaring)\b",
+        lambda match: (
+            f"{match.group(1)}. {match.group(2).capitalize()}. "
+            f"{match.group(3).capitalize()}"
+        ),
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # In a comma-separated adjective list Orpheus repeatedly drops the final
     # /d/ from "disciplined" and speaks the noun "discipline" instead. Give
     # that exact observed transition a stronger, unspoken articulation pause;

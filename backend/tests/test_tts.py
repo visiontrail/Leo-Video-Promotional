@@ -197,6 +197,17 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "and planning so meticulous it's almost uncomfortable to admire.",
         )
 
+    def test_orpheus_prompt_separates_declaring_from_noun_list_prosody(self):
+        text = "Proxy conflicts, aid without troops, arming without declaring."
+
+        prompt = tts._orpheus_prompt_text(text)
+
+        self.assertEqual(
+            prompt,
+            "Proxy conflicts. Aid without troops. Arming without declaring.",
+        )
+        self.assertEqual(tts._lexical_tokens(prompt), tts._lexical_tokens(text))
+
     def test_orpheus_prompt_adds_pause_for_fragile_disciplined_inflection(self):
         text = "same kind of disciplined, formidable, militaristic society,"
 
