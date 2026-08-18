@@ -876,6 +876,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # Orpheus repeatedly corrupts both Japanese surnames in this sentence.
+    # These provider-only phonetic spellings yielded the exact canonical names
+    # under ASR; the narrow shared context prevents unrelated names from being
+    # rewritten, and verification still requires "Yamaguchi" and "Nagumo".
+    stripped = re.sub(
+        r"\bYamaguchi(\s+to launch a third strike,\s+)Nagumo(\s+declined)\b",
+        r"Yama Goochi\1Nah-goo-moh\2",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # The speech LM repeatedly substitutes "precautionate" for the middle of
     # this uncommon word. Expose the real morpheme boundary to its tokenizer;
     # the canonical script remains unchanged and ASR must still recover the

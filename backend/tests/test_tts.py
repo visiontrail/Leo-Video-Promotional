@@ -248,6 +248,18 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "They trained pilots to skimm, the water surface at low altitudes.",
         )
 
+    def test_orpheus_prompt_articulates_yamaguchi_and_nagumo(self):
+        text = (
+            "Despite urging from his subordinate Yamaguchi to launch a third "
+            "strike, Nagumo declined."
+        )
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Despite urging from his subordinate Yama Goochi to launch a third "
+            "strike, Nah-goo-moh declined.",
+        )
+
     def test_orpheus_prompt_exposes_disproportionate_morpheme_boundary(self):
         text = "Why does this island produce disproportionate art,"
 
