@@ -78,6 +78,9 @@ ACOUSTIC_EQUIVALENTS = {
     # unrelated near-matches remain rejected.
     "suarcese": "scorsese",
     "sorsese": "scorsese",
+    # Whisper writes the fully spoken singular unit "kilometer" as its
+    # standard abbreviation after a normalized number (for example 8,000 km).
+    "km": "kilometer",
 }
 ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper may spell the phrasal verb as the identically pronounced noun.

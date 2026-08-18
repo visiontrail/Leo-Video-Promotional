@@ -815,6 +815,22 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_spoken_kilometer_unit(self):
+        expected = "along an eight-thousand-kilometer arc"
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("along an 8,000 km arc")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for("along an 8,000 mile arc")["verified"])
+
     def test_orpheus_transcript_normalizes_pre_arranged_compound_spelling(self):
         expected = "waiting for a single pre-arranged signal"
 
