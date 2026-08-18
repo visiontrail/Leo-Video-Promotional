@@ -94,6 +94,22 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_separates_repeated_north_pacific_opening(self):
+        text = (
+            "North Pacific for six aircraft carriers. The North Pacific. In winter."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "North Pacific for six aircraft carriers.",
+                "The North Pacific. In winter.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_split_tts_text_attaches_short_sentence_tail(self):
         text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen."
 
