@@ -22,13 +22,17 @@ Derive and explicitly describe these content decisions from the title and script
 - CORE CURIOSITY ELEMENT
 - BACKGROUND SCENE
 - DESIRED EMOTION / MOOD
-- OPTIONAL TEXT / ARROW
+- THUMBNAIL HEADLINE / OPTIONAL ARROW
 
 Final constraints:
 
 - Use exactly one visual story and one curiosity gap.
 - Prefer a human face only when the story benefits from one; never invent a recognizable real person unless the source clearly calls for that person.
-- If text materially improves the hook, use at most 3 punchy words in large bold white or yellow lettering with a thick black outline. Otherwise specify no text.
+- Include a clear thumbnail headline unless the visual hook is substantially stronger without text.
+- Write a topic-specific mini-title of 4-8 words (prefer 5-7), arranged on no more than two short lines. It must name a concrete subject, event, place, person, or object from the supplied title/script and add the video's specific angle, stakes, conflict, or consequence. Derive every claim from the source; do not invent facts.
+- Reject vague standalone hooks such as "HE KNEW", "THE TRUTH", "SAME CURSE", "THIS CHANGED EVERYTHING", or "WHAT HAPPENED?". The headline must make the actual video topic substantially clearer even when seen without the video title.
+- Match the headline language to the supplied video title. In the generated image prompt, put the exact headline in double quotes, label it as verbatim text, and explicitly require it to be rendered exactly once with no missing, altered, duplicated, or extra words.
+- Render the headline in large bold white or yellow lettering with a thick black outline and strong mobile-size legibility. Preserve the One Story Rule: the extra words clarify the same curiosity gap rather than introducing a second idea.
 - Never place text or faces in the bottom-right corner or bottom 15%.
 - Do not include UI chrome, watermarks, logos, captions, fine print, collages, or decorative clutter.
 - End with an explicit instruction to generate one final landscape 16:9 thumbnail image.

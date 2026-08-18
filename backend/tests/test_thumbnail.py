@@ -47,7 +47,12 @@ class ThumbnailPromptTests(unittest.IsolatedAsyncioTestCase):
         spec = prompts_registry.get_spec("thumbnail")
         self.assertIsNotNone(spec)
         self.assertEqual(spec.file, "thumbnail.txt")
-        self.assertIn("Mianyang Style", prompts_registry.read_content(spec))
+        content = prompts_registry.read_content(spec)
+        self.assertIn("Mianyang Style", content)
+        self.assertIn("topic-specific mini-title of 4-8 words", content)
+        self.assertIn("label it as verbatim text", content)
+        self.assertIn("actual video topic substantially clearer", content)
+        self.assertNotIn("at most 3 punchy words", content)
 
 
 class ThumbnailGenerationTests(unittest.IsolatedAsyncioTestCase):
