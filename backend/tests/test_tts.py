@@ -276,6 +276,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "Free-d the U-boats to attack Atlantic convoys.",
         )
 
+    def test_orpheus_prompt_articulates_hulls_before_were(self):
+        text = "Hulls were patched. But the message?"
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Hulls. Were patched. But the message?",
+        )
+
     def test_orpheus_prompt_exposes_disproportionate_morpheme_boundary(self):
         text = "Why does this island produce disproportionate art,"
 

@@ -914,6 +914,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # In this short contrastive beat the model repeatedly lengthens the vowel
+    # in "Hulls" into "Holes". A provider-only boundary after the requested
+    # word preserves its exact vowel while leaving the canonical script and
+    # ASR verification unchanged.
+    stripped = re.sub(
+        r"\b(Hulls)\s+(were patched)\b",
+        lambda match: f"{match.group(1)}. {match.group(2).capitalize()}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # The speech LM repeatedly substitutes "precautionate" for the middle of
     # this uncommon word. Expose the real morpheme boundary to its tokenizer;
     # the canonical script remains unchanged and ASR must still recover the
