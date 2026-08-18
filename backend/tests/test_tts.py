@@ -77,6 +77,23 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, ["One two three four five the six seven eight."])
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_keeps_fully_with_the_modified_verb(self):
+        text = (
+            "He knew he had to gain the upper hand before America fully committed, "
+            "because once it did, the math changed forever."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "He knew he had to gain the upper hand before America",
+                "fully committed, because once it did, the math changed forever.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_split_tts_text_attaches_short_sentence_tail(self):
         text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen."
 

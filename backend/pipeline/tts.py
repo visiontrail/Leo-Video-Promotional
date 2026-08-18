@@ -86,7 +86,7 @@ ACOUSTIC_PHRASE_EQUIVALENTS = {
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
     "a", "all", "an", "and", "as", "at", "but", "by", "for", "from", "in",
-    "into", "nor", "of", "on", "or", "the", "to", "with",
+    "fully", "into", "nor", "of", "on", "or", "the", "to", "with",
 }
 # Orpheus repeatedly drops an isolated leading "of" while conjunction-led
 # continuations remain reliable. Keep this intervention deliberately narrow so
