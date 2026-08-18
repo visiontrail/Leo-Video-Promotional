@@ -904,6 +904,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # At this exact clause boundary the model repeatedly speaks present-tense
+    # "free" instead of the requested past-tense "freed". Exposing the final
+    # morpheme preserves both the /d/ and the following "the"; verification
+    # still requires ASR to recover the canonical past-tense word.
+    stripped = re.sub(
+        r"\bFreed(\s+the U-boats to attack Atlantic convoys)\b",
+        r"Free-d\1",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # The speech LM repeatedly substitutes "precautionate" for the middle of
     # this uncommon word. Expose the real morpheme boundary to its tokenizer;
     # the canonical script remains unchanged and ASR must still recover the

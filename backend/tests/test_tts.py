@@ -268,6 +268,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "worst moments now dismissed. The United States after one morning.",
         )
 
+    def test_orpheus_prompt_articulates_freed_before_the(self):
+        text = "Freed the U-boats to attack Atlantic convoys."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Free-d the U-boats to attack Atlantic convoys.",
+        )
+
     def test_orpheus_prompt_exposes_disproportionate_morpheme_boundary(self):
         text = "Why does this island produce disproportionate art,"
 
