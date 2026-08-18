@@ -166,6 +166,20 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
         self.assertEqual(tts._orpheus_prompt_text("A complete clause,"), "A complete clause.")
 
+    def test_orpheus_prompt_articulates_failed_opening_months_inflection(self):
+        text = (
+            "Months of obsessive engineering, intelligence gathering, training, "
+            "and planning so meticulous it's almost uncomfortable to admire."
+        )
+
+        prompt = tts._orpheus_prompt_text(text)
+
+        self.assertEqual(
+            prompt,
+            "Month-s of obsessive engineering, intelligence gathering, training, "
+            "and planning so meticulous it's almost uncomfortable to admire.",
+        )
+
     def test_orpheus_prompt_adds_pause_for_fragile_disciplined_inflection(self):
         text = "same kind of disciplined, formidable, militaristic society,"
 

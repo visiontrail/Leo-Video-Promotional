@@ -772,6 +772,15 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
 def _orpheus_prompt_text(text: str) -> str:
     """Give every short LM request an explicit speech termination boundary."""
     stripped = text.rstrip()
+    # Orpheus repeatedly realizes the opening phrase "Months of" as singular
+    # "Month of". Expose the final plural morpheme to its tokenizer; the
+    # canonical script remains unchanged and ASR must still recover "months".
+    stripped = re.sub(
+        r"^(\s*Months)\s+(of)\b",
+        lambda match: f"{match.group(1)[:-1]}-s {match.group(2)}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # In a comma-separated adjective list Orpheus repeatedly drops the final
     # /d/ from "disciplined" and speaks the noun "discipline" instead. Give
     # that exact observed transition a stronger, unspoken articulation pause;
