@@ -889,6 +889,18 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # The /d/ at the end of "dismissed" repeatedly disappears before the
+    # dental onset in "the". A provider-only sentence pause preserves that
+    # final consonant while the canonical transcript remains unchanged.
+    stripped = re.sub(
+        r"\b(dismissed)\s+(the United States)\b",
+        lambda match: (
+            f"{match.group(1)}. "
+            f"{match.group(2)[0].upper()}{match.group(2)[1:]}"
+        ),
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # The speech LM repeatedly substitutes "precautionate" for the middle of
     # this uncommon word. Expose the real morpheme boundary to its tokenizer;
     # the canonical script remains unchanged and ASR must still recover the

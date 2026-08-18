@@ -260,6 +260,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "strike, Nah-goo-moh declined.",
         )
 
+    def test_orpheus_prompt_articulates_dismissed_before_the(self):
+        text = "worst moments now dismissed the United States after one morning."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "worst moments now dismissed. The United States after one morning.",
+        )
+
     def test_orpheus_prompt_exposes_disproportionate_morpheme_boundary(self):
         text = "Why does this island produce disproportionate art,"
 
