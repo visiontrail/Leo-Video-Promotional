@@ -82,6 +82,8 @@ ACOUSTIC_EQUIVALENTS = {
 ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper may spell the phrasal verb as the identically pronounced noun.
     ("break", "through"): "breakthrough",
+    # A provider-only morpheme hint may survive as two exact ASR tokens.
+    ("declar", "ing"): "declaring",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
@@ -809,14 +811,15 @@ def _orpheus_prompt_text(text: str) -> str:
         flags=re.IGNORECASE,
     )
     # This three-part list repeatedly makes Orpheus pluralize the final gerund
-    # as the non-word "declarings". Provider-only sentence boundaries retain
-    # every lexical token while removing the misleading noun-list prosody.
+    # as the non-word "declarings". Expose the real morpheme boundary to its
+    # tokenizer; ASR must still recover either the exact word or the exact
+    # `declar` + `ing` acoustic pair, never an added plural.
     stripped = re.sub(
         r"\b(proxy conflicts),\s+(aid without troops),\s+"
         r"(arming without declaring)\b",
         lambda match: (
-            f"{match.group(1)}. {match.group(2).capitalize()}. "
-            f"{match.group(3).capitalize()}"
+            f"{match.group(1)}, {match.group(2)}, "
+            f"{match.group(3)[:-3]}-ing"
         ),
         stripped,
         flags=re.IGNORECASE,

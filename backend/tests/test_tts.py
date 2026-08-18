@@ -204,7 +204,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             prompt,
-            "Proxy conflicts. Aid without troops. Arming without declaring.",
+            "Proxy conflicts, aid without troops, arming without declar-ing.",
         )
         self.assertEqual(tts._lexical_tokens(prompt), tts._lexical_tokens(text))
 
