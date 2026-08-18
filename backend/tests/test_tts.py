@@ -240,6 +240,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "and they passed. That love to their kids.",
         )
 
+    def test_orpheus_prompt_articulates_skim_before_the(self):
+        text = "They trained pilots to skim the water surface at low altitudes."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "They trained pilots to skimm, the water surface at low altitudes.",
+        )
+
     def test_orpheus_prompt_exposes_disproportionate_morpheme_boundary(self):
         text = "Why does this island produce disproportionate art,"
 

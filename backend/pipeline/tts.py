@@ -866,6 +866,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # Before the dental onset in "the", this model repeatedly realizes the
+    # final /m/ in "skim" as /n/. A doubled final consonant plus an unspoken
+    # pause made the exact word audible in the observed phrase; the canonical
+    # script still requires ASR to recover "skim", never "skin" or "skimm".
+    stripped = re.sub(
+        r"\b(skim)\s+(the water surface)\b",
+        lambda match: f"{match.group(1)}m, {match.group(2)}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # The speech LM repeatedly substitutes "precautionate" for the middle of
     # this uncommon word. Expose the real morpheme boundary to its tokenizer;
     # the canonical script remains unchanged and ASR must still recover the
