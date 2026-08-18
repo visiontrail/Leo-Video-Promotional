@@ -59,7 +59,10 @@ NUMBER_WORDS = {
 ORDINAL_DIGITS = {
     "1st": "first", "2nd": "second", "3rd": "third", "4th": "fourth",
     "5th": "fifth", "6th": "sixth", "7th": "seventh", "8th": "eighth",
-    "9th": "ninth", "10th": "tenth", "20th": "twentieth", "30th": "thirtieth",
+    "9th": "ninth", "10th": "tenth", "11th": "eleventh", "12th": "twelfth",
+    "13th": "thirteenth", "14th": "fourteenth", "15th": "fifteenth",
+    "16th": "sixteenth", "17th": "seventeenth", "18th": "eighteenth",
+    "19th": "nineteenth", "20th": "twentieth", "30th": "thirtieth",
 }
 # Acoustic verification cannot distinguish exact homophones. Keep this list
 # deliberately narrow; near-homophones such as ``feed``/``feet`` must still fail.
