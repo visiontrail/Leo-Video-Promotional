@@ -768,6 +768,24 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_a_thousand_across_asr_words(self):
+        expected = "nearly a thousand tons of ships in that same hour."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("nearly a thousand tons of ships in that same hour")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            report_for("nearly a hundred tons of ships in that same hour")["verified"]
+        )
+
     def test_orpheus_transcript_normalizes_numeric_teen_ordinal(self):
         expected = "On December eleventh, he declared war."
 
