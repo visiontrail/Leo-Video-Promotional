@@ -79,6 +79,10 @@ ACOUSTIC_EQUIVALENTS = {
     "suarcese": "scorsese",
     "sorsese": "scorsese",
 }
+ACOUSTIC_PHRASE_EQUIVALENTS = {
+    # Whisper may spell the phrasal verb as the identically pronounced noun.
+    ("break", "through"): "breakthrough",
+}
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
     "a", "all", "an", "and", "as", "at", "but", "by", "for", "from", "in",
@@ -139,7 +143,23 @@ def _lexical_tokens(text: str) -> list[str]:
             continue
         value = ACOUSTIC_EQUIVALENTS.get(value, value)
         normalized.append(ORDINAL_DIGITS.get(value, NUMBER_WORDS.get(value, value)))
-    return _canonicalize_number_tokens(normalized)
+    return _canonicalize_number_tokens(_canonicalize_acoustic_phrase_tokens(normalized))
+
+
+def _canonicalize_acoustic_phrase_tokens(tokens: list[str]) -> list[str]:
+    """Collapse narrow split/join spellings that carry identical speech."""
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        pair = tuple(tokens[index:index + 2])
+        canonical = ACOUSTIC_PHRASE_EQUIVALENTS.get(pair)
+        if canonical is not None:
+            result.append(canonical)
+            index += 2
+            continue
+        result.append(tokens[index])
+        index += 1
+    return result
 
 
 def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
@@ -251,6 +271,13 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
     acoustic_indexes: list[int] = []
     cursor = 0
     while cursor < len(tokens):
+        phrase = tuple(tokens[cursor:cursor + 2])
+        canonical_phrase = ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase)
+        if canonical_phrase is not None:
+            acoustic_tokens.append(canonical_phrase)
+            acoustic_indexes.append(word_indexes[cursor])
+            cursor += 2
+            continue
         if (
             tokens[cursor] == "dis"
             and cursor + 1 < len(tokens)
