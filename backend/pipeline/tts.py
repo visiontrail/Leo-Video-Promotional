@@ -82,6 +82,9 @@ ACOUSTIC_EQUIVALENTS = {
 ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper may spell the phrasal verb as the identically pronounced noun.
     ("break", "through"): "breakthrough",
+    # Source-side lexical splitting preserves the hyphen as two words while
+    # Whisper spells this identically pronounced compound as one word.
+    ("pre", "arranged"): "prearranged",
     # A provider-only morpheme hint may survive as two exact ASR tokens.
     ("declar", "ing"): "declaring",
 }
