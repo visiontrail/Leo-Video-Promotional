@@ -568,6 +568,7 @@ async def acquire_footage(
             "planner": planner,
             "queries": query_plan,
             "clips": [],
+            "rejected_candidates": [],
             "errors": [],
         }
         _write_manifest(task_dir, manifest)

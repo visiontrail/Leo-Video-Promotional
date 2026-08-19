@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -64,6 +65,81 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNone(web_footage._analysis_from_gemini_turns(turns, source_url))
+
+    def test_recovery_accepts_explicit_rejection_without_timestamps(self):
+        source_url = "https://www.youtube.com/watch?v=unsuitable"
+        turns = (
+            '[{"Role":"User","Text":"Analyze '
+            + source_url
+            + '"},{"Role":"Assistant","Text":"{\\"suitable\\":false,'
+            '\\"confidence\\":0.96,\\"reason\\":\\"Only a talking head\\"}"}]'
+        )
+
+        analysis = web_footage._analysis_from_gemini_turns(turns, source_url)
+
+        self.assertIsNotNone(analysis)
+        self.assertFalse(analysis["suitable"])
+
+    async def test_gemini_can_reject_candidate_without_timestamps(self):
+        candidate = {
+            "platform": "youtube",
+            "source_page_url": "https://www.youtube.com/watch?v=unsuitable",
+            "duration_seconds": 90,
+        }
+        runner = AsyncMock(
+            return_value=OpenCLIResult(
+                (),
+                0,
+                '{"suitable":false,"confidence":0.91,'
+                '"reason":"The video contains no matching visuals"}',
+                "",
+            )
+        )
+
+        with patch.object(web_footage, "run_opencli", runner):
+            analysis = await web_footage.analyze_candidate_link(
+                candidate, "narration about a city skyline"
+            )
+
+        self.assertEqual(analysis["status"], "rejected")
+        self.assertFalse(analysis["suitable"])
+        self.assertNotIn("start_seconds", analysis)
+        prompt = runner.await_args.args[0][2]
+        self.assertIn('"suitable":false', prompt)
+        self.assertIn("local footage agent will discard it and search again", prompt)
+
+    async def test_late_gemini_rejection_remains_rejected_after_recovery(self):
+        source_url = "https://www.youtube.com/watch?v=late-unsuitable"
+        candidate = {
+            "platform": "youtube",
+            "source_page_url": source_url,
+            "duration_seconds": 90,
+        }
+        no_response = OpenCLIResult((), 0, "[NO RESPONSE] timed out", "")
+        recovered = OpenCLIResult(
+            (),
+            0,
+            (
+                '[{"Role":"User","Text":"Analyze '
+                + source_url
+                + '"},{"Role":"Assistant","Text":"{\\"suitable\\":false,'
+                '\\"confidence\\":0.88,\\"reason\\":\\"No matching visuals\\"}"}]'
+            ),
+            "",
+        )
+
+        with patch.object(
+            web_footage,
+            "run_opencli",
+            AsyncMock(side_effect=[no_response, recovered]),
+        ):
+            analysis = await web_footage.analyze_candidate_link(
+                candidate, "narration"
+            )
+
+        self.assertFalse(analysis["suitable"])
+        self.assertEqual(analysis["status"], "rejected_after_timeout")
+        self.assertNotIn("start_seconds", analysis)
 
     async def test_disabled_gemini_is_recorded_as_fallback(self):
         candidate = {
@@ -194,6 +270,121 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
             command[command.index("--download-sections") + 1], "*66.000-73.000"
         )
         self.assertNotIn("bestaudio", command[command.index("-f") + 1])
+
+    async def test_rejected_candidate_makes_scout_try_next_search_result(self):
+        rejected = {
+            "platform": "youtube",
+            "provider": "YouTube",
+            "provider_id": "youtube-first",
+            "title": "Talking head",
+            "creator": "First creator",
+            "source_page_url": "https://www.youtube.com/watch?v=first",
+            "duration_seconds": 60,
+        }
+        accepted = {
+            "platform": "youtube",
+            "provider": "YouTube",
+            "provider_id": "youtube-second",
+            "title": "Matching city view",
+            "creator": "Second creator",
+            "source_page_url": "https://www.youtube.com/watch?v=second",
+            "duration_seconds": 60,
+        }
+        rejection = {
+            "suitable": False,
+            "confidence": 0.95,
+            "reason": "No matching city visuals",
+            "analyzer": "gemini-web-via-opencli",
+            "status": "rejected",
+        }
+        selection = {
+            "suitable": True,
+            "start_seconds": 12.0,
+            "end_seconds": 27.0,
+            "confidence": 0.9,
+            "reason": "Wide city skyline",
+            "analyzer": "gemini-web-via-opencli",
+            "status": "analyzed",
+        }
+        logs: list[str] = []
+
+        with TemporaryDirectory() as directory:
+            task_dir = Path(directory)
+            manifest = {
+                "task_id": "demo",
+                "provider": "YouTube",
+                "provider_id": "opencli-web",
+                "clips": [],
+                "errors": [],
+            }
+
+            async def fake_download(candidate, raw_dir, _analysis):
+                raw_path = raw_dir / f"{candidate['provider_id']}.mp4"
+                raw_path.write_bytes(b"raw-video")
+                return raw_path, True
+
+            async def fake_trim(_raw_path, destination, _analysis, _orientation):
+                destination.write_bytes(b"trimmed-video")
+
+            with (
+                patch.object(
+                    web_footage,
+                    "search_youtube",
+                    AsyncMock(return_value=[rejected, accepted]),
+                ),
+                patch.object(
+                    web_footage,
+                    "analyze_candidate_link",
+                    AsyncMock(side_effect=[rejection, selection]),
+                ) as analyzer,
+                patch.object(
+                    web_footage,
+                    "_download_youtube",
+                    AsyncMock(side_effect=fake_download),
+                ) as downloader,
+                patch.object(
+                    web_footage,
+                    "_probe",
+                    AsyncMock(
+                        return_value={
+                            "duration_seconds": 15.0,
+                            "width": 1280,
+                            "height": 720,
+                        }
+                    ),
+                ),
+                patch.object(web_footage, "_trim", AsyncMock(side_effect=fake_trim)),
+                patch.object(
+                    web_footage,
+                    "_evidence_frames",
+                    AsyncMock(return_value=["frame-01.jpg"]),
+                ),
+            ):
+                result = await web_footage.supplement_web_footage(
+                    task_dir=task_dir,
+                    manifest=manifest,
+                    query_plan=[{"query": "city skyline", "purpose": "Show the city"}],
+                    target_total=1,
+                    orientation="landscape",
+                    script="The city grew across the horizon.",
+                    log=logs.append,
+                )
+
+            saved = json.loads(
+                (task_dir / "footage" / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(analyzer.await_count, 2)
+        downloader.assert_awaited_once()
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["clips"][0]["source_page_url"], accepted["source_page_url"])
+        self.assertEqual(
+            saved["rejected_candidates"][0]["source_page_url"],
+            rejected["source_page_url"],
+        )
+        self.assertTrue(
+            any("local footage agent continuing search" in message for message in logs)
+        )
 
 
 if __name__ == "__main__":

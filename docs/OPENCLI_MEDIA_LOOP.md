@@ -13,7 +13,7 @@ narration script
   -> query plan
   -> Wikimedia search -----------------------> explicit-open-license candidate
   -> project yt-dlp ------------> YouTube ----> rights-review candidate
-  -> Gemini Web link analysis (YouTube) ------> trim JSON or recorded fallback
+  -> Gemini Web link analysis (YouTube) ------> accept + trim / reject + re-search
   -> FFprobe + FFmpeg ------------------------> silent normalized clip + evidence frames
   -> footage/manifest.json -------------------> visual plan -> HyperFrames -> final MP4
 ```
@@ -78,8 +78,11 @@ bridge, or web failure is logged and recorded but does not discard a valid scrip
 
 Every retained clip has a canonical source link, creator, provider, source duration, exact trim,
 script excerpt, analyzer/status/reason, normalized media facts, SHA-256, and three evidence frame
-paths. Manifest writes are atomic. Raw downloads are deleted only after the normalized derivative and
-evidence frames succeed; failed raw files are retained for diagnosis.
+paths. Gemini may explicitly reject a candidate with `suitable=false` and no timestamps. The scout
+records that verdict in `rejected_candidates`, excludes that source from later candidate selection
+in the scout run, and asks Gemini to judge the next local search result. Manifest writes are atomic.
+Raw downloads are deleted only after the normalized derivative and evidence frames succeed; failed
+raw files are retained for diagnosis.
 
 Gemini's web product can usually inspect public YouTube links, but OpenCLI may time out before a
 slow response becomes visible. The scout polls the same conversation for late assistant JSON

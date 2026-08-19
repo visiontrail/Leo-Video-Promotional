@@ -129,6 +129,7 @@ async def get_task_footage(task_id: str):
         "planner": "",
         "queries": [],
         "clips": [],
+        "rejected_candidates": [],
         "errors": [],
     }
 

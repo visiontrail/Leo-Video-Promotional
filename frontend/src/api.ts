@@ -199,6 +199,22 @@ export interface FootageManifest {
   planner: string;
   queries: FootageQuery[];
   clips: FootageClip[];
+  rejected_candidates?: Array<{
+    query: string;
+    purpose?: string;
+    title?: string;
+    source_page_url: string;
+    creator?: string;
+    script_excerpt?: string;
+    rejected_at?: string;
+    analysis: {
+      suitable: false;
+      confidence: number;
+      reason: string;
+      analyzer: string;
+      status: 'rejected' | 'rejected_after_timeout';
+    };
+  }>;
   errors: Array<{ query?: string; stage?: string; message: string }>;
   rights_review_required?: boolean;
   publication_blockers?: string[];

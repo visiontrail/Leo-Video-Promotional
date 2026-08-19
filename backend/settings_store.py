@@ -536,7 +536,7 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         "WEB_FOOTAGE_GEMINI_ENABLED", "footage", "Gemini web analysis", "bool",
-        description="Send public candidate links and matching script excerpts to the logged-in Gemini web app for trim selection.",
+        description="Ask Gemini Web to accept and trim matching public candidates or reject unsuitable ones so the local footage agent keeps searching.",
     ),
     SettingSpec(
         "WEB_FOOTAGE_GEMINI_TIMEOUT", "footage", "Gemini analysis timeout", "int", unit="seconds",

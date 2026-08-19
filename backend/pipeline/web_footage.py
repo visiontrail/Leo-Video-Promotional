@@ -172,7 +172,56 @@ def _fallback_analysis(candidate: dict, *, reason: str) -> dict:
     }
 
 
+def _suitability_verdict(parsed: dict) -> bool | None:
+    """Return Gemini's explicit suitability verdict when one is present."""
+    value = parsed.get("suitable", parsed.get("is_suitable"))
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in {"true", "yes", "suitable", "appropriate", "accept", "accepted"}:
+            return True
+        if normalized in {
+            "false",
+            "no",
+            "unsuitable",
+            "not_suitable",
+            "inappropriate",
+            "reject",
+            "rejected",
+        }:
+            return False
+
+    verdict = str(parsed.get("verdict") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if verdict in {"suitable", "appropriate", "accept", "accepted"}:
+        return True
+    if verdict in {"unsuitable", "not_suitable", "inappropriate", "reject", "rejected"}:
+        return False
+    return None
+
+
 def _normalise_analysis(parsed: dict, candidate: dict) -> dict:
+    suitability = _suitability_verdict(parsed)
+    confidence_value = parsed.get("confidence")
+    confidence = min(
+        1.0,
+        max(0.0, float(0.5 if confidence_value is None else confidence_value)),
+    )
+    if suitability is False:
+        return {
+            "suitable": False,
+            "confidence": round(confidence, 3),
+            "reason": str(parsed.get("reason") or "Gemini found no suitable interval")[:300],
+            "analyzer": "gemini-web-via-opencli",
+            "status": "rejected",
+        }
+    if "start_seconds" not in parsed or "end_seconds" not in parsed:
+        raise OpenCLIError(
+            "Gemini accepted the candidate without start_seconds and end_seconds"
+        )
+
     duration = float(candidate.get("duration_seconds") or 0)
     maximum = float(config.WEB_FOOTAGE_CLIP_SECONDS)
     minimum = float(config.WEB_FOOTAGE_CLIP_MIN_SECONDS)
@@ -191,8 +240,8 @@ def _normalise_analysis(parsed: dict, candidate: dict) -> dict:
         # Re-extend after duration clamping when there is room.
         if end - start < minimum and duration > start + minimum:
             end = min(duration, start + minimum)
-    confidence = min(1.0, max(0.0, float(parsed.get("confidence") or 0.5)))
     return {
+        "suitable": True,
         "start_seconds": round(start, 3),
         "end_seconds": round(end, 3),
         "confidence": round(confidence, 3),
@@ -234,8 +283,12 @@ def _analysis_from_gemini_turns(value: str, source_page_url: str) -> dict | None
             parsed = first_json(text)
         except OpenCLIError:
             continue
-        if isinstance(parsed, dict) and "start_seconds" in parsed and "end_seconds" in parsed:
-            return parsed
+        if isinstance(parsed, dict):
+            suitability = _suitability_verdict(parsed)
+            if suitability is False or (
+                "start_seconds" in parsed and "end_seconds" in parsed
+            ):
+                return parsed
     return None
 
 
@@ -286,13 +339,20 @@ async def analyze_candidate_link(candidate: dict, script_excerpt: str) -> dict:
         f"this public YouTube video: {candidate['source_page_url']}\n"
         f"Candidate duration: {duration:.1f} seconds.\n"
         f"Narration excerpt:\n{script_excerpt}\n\n"
-        "Return ONLY one compact JSON object with numeric start_seconds, end_seconds, "
-        "confidence (0 to 1), and a short reason. "
-        f"Select a visually coherent interval of AT LEAST {min_seconds} seconds and AT MOST "
-        f"{max_seconds} seconds — aim for close to {max_seconds} seconds so the clip can "
-        "accompany the full narration excerpt. The interval must be long enough to cover the "
-        "spoken content meaningfully; do not return a short 5-6 second fragment. "
-        "Avoid intros, logos, subtitles, talking-head filler, and end cards."
+        "Judge suitability before selecting a time range. Return ONLY one compact JSON object "
+        "in one of these two forms:\n"
+        '{"suitable":true,"start_seconds":12,"end_seconds":27,'
+        '"confidence":0.9,"reason":"short explanation"}\n'
+        '{"suitable":false,"confidence":0.9,"reason":"why no visuals fit"}\n'
+        "Return suitable=false when the actual video has no coherent interval that genuinely "
+        "matches the narration, or when you cannot inspect the visuals reliably. Do not invent "
+        "timestamps for an unsuitable video; the local footage agent will discard it and search "
+        "again. When suitable=true, select a visually coherent interval of AT LEAST "
+        f"{min_seconds} seconds and AT MOST {max_seconds} seconds — aim for close to "
+        f"{max_seconds} seconds so the clip can accompany the full narration excerpt. The "
+        "interval must be long enough to cover the spoken content meaningfully; do not return "
+        "a short 5-6 second fragment. Avoid intros, logos, subtitles, talking-head filler, and "
+        "end cards."
     )
     try:
         result = await run_opencli(
@@ -317,7 +377,11 @@ async def analyze_candidate_link(candidate: dict, script_excerpt: str) -> dict:
             raise OpenCLIError("Gemini trim analysis was not a JSON object")
         analysis = _normalise_analysis(parsed, candidate)
         if recovered:
-            analysis["status"] = "analyzed_after_timeout"
+            analysis["status"] = (
+                "rejected_after_timeout"
+                if analysis.get("suitable") is False
+                else "analyzed_after_timeout"
+            )
         return analysis
     except Exception as exc:  # noqa: BLE001 - trim fallback must keep the scout moving
         return _fallback_analysis(candidate, reason=f"Gemini analysis fallback: {exc}")
@@ -503,7 +567,11 @@ async def supplement_web_footage(
     raw_dir = task_dir / "footage" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     evidence_root = task_dir / "footage" / "evidence"
-    used_sources = {str(clip.get("source_page_url") or "") for clip in manifest.get("clips", [])}
+    rejected_candidates = manifest.setdefault("rejected_candidates", [])
+    used_sources = {
+        str(item.get("source_page_url") or "")
+        for item in [*manifest.get("clips", []), *rejected_candidates]
+    }
 
     if manifest.get("provider_id") in {"opencli-web", "youtube-web"}:
         manifest["provider"] = "YouTube"
@@ -539,104 +607,132 @@ async def supplement_web_footage(
                 {"query": query, "stage": "youtube-search", "message": str(exc)}
             )
             continue
-        candidate = next(
-            (
-                item
-                for item in results
-                if item["source_page_url"] not in used_sources
-            ),
-            None,
-        )
-        if candidate is None:
+        candidates = [
+            item
+            for item in results
+            if item["source_page_url"] not in used_sources
+        ]
+        if not candidates:
             manifest.setdefault("errors", []).append(
                 {"query": query, "stage": "web-selection", "message": "No unique web candidate found"}
             )
             continue
 
         excerpt = matching_script_excerpt(script, query)
-        _emit(log, f"Web footage: asking Gemini Web to select a trim for {candidate['source_page_url']}")
-        analysis = await analyze_candidate_link(candidate, excerpt)
-        raw_path: Path | None = None
-        try:
-            source_duration = float(candidate.get("duration_seconds") or 0)
-            if source_duration:
-                analysis = _fit_analysis_to_media(analysis, source_duration)
-            raw_path, sectioned = await _download_youtube(candidate, raw_dir, analysis)
-            media = await _probe(raw_path)
-            if not source_duration:
-                source_duration = media["duration_seconds"]
-                analysis = _fit_analysis_to_media(analysis, source_duration)
-            edit_analysis = analysis
-            if sectioned:
-                requested_length = max(
-                    1.0,
-                    float(analysis["end_seconds"]) - float(analysis["start_seconds"]),
+        for candidate in candidates:
+            source_page_url = str(candidate["source_page_url"])
+            _emit(
+                log,
+                f"Web footage: asking Gemini Web to judge and trim {source_page_url}",
+            )
+            analysis = await analyze_candidate_link(candidate, excerpt)
+            if analysis.get("suitable") is False:
+                used_sources.add(source_page_url)
+                rejected_candidates.append(
+                    {
+                        "query": query,
+                        "purpose": str(shot.get("purpose") or ""),
+                        "title": str(candidate.get("title") or ""),
+                        "source_page_url": source_page_url,
+                        "creator": str(candidate.get("creator") or ""),
+                        "analysis": analysis,
+                        "script_excerpt": excerpt,
+                        "rejected_at": _now(),
+                    }
                 )
-                edit_analysis = {
-                    "start_seconds": 0.0,
-                    "end_seconds": min(media["duration_seconds"], requested_length),
-                }
-            clip_id = f"clip-{len(manifest.get('clips', [])) + 1:02d}"
-            destination = task_dir / "footage" / f"{clip_id}.mp4"
-            await _trim(raw_path, destination, edit_analysis, orientation)
-            trimmed = await _probe(destination)
-            evidence_names = await _evidence_frames(
-                destination,
-                evidence_root / clip_id,
-                trimmed["duration_seconds"],
-            )
-        except Exception as exc:  # noqa: BLE001 - try the next query/candidate
-            manifest.setdefault("errors", []).append(
-                {
-                    "query": query,
-                    "stage": "web-download-edit",
-                    "source_page_url": candidate["source_page_url"],
-                    "message": str(exc),
-                }
-            )
-            _emit(log, f"Web footage candidate failed: {exc}")
-            continue
+                manifest["updated_at"] = _now()
+                _write_manifest(manifest_file, manifest)
+                _emit(
+                    log,
+                    "Web footage: Gemini rejected this candidate as unsuitable; "
+                    "local footage agent continuing search",
+                )
+                continue
 
-        # Keep failed downloads for diagnosis. Remove the exact raw file only
-        # after the normalized derivative and evidence frames are verified.
-        if raw_path and raw_path.exists():
-            raw_path.unlink()
+            raw_path: Path | None = None
+            try:
+                source_duration = float(candidate.get("duration_seconds") or 0)
+                if source_duration:
+                    analysis = _fit_analysis_to_media(analysis, source_duration)
+                raw_path, sectioned = await _download_youtube(candidate, raw_dir, analysis)
+                media = await _probe(raw_path)
+                if not source_duration:
+                    source_duration = media["duration_seconds"]
+                    analysis = _fit_analysis_to_media(analysis, source_duration)
+                edit_analysis = analysis
+                if sectioned:
+                    requested_length = max(
+                        1.0,
+                        float(analysis["end_seconds"])
+                        - float(analysis["start_seconds"]),
+                    )
+                    edit_analysis = {
+                        "start_seconds": 0.0,
+                        "end_seconds": min(media["duration_seconds"], requested_length),
+                    }
+                clip_id = f"clip-{len(manifest.get('clips', [])) + 1:02d}"
+                destination = task_dir / "footage" / f"{clip_id}.mp4"
+                await _trim(raw_path, destination, edit_analysis, orientation)
+                trimmed = await _probe(destination)
+                evidence_names = await _evidence_frames(
+                    destination,
+                    evidence_root / clip_id,
+                    trimmed["duration_seconds"],
+                )
+            except Exception as exc:  # noqa: BLE001 - try the next candidate
+                used_sources.add(source_page_url)
+                manifest.setdefault("errors", []).append(
+                    {
+                        "query": query,
+                        "stage": "web-download-edit",
+                        "source_page_url": source_page_url,
+                        "message": str(exc),
+                    }
+                )
+                _emit(log, f"Web footage candidate failed; continuing search: {exc}")
+                continue
 
-        entry = {
-            "id": clip_id,
-            "query": query,
-            "purpose": str(shot.get("purpose") or ""),
-            **candidate,
-            "duration_seconds": round(trimmed["duration_seconds"], 3),
-            "source_duration_seconds": round(source_duration, 3),
-            "width": trimmed["width"],
-            "height": trimmed["height"],
-            "bytes": destination.stat().st_size,
-            "mime_type": "video/mp4",
-            "sha256": _sha256(destination),
-            "local_path": destination.relative_to(task_dir).as_posix(),
-            "status": "downloaded_and_trimmed",
-            "analysis": analysis,
-            "script_excerpt": excerpt,
-            "evidence_frames": [
-                f"footage/evidence/{clip_id}/{name}" for name in evidence_names
-            ],
-            "license": "Rights not verified — human review required",
-            "license_code": "rights-review-required",
-            "license_url": "",
-            "attribution_required": True,
-            "review_required": True,
-            "rights_status": "review_required",
-        }
-        manifest.setdefault("clips", []).append(entry)
-        used_sources.add(candidate["source_page_url"])
-        manifest["updated_at"] = _now()
-        _write_manifest(manifest_file, manifest)
-        _emit(
-            log,
-            f"Web footage: {clip_id} trimmed to {analysis['start_seconds']:.1f}–"
-            f"{analysis['end_seconds']:.1f}s via {analysis['analyzer']}",
-        )
+            # Keep failed downloads for diagnosis. Remove the exact raw file only
+            # after the normalized derivative and evidence frames are verified.
+            if raw_path and raw_path.exists():
+                raw_path.unlink()
+
+            entry = {
+                "id": clip_id,
+                "query": query,
+                "purpose": str(shot.get("purpose") or ""),
+                **candidate,
+                "duration_seconds": round(trimmed["duration_seconds"], 3),
+                "source_duration_seconds": round(source_duration, 3),
+                "width": trimmed["width"],
+                "height": trimmed["height"],
+                "bytes": destination.stat().st_size,
+                "mime_type": "video/mp4",
+                "sha256": _sha256(destination),
+                "local_path": destination.relative_to(task_dir).as_posix(),
+                "status": "downloaded_and_trimmed",
+                "analysis": analysis,
+                "script_excerpt": excerpt,
+                "evidence_frames": [
+                    f"footage/evidence/{clip_id}/{name}" for name in evidence_names
+                ],
+                "license": "Rights not verified — human review required",
+                "license_code": "rights-review-required",
+                "license_url": "",
+                "attribution_required": True,
+                "review_required": True,
+                "rights_status": "review_required",
+            }
+            manifest.setdefault("clips", []).append(entry)
+            used_sources.add(source_page_url)
+            manifest["updated_at"] = _now()
+            _write_manifest(manifest_file, manifest)
+            _emit(
+                log,
+                f"Web footage: {clip_id} trimmed to {analysis['start_seconds']:.1f}–"
+                f"{analysis['end_seconds']:.1f}s via {analysis['analyzer']}",
+            )
+            break
 
     if raw_dir.exists() and not any(raw_dir.iterdir()):
         raw_dir.rmdir()

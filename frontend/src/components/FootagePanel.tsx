@@ -53,6 +53,7 @@ export default function FootagePanel({ task }: { task: Task }) {
     ['awaiting_review', 'complete', 'failed'].includes(task.status)
   const acquired = manifest.clips.length
   const requested = manifest.requested_clip_count || task.config.footage_clip_count || 0
+  const rejected = manifest.rejected_candidates?.length || 0
 
   return (
     <section className="footage-workbench">
@@ -63,6 +64,9 @@ export default function FootagePanel({ task }: { task: Task }) {
           <p>
             {acquired}/{requested} clips prepared from {manifest.provider}
             {manifest.planner && <> · planned by {manifest.planner.replace('ai:', 'AI / ')}</>}
+            {rejected > 0 && (
+              <> · Gemini rejected {rejected} unsuitable candidate{rejected === 1 ? '' : 's'} and kept searching</>
+            )}
           </p>
         </div>
         <div className="workbench-actions">

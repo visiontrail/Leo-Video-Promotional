@@ -247,9 +247,12 @@ New tasks can enable **Public Footage** and choose a source strategy:
 - **YouTube only** discovers and downloads clips through the project `yt-dlp`.
 
 After scriptwriting, the configured AI provider produces concrete B-roll queries. For YouTube
-candidates the scout asks the signed-in Gemini web app, through OpenCLI, to select a coherent
-interval for the matching narration excerpt. If OpenCLI's initial wait expires, the scout polls
-the same conversation for the late assistant JSON before recording a failure and falling back.
+candidates the scout asks the signed-in Gemini web app, through OpenCLI, to judge suitability
+before selecting a coherent interval for the matching narration excerpt. Gemini can return
+`suitable=false` without invented timestamps; the scout records that decision under
+`rejected_candidates` and immediately tries the next local search result. If OpenCLI's initial wait
+expires, the scout polls the same conversation for the late assistant JSON before recording a
+failure and falling back.
 FFmpeg then trims, crops, removes source audio, normalizes to H.264/YUV420p, and writes three
 evidence frames. The resulting `footage/manifest.json` records the source URL, creator, exact
 trim, analyzer result, script excerpt, dimensions, duration, byte size, SHA-256, and local path.
