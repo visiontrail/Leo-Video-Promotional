@@ -305,5 +305,7 @@ open with the desired Gemini and ChatGPT sessions signed in, then verify the pro
 ```
 
 No command in the pipeline invokes a global `opencli`; the SDK process prepends this repository's
-wrapper/runtime paths to `PATH`. See `docs/OPENCLI_MEDIA_LOOP.md` for the architecture, operating
-limits, validation recipe, and product roadmap.
+wrapper/runtime paths to `PATH`. Gemini and ChatGPT commands—including retries and concurrent idle
+tasks—share a cross-process start limiter, with a configurable 10–30 second interval under
+**Admin → System → Footage Sources**. See `docs/OPENCLI_MEDIA_LOOP.md` for the architecture,
+operating limits, validation recipe, and product roadmap.

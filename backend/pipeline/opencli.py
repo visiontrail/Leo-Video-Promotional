@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from backend import config
+from backend.pipeline.opencli_rate_limit import (
+    is_rate_limited_command,
+    wait_for_opencli_web_slot,
+)
 
 
 class OpenCLIError(RuntimeError):
@@ -58,10 +62,20 @@ async def run_opencli(
         )
 
     command = [str(binary), *[str(arg) for arg in args]]
+    env = _environment()
+    if is_rate_limited_command(args):
+        # Pace before starting the subprocess so the provider-command timeout
+        # measures the web operation, not time intentionally spent in queue.
+        await asyncio.to_thread(
+            wait_for_opencli_web_slot,
+            str(args[0]).lower(),
+            interval=config.OPENCLI_WEB_REQUEST_INTERVAL_SECONDS,
+        )
+        env["OPENCLI_WEB_REQUEST_SLOT_RESERVED"] = "1"
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(config.PROJECT_ROOT),
-        env=_environment(),
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -109,4 +123,3 @@ async def browser_bridge_ready() -> bool:
     result = await run_opencli(["doctor"], timeout=30, check=False)
     combined = f"{result.stdout}\n{result.stderr}"
     return result.returncode == 0 and "Everything looks good" in combined
-

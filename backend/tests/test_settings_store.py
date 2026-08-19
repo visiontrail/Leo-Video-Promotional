@@ -133,6 +133,19 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(config.RENDER_FPS, before)
         self.assertFalse(self.store.exists())
 
+    def test_opencli_web_interval_accepts_only_ten_through_thirty_seconds(self):
+        settings_store.update({"OPENCLI_WEB_REQUEST_INTERVAL_SECONDS": 17})
+        self.assertEqual(config.OPENCLI_WEB_REQUEST_INTERVAL_SECONDS, 17)
+
+        for value in (9, 31):
+            with self.subTest(value=value):
+                with self.assertRaises(settings_store.SettingsError):
+                    settings_store.update(
+                        {"OPENCLI_WEB_REQUEST_INTERVAL_SECONDS": value}
+                    )
+
+        self.assertEqual(config.OPENCLI_WEB_REQUEST_INTERVAL_SECONDS, 17)
+
     def test_reset_restores_the_default_and_reports_restart_keys(self):
         settings_store.update({"RENDER_FPS": 42, "OUTPUTS_DIR": str(self.root / "out")})
         self.assertEqual(config.OUTPUTS_DIR, self.root / "out")

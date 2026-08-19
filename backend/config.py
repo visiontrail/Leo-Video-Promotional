@@ -53,6 +53,11 @@ FOOTAGE_MAX_BYTES = int(os.getenv("FOOTAGE_MAX_BYTES", str(50 * 1024 * 1024)))
 OPENCLI_BIN = resolve_project_path(os.getenv("OPENCLI_BIN", "scripts/opencli.sh"))
 OPENCLI_PROFILE = os.getenv("OPENCLI_PROFILE", "").strip()
 OPENCLI_TIMEOUT = int(os.getenv("OPENCLI_TIMEOUT", "180"))
+# Cross-process start-to-start spacing for Gemini and ChatGPT web commands.
+# The runtime limiter clamps direct environment overrides to 10–30 seconds too.
+OPENCLI_WEB_REQUEST_INTERVAL_SECONDS = int(
+    os.getenv("OPENCLI_WEB_REQUEST_INTERVAL_SECONDS", "10")
+)
 # OpenCode is the optional autonomous planner for account operations. It calls
 # the project-local OpenCLI wrapper through the account-operations skill; the
 # deterministic backend still owns image publishing and result persistence.

@@ -49,7 +49,7 @@ echo "  HyperFrame initialized."
 # installs only the pinned runtime and never touches global Claude Code state.
 echo "[4/5] Installing project-local OpenCLI runtime..."
 npm install --prefix tools/opencli --silent --no-audit --no-fund
-chmod +x scripts/opencli.sh
+chmod +x scripts/opencli scripts/opencli.sh
 echo "  OpenCLI installed locally. Install/enable its Chrome Browser Bridge extension, then run ./scripts/opencli.sh doctor."
 
 # 5. Output directories
