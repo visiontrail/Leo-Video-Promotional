@@ -56,6 +56,11 @@ NUMBER_WORDS = {
     "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80",
     "ninety": "90",
 }
+DECADE_WORDS = {
+    "twenties": "20s", "thirties": "30s", "forties": "40s",
+    "fifties": "50s", "sixties": "60s", "seventies": "70s",
+    "eighties": "80s", "nineties": "90s",
+}
 ORDINAL_DIGITS = {
     "1st": "first", "2nd": "second", "3rd": "third", "4th": "fourth",
     "5th": "fifth", "6th": "sixth", "7th": "seventh", "8th": "eighth",
@@ -154,7 +159,18 @@ def _raw_lexical_tokens(text: str) -> list[str]:
         if value == "percent":
             continue
         value = ACOUSTIC_EQUIVALENTS.get(value, value)
-        normalized.append(ORDINAL_DIGITS.get(value, NUMBER_WORDS.get(value, value)))
+        # Whisper writes a spoken decade either with digits (``1980s``) or
+        # with the deprecated apostrophe spelling (``1980's``). Preserve the
+        # audible plural suffix while making those spellings comparable.
+        numeric_decade = re.fullmatch(r"(\d{2,4})'?s", value)
+        if numeric_decade is not None:
+            value = f"{numeric_decade.group(1)}s"
+        normalized.append(
+            ORDINAL_DIGITS.get(
+                value,
+                DECADE_WORDS.get(value, NUMBER_WORDS.get(value, value)),
+            )
+        )
     return normalized
 
 
@@ -207,6 +223,21 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
     result: list[str] = []
     index = 0
     while index < len(tokens):
+        # A script commonly spells a decade as ``nineteen-eighties`` while
+        # Whisper emits the acoustically identical single token ``1980s``.
+        # Keep the trailing ``s`` so a specific year (1980) is not accepted as
+        # a decade (1980s).
+        if (
+            tokens[index].isdigit()
+            and len(tokens[index]) == 2
+            and index + 1 < len(tokens)
+            and re.fullmatch(r"[2-9]0s", tokens[index + 1])
+        ):
+            result.append(
+                str(int(tokens[index]) * 100 + int(tokens[index + 1][:-1])) + "s"
+            )
+            index += 2
+            continue
         if (
             tokens[index].isdigit()
             and len(tokens[index]) == 2

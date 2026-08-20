@@ -828,6 +828,42 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_spoken_decade(self):
+        expected = (
+            "you'd see a Wall Street guy carrying in a nineteen-eighties movie,"
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "You'd see a Wall Street guy carrying in a 1980s movie."
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["expected_words"], 11)
+        self.assertEqual(report["transcript_words"], 11)
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertTrue(
+            report_for(
+                "You'd see a Wall Street guy carrying in a 1980's movie."
+            )["verified"]
+        )
+        self.assertFalse(
+            report_for(
+                "You'd see a Wall Street guy carrying in a 1990s movie."
+            )["verified"]
+        )
+        self.assertFalse(
+            report_for(
+                "You'd see a Wall Street guy carrying in a 1980 movie."
+            )["verified"]
+        )
+
     def test_orpheus_transcript_accepts_exact_homophone_but_not_near_homophone(self):
         expected = "The ground under your feet has killed people."
 
