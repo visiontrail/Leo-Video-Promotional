@@ -77,6 +77,10 @@ ACOUSTIC_EQUIVALENTS = {
     # Whisper uses the contraction spelling for either meaning, so spelling
     # cannot be used as acoustic evidence that the narration is wrong.
     "it's": "its",
+    # Plural "ones" and possessive/contraction spelling "one's" are also
+    # acoustically identical. Whisper consistently chooses the apostrophe in
+    # the observed plural phrase "the ones the size of a shoebox".
+    "one's": "ones",
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",
