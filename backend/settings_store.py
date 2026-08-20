@@ -348,6 +348,13 @@ SPECS: tuple[SettingSpec, ...] = (
         description="HTTP timeout per submit, status, or audio-download request. "
                     "The overall synthesis ceiling remains Total timeout.",
     ),
+    SettingSpec(
+        "ORPHEUS_TTS_RETRY_TIMEOUT", "tts", "Orpheus retry timeout", "int", unit="seconds",
+        minimum=60, maximum=24 * 3600,
+        description="Maximum continuous status or audio-download outage after a "
+                    "job has been accepted. Retry keeps the same remote job ID; "
+                    "a successful poll resets this window.",
+    ),
     # ── Audio / visual sync ──────────────────────────────────────────────
     SettingSpec(
         "AV_SYNC_LANGUAGE", "av_sync", "Narration language", "string",

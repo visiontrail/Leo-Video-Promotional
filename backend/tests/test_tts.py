@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -615,6 +616,215 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                     "/v1/audio/jobs/job-1/audio",
                 ],
             )
+
+    async def test_orpheus_poll_recovers_transient_errors_without_resubmitting(self):
+        requests = []
+        messages = []
+        poll_attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal poll_attempts
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-poll-retry"})
+            if request.url.path.endswith("/audio"):
+                return httpx.Response(200, content=wav_bytes())
+            poll_attempts += 1
+            if poll_attempts == 1:
+                raise httpx.ReadError("", request=request)
+            if poll_attempts == 2:
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": "7"},
+                    json={"detail": "busy"},
+                )
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Retry the already accepted job.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "ORPHEUS_TTS_POLL_SECONDS", 2),
+                patch.object(config, "ORPHEUS_TTS_RETRY_TIMEOUT", 4 * 3600),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script),
+                    str(root / "audio"),
+                    ["tara"],
+                    "orpheus-en",
+                    log=messages.append,
+                )
+                result_exists = Path(result).is_file()
+
+        self.assertTrue(result_exists)
+        self.assertEqual(sum(request.method == "POST" for request in requests), 1)
+        self.assertEqual(
+            [request.url.path for request in requests if request.method == "GET"],
+            [
+                "/v1/audio/jobs/job-poll-retry",
+                "/v1/audio/jobs/job-poll-retry",
+                "/v1/audio/jobs/job-poll-retry",
+                "/v1/audio/jobs/job-poll-retry/audio",
+            ],
+        )
+        self.assertTrue(any("ReadError" in message for message in messages))
+        self.assertTrue(any("HTTPStatusError (HTTP 429)" in message for message in messages))
+        self.assertTrue(any("continuous retry window 14400s" in message for message in messages))
+        self.assertEqual([call.args[0] for call in sleeper.await_args_list], [2, 7])
+
+    async def test_orpheus_poll_fails_after_continuous_retry_timeout(self):
+        requests = []
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            async def sleep(self, seconds):
+                self.now += seconds
+
+        clock = FakeClock()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-poll-timeout"})
+            raise httpx.ReadError("", request=request)
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Wait through a continuous outage.")
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "TTS_TIMEOUT", 60),
+                patch.object(config, "ORPHEUS_TTS_POLL_SECONDS", 1),
+                patch.object(config, "ORPHEUS_TTS_RETRY_TIMEOUT", 4),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "time", clock),
+                patch.object(tts, "asyncio", clock),
+            ):
+                with self.assertRaises(TimeoutError) as caught:
+                    await tts.generate_tts(
+                        str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                    )
+
+        error = str(caught.exception)
+        self.assertIn("job-poll-timeout", error)
+        self.assertIn("no successful poll for 4s", error)
+        self.assertIn("ReadError", error)
+        self.assertEqual(sum(request.method == "POST" for request in requests), 1)
+
+    async def test_orpheus_poll_fails_fast_for_permanent_http_error(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-poll-denied"})
+            return httpx.Response(401, json={"detail": "denied"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Do not retry permanent failures.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+            ):
+                with self.assertRaises(RuntimeError) as caught:
+                    await tts.generate_tts(
+                        str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                    )
+
+        self.assertIn("HTTPStatusError (HTTP 401)", str(caught.exception))
+        self.assertEqual(len(requests), 2)
+        sleeper.assert_not_awaited()
+
+    async def test_orpheus_audio_download_retries_invalid_and_interrupted_payloads(self):
+        requests = []
+        messages = []
+        download_attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal download_attempts
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-download-retry"})
+            if request.url.path.endswith("/audio"):
+                download_attempts += 1
+                if download_attempts == 1:
+                    return httpx.Response(200, content=b"not a wav")
+                if download_attempts == 2:
+                    raise httpx.ReadError("", request=request)
+                return httpx.Response(200, content=wav_bytes())
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Retry only the finished audio download.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "ORPHEUS_TTS_POLL_SECONDS", 2),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script),
+                    str(root / "audio"),
+                    ["tara"],
+                    "orpheus-en",
+                    log=messages.append,
+                )
+                result_exists = Path(result).is_file()
+
+        self.assertTrue(result_exists)
+        self.assertEqual(sum(request.method == "POST" for request in requests), 1)
+        self.assertEqual(download_attempts, 3)
+        self.assertTrue(any("TtsIntegrityError" in message for message in messages))
+        self.assertTrue(any("ReadError" in message for message in messages))
+        self.assertEqual([call.args[0] for call in sleeper.await_args_list], [2, 4])
 
     async def test_orpheus_uses_token_budget_chunks_and_lossless_join(self):
         requests = []

@@ -175,6 +175,12 @@ ORPHEUS_TTS_CHUNK_WORDS = int(os.getenv("ORPHEUS_TTS_CHUNK_WORDS", "12"))
 ORPHEUS_TTS_N_THREADS = int(os.getenv("ORPHEUS_TTS_N_THREADS", "64"))
 ORPHEUS_TTS_POLL_SECONDS = int(os.getenv("ORPHEUS_TTS_POLL_SECONDS", "2"))
 ORPHEUS_TTS_REQUEST_TIMEOUT = int(os.getenv("ORPHEUS_TTS_REQUEST_TIMEOUT", "60"))
+# Once a job ID has been accepted, transient status/download failures must not
+# discard the still-running remote job. Allow an outage to heal for four hours;
+# the per-job TTS_TIMEOUT remains the final coarse ceiling.
+ORPHEUS_TTS_RETRY_TIMEOUT = int(
+    os.getenv("ORPHEUS_TTS_RETRY_TIMEOUT", str(4 * 3600))
+)
 
 # Audio/visual alignment. MLX Whisper reads the finished WAV from whichever TTS
 # provider the task selected to obtain word timestamps; it never generates or

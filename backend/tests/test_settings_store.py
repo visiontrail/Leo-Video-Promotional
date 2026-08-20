@@ -196,6 +196,14 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(field["masked"], "orph...alue")
         self.assertNotIn("orpheus-secret-value", json.dumps(settings_store.schema()))
 
+    def test_orpheus_retry_timeout_is_live_configurable(self):
+        settings_store.update({"ORPHEUS_TTS_RETRY_TIMEOUT": 18_000})
+
+        self.assertEqual(config.ORPHEUS_TTS_RETRY_TIMEOUT, 18_000)
+        self.assertEqual(self.stored()["ORPHEUS_TTS_RETRY_TIMEOUT"], 18_000)
+        field = self.field("ORPHEUS_TTS_RETRY_TIMEOUT")
+        self.assertEqual(field["unit"], "seconds")
+
     def test_every_spec_maps_to_a_real_config_attribute(self):
         for spec in settings_store.SPECS:
             with self.subTest(key=spec.key):
