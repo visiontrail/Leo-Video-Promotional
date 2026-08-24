@@ -110,6 +110,14 @@ ACOUSTIC_EQUIVALENTS = {
     # standard abbreviation after a normalized number (for example 8,000 km).
     "km": "kilometer",
 }
+# These aliases are deliberately directional: they normalize an observed ASR
+# spelling without changing the canonical source vocabulary.  That distinction
+# matters for real words such as "guanxi", which Whisper used for the correctly
+# spoken Malaysian greeting "Gongxi" but which must remain distinct when it is
+# actually present in the script.
+TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
+    "guanxi": "gongxi",
+}
 ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper may spell the phrasal verb as the identically pronounced noun.
     ("break", "through"): "breakthrough",
@@ -358,7 +366,7 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
         # ``1000`` too early and leaves the preceding ``a`` as a false extra
         # token, even though the audio says the source's exact ``a thousand``.
         for token in _raw_lexical_tokens(str(word.get("text") or "")):
-            tokens.append(token)
+            tokens.append(TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS.get(token, token))
             word_indexes.append(index)
     # A provider-only pronunciation hint may lead Whisper to retain the
     # morpheme boundary. The pair is acoustically and lexically identical to
