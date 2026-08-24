@@ -299,6 +299,12 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "Nonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian.",
         )
 
+    def test_orpheus_prompt_pronounces_putien_without_changing_canonical_text(self):
+        self.assertEqual(
+            tts._orpheus_prompt_text("Michelin-starred Putien — extraordinary."),
+            "Michelin-starred Poo Tien — extraordinary.",
+        )
+
     def test_orpheus_prompt_articulates_failed_opening_months_inflection(self):
         text = (
             "Months of obsessive engineering, intelligence gathering, training, "

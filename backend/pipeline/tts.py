@@ -1229,6 +1229,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # Orpheus collapses the restaurant name "Putien" into "Puchin" when sent
+    # as one unfamiliar token.  Expose its two spoken syllables only in this
+    # observed Michelin context; verification continues to require canonical
+    # "Putien" from the acoustic transcript.
+    stripped = re.sub(
+        r"\b(Michelin-starred\s+)Putien\b",
+        r"\1Poo Tien",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # Two consecutive short "it's ..." beats made the speech LM loop the
     # first clause three times and never advance to "It's survival". Keep the
     # exact canonical words, but join only this observed contrast into one
