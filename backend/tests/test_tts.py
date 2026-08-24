@@ -336,6 +336,20 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "It's a refuge. It matters.",
         )
 
+    def test_orpheus_splits_observed_refuge_survival_loop(self):
+        text = "a luxury experience — it's a refuge.\nIt's survival."
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["a luxury experience — it's a refuge.", "It's survival."],
+        )
+        self.assertEqual(
+            [word for chunk in chunks for word in tts._lexical_tokens(chunk)],
+            tts._lexical_tokens(text),
+        )
+
     def test_orpheus_transcript_accepts_only_exact_disproportionate_morphemes(self):
         expected = "This island produces disproportionate art."
 
