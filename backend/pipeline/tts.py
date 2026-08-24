@@ -121,6 +121,11 @@ TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     # correctly spoken Peranakan cuisine name as "Nonia".  Keep this observed
     # alias directional so a canonical source word "Nonia" stays distinct.
     "nonia": "nyonya",
+    # The provider-side pronunciation hint "Poo Tien" keeps the restaurant
+    # name complete, while Whisper joins the spoken syllables as "Poutien".
+    # Keep the observed spelling transcript-only so canonical "Poutien" is
+    # not treated as the source restaurant name in the reverse direction.
+    "poutien": "putien",
 }
 TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper splits the correctly spoken Malay restaurant name "Dagang" into

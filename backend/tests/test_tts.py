@@ -1474,6 +1474,27 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             )["verified"]
         )
 
+    def test_orpheus_transcript_normalizes_observed_putien_asr_spelling_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "Michelin-starred Putien — extraordinary.",
+            words_for("Michelin-starred Poutien Extraordinary"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A restaurant named Poutien reopened.",
+                words_for("A restaurant named Putien reopened"),
+            )["verified"]
+        )
+
     def test_orpheus_transcript_normalizes_observed_dagang_asr_split_one_way(self):
         def words_for(observed: str) -> list[dict]:
             return [
