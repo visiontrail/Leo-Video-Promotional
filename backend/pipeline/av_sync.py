@@ -70,7 +70,11 @@ def _load_words(path: Path) -> list[dict]:
             end = float(entry["end"])
         except (KeyError, TypeError, ValueError):
             continue
-        if not text or end <= start:
+        # Whisper can quantize a very short spoken token to one timestamp
+        # boundary (observed as ``Dubai`` with start == end). Preserve that
+        # lexical evidence: storyboard alignment already supplies a 1 ms
+        # minimum span. A genuinely reversed interval remains invalid.
+        if not text or end < start:
             continue
         words.append({"text": text, "start": round(max(0.0, start), 3), "end": round(end, 3)})
     words.sort(key=lambda word: (word["start"], word["end"]))

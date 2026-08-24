@@ -8,6 +8,24 @@ from backend.pipeline import av_sync
 
 
 class TranscriptRetryTests(unittest.IsolatedAsyncioTestCase):
+    def test_load_words_preserves_zero_duration_whisper_token(self):
+        with TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / av_sync.TRANSCRIPT_NAME
+            transcript.write_text(
+                """[
+                  {"text": "say", "start": 1.98, "end": 2.16},
+                  {"text": "Dubai", "start": 2.48, "end": 2.48},
+                  {"text": "or", "start": 2.48, "end": 2.70},
+                  {"text": "reversed", "start": 3.00, "end": 2.90}
+                ]"""
+            )
+
+            words = av_sync._load_words(transcript)
+
+        self.assertEqual([word["text"] for word in words], ["say", "Dubai", "or"])
+        self.assertEqual(words[1]["start"], 2.48)
+        self.assertEqual(words[1]["end"], 2.48)
+
     def test_short_complete_transcript_passes_preflight(self):
         words = [
             {"text": text, "start": index * 0.3, "end": index * 0.3 + 0.2}
