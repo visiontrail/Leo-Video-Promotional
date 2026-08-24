@@ -700,6 +700,23 @@ def _separate_fragile_now_sequence(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _separate_incomplete_cuisine_list(chunks: list[str]) -> list[str]:
+    """Split an observed cuisine list that drops its concluding judgment."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —)\s+"
+        r"(everything hit\.)$",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _separate_repeated_clause_openings(chunks)
     stabilized = _separate_repeated_adjective_items(stabilized)
@@ -712,7 +729,8 @@ def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _reattach_kuala_lumpur_sentence(stabilized)
     stabilized = _separate_empty_rhetorical_turn(stabilized)
     stabilized = _separate_fragile_wouldnt_eat_sequence(stabilized)
-    return _separate_fragile_now_sequence(stabilized)
+    stabilized = _separate_fragile_now_sequence(stabilized)
+    return _separate_incomplete_cuisine_list(stabilized)
 
 
 def _split_tts_text(

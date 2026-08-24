@@ -261,6 +261,23 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             ["Nobody made it a big deal.", "Now? You don't see that anymore."],
         )
 
+    def test_split_tts_text_separates_observed_incomplete_cuisine_list(self):
+        text = (
+            "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian — "
+            "everything hit."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —",
+                "everything hit.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
         self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
