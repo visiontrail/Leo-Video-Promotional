@@ -1281,6 +1281,28 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             report_for("S -Lite Kanakuniya a local chain called Boxes")["verified"]
         )
 
+    def test_orpheus_transcript_normalizes_observed_gongxi_syllables(self):
+        expected = (
+            'They say "Gongxi Raya." Gongxi for the New Year, Raya for Eid.'
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "They say Gong Shi Raya Gong Shi for the New Year Raya for Eid"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for(
+            "They say Gong She Raya Gong Shi for the New Year Raya for Eid"
+        )["verified"])
+
     def test_orpheus_transcript_normalizes_spoken_kilometer_unit(self):
         expected = "along an eight-thousand-kilometer arc"
 

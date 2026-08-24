@@ -126,6 +126,10 @@ ACOUSTIC_PHRASE_EQUIVALENTS = {
     # the two acoustic tokens "S" and "Lite". Collapse only that exact pair;
     # unrelated single-word or near-homophone spellings remain rejected.
     ("s", "lite"): "eslite",
+    # Whisper segments the correctly pronounced Mandarin greeting "Gongxi"
+    # into its two spoken syllables, "Gong" and "Shi". Collapse only that
+    # exact observed pair; nearby syllables remain hard failures.
+    ("gong", "shi"): "gongxi",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
