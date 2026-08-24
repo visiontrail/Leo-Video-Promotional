@@ -130,6 +130,10 @@ ACOUSTIC_PHRASE_EQUIVALENTS = {
     # into its two spoken syllables, "Gong" and "Shi". Collapse only that
     # exact observed pair; nearby syllables remain hard failures.
     ("gong", "shi"): "gongxi",
+    # Whisper segments the correctly pronounced Malaysian portmanteau
+    # "Deparaya" into "De" and the homophonic spelling "Pariah". Collapse
+    # only that exact observed pair; other continuations after "De" still fail.
+    ("de", "pariah"): "deparaya",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
