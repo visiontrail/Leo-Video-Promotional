@@ -161,6 +161,10 @@ class TtsIntegrityError(RuntimeError):
         self.part_key = part_key
 
 
+class EmptyWavError(TtsIntegrityError):
+    """A structurally valid WAV container contains no audio frames."""
+
+
 @dataclass(frozen=True)
 class WavInfo:
     channels: int
@@ -847,7 +851,7 @@ def _read_pcm_wav(path: Path) -> WavInfo:
     except (wave.Error, EOFError, OSError) as exc:
         raise TtsIntegrityError(f"TTS produced an unreadable WAV at {path}: {exc}") from exc
     if info.frame_count <= 0:
-        raise TtsIntegrityError(f"TTS produced an empty WAV at {path}")
+        raise EmptyWavError(f"TTS produced an empty WAV at {path}")
     return info
 
 
@@ -1614,6 +1618,17 @@ async def _generate_orpheus(
                     staged_part.write_bytes(response.content)
                     _validate_downloaded_wav_container(staged_part)
                     break
+                except EmptyWavError as exc:
+                    # A completed job returning a valid WAV header with zero
+                    # frames has a terminal empty result, not a transport
+                    # outage. Let the outer integrity loop submit a new job;
+                    # retrying this immutable completed artifact for four hours
+                    # cannot make audio frames appear.
+                    staged_part.unlink(missing_ok=True)
+                    raise TtsIntegrityError(
+                        f"{name} Orpheus job {job_id} completed with an empty WAV",
+                        part_key=input_path.name,
+                    ) from exc
                 except (httpx.HTTPError, TtsIntegrityError) as exc:
                     staged_part.unlink(missing_ok=True)
                     if _is_permanent_orpheus_http_error(exc):

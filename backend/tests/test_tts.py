@@ -919,6 +919,63 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("ReadError" in message for message in messages))
         self.assertEqual([call.args[0] for call in sleeper.await_args_list], [2, 4])
 
+    async def test_orpheus_completed_empty_wav_resubmits_without_download_backoff(self):
+        requests = []
+        messages = []
+        post_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal post_count
+            requests.append(request)
+            if request.method == "POST":
+                post_count += 1
+                return httpx.Response(202, json={"id": f"job-{post_count}"})
+            if request.url.path.endswith("/audio"):
+                if "job-1" in request.url.path:
+                    return httpx.Response(200, content=wav_bytes(frames=0))
+                return httpx.Response(200, content=wav_bytes())
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Retry a completed empty result.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script),
+                    str(root / "audio"),
+                    ["tara"],
+                    "orpheus-en",
+                    log=messages.append,
+                )
+                result_exists = Path(result).is_file()
+
+        self.assertTrue(result_exists)
+        self.assertEqual(post_count, 2)
+        self.assertEqual(
+            sum(request.url.path.endswith("/audio") for request in requests),
+            2,
+        )
+        self.assertTrue(any(
+            "completed with an empty WAV" in message for message in messages
+        ))
+        sleeper.assert_not_awaited()
+
     async def test_orpheus_uses_token_budget_chunks_and_lossless_join(self):
         requests = []
         audio = wav_bytes(frames=1_000)
