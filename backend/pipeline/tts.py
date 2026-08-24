@@ -709,7 +709,8 @@ def _separate_incomplete_cuisine_list(chunks: list[str]) -> list[str]:
     """Split an observed cuisine list that drops its concluding judgment."""
     separated: list[str] = []
     pattern = re.compile(
-        r"^(Nyonya cuisine, Malay, Indian, Chinese,)\s+"
+        r"^(Nyonya cuisine,)\s+"
+        r"(Malay, Indian, Chinese,)\s+"
         r"(Lebanese, even vegetarian —)\s+"
         r"(everything hit\.)$",
         re.IGNORECASE,

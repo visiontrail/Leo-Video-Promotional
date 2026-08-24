@@ -272,7 +272,8 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             chunks,
             [
-                "Nyonya cuisine, Malay, Indian, Chinese,",
+                "Nyonya cuisine,",
+                "Malay, Indian, Chinese,",
                 "Lebanese, even vegetarian —",
                 "everything hit.",
             ],
