@@ -659,26 +659,34 @@ def _separate_empty_rhetorical_turn(chunks: list[str]) -> list[str]:
     return separated
 
 
-def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
-    return _separate_empty_rhetorical_turn(
-        _reattach_kuala_lumpur_sentence(
-            _separate_lion_stilts_sequence(
-                _separate_refuge_survival_sequence(
-                    _separate_repeated_north_pacific_sequence(
-                        _separate_fragile_moderation_sequence(
-                            _separate_fragile_battle_ready_sequence(
-                                _reattach_fragile_orpheus_continuations(
-                                    _separate_repeated_adjective_items(
-                                        _separate_repeated_clause_openings(chunks)
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-        )
+def _separate_fragile_wouldnt_eat_sequence(chunks: list[str]) -> list[str]:
+    """Split an observed two-sentence prompt that substitutes ``need``."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(They just wouldn't eat it\.)\s+(No big deal\.)$",
+        re.IGNORECASE,
     )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
+def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
+    stabilized = _separate_repeated_clause_openings(chunks)
+    stabilized = _separate_repeated_adjective_items(stabilized)
+    stabilized = _reattach_fragile_orpheus_continuations(stabilized)
+    stabilized = _separate_fragile_battle_ready_sequence(stabilized)
+    stabilized = _separate_fragile_moderation_sequence(stabilized)
+    stabilized = _separate_repeated_north_pacific_sequence(stabilized)
+    stabilized = _separate_refuge_survival_sequence(stabilized)
+    stabilized = _separate_lion_stilts_sequence(stabilized)
+    stabilized = _reattach_kuala_lumpur_sentence(stabilized)
+    stabilized = _separate_empty_rhetorical_turn(stabilized)
+    return _separate_fragile_wouldnt_eat_sequence(stabilized)
 
 
 def _split_tts_text(
