@@ -225,8 +225,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             chunks,
             [
                 "These performers up on thin stilts,",
-                "balancing, leaping between poles,",
-                "the lion weaving and dipping.",
+                "balancing, leaping between poles, the lion weaving and dipping.",
             ],
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
