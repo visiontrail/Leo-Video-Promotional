@@ -293,6 +293,37 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "Why does this island produce dis-proportionate art.",
         )
 
+    def test_orpheus_prompt_spells_out_kl_initialism(self):
+        text = "and silence and security guards in suits. KL's malls are packed."
+
+        prompt = tts._orpheus_prompt_text(text)
+
+        self.assertEqual(
+            prompt,
+            "and silence and security guards in suits. K L's malls are packed.",
+        )
+        self.assertEqual(tts._lexical_tokens(prompt), tts._lexical_tokens(text))
+
+    def test_orpheus_transcript_accepts_split_kl_but_rejects_kales(self):
+        expected = "and silence and security guards in suits. KL's malls are packed."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "and silence and security guards in suits K L's malls are packed"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for(
+            "and silence and security guards in suits Kale's malls are packed"
+        )["verified"])
+
     def test_orpheus_transcript_accepts_only_exact_disproportionate_morphemes(self):
         expected = "This island produces disproportionate art."
 

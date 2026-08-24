@@ -110,6 +110,10 @@ ACOUSTIC_PHRASE_EQUIVALENTS = {
     ("pre", "arranged"): "prearranged",
     # A provider-only morpheme hint may survive as two exact ASR tokens.
     ("declar", "ing"): "declaring",
+    # The provider prompt spells the Kuala Lumpur initialism as two tokens so
+    # Orpheus says the letters instead of the word "kale". Whisper may retain
+    # that exact split; it is acoustically identical to canonical "KL's".
+    ("k", "l's"): "kl's",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
@@ -1003,6 +1007,16 @@ def _orpheus_prompt_text(text: str) -> str:
     stripped = re.sub(
         r"\bdisproportionate\b",
         "dis-proportionate",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    # Orpheus repeatedly reads the compact initialism in "KL's malls" as the
+    # one-syllable word "kales". Split only this observed phrase into letter
+    # tokens for the provider; acoustic verification still requires canonical
+    # "KL's" (or the exact split "K" + "L's"), never "Kale's".
+    stripped = re.sub(
+        r"\bKL's(\s+malls)\b",
+        r"K L's\1",
         stripped,
         flags=re.IGNORECASE,
     )
