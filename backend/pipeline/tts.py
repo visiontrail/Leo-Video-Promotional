@@ -642,16 +642,35 @@ def _separate_lion_stilts_sequence(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _separate_empty_rhetorical_turn(chunks: list[str]) -> list[str]:
+    """Split an observed two-sentence prompt that returns empty WAVs."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(Or has it\?)\s+"
+        r"(Because here's where the story takes a turn\.)$",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
-    return _reattach_kuala_lumpur_sentence(
-        _separate_lion_stilts_sequence(
-            _separate_refuge_survival_sequence(
-                _separate_repeated_north_pacific_sequence(
-                    _separate_fragile_moderation_sequence(
-                        _separate_fragile_battle_ready_sequence(
-                            _reattach_fragile_orpheus_continuations(
-                                _separate_repeated_adjective_items(
-                                    _separate_repeated_clause_openings(chunks)
+    return _separate_empty_rhetorical_turn(
+        _reattach_kuala_lumpur_sentence(
+            _separate_lion_stilts_sequence(
+                _separate_refuge_survival_sequence(
+                    _separate_repeated_north_pacific_sequence(
+                        _separate_fragile_moderation_sequence(
+                            _separate_fragile_battle_ready_sequence(
+                                _reattach_fragile_orpheus_continuations(
+                                    _separate_repeated_adjective_items(
+                                        _separate_repeated_clause_openings(chunks)
+                                    )
                                 )
                             )
                         )
