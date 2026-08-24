@@ -1468,6 +1468,29 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             )["verified"]
         )
 
+    def test_orpheus_transcript_normalizes_observed_dagang_asr_split_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "There was a restaurant called Dagang that we went to twice, even.",
+            words_for(
+                "There was a restaurant called Da Gong that we went to twice even"
+            ),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A place called Da Gong reopened.",
+                words_for("A place called Dagang reopened"),
+            )["verified"]
+        )
+
     def test_orpheus_transcript_normalizes_observed_deparaya_syllables(self):
         expected = (
             'When Deepavali and Eid land on the same day, they say "Deparaya."'

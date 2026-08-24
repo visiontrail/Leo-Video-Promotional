@@ -122,6 +122,12 @@ TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     # alias directional so a canonical source word "Nonia" stays distinct.
     "nonia": "nyonya",
 }
+TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS = {
+    # Whisper splits the correctly spoken Malay restaurant name "Dagang" into
+    # two familiar syllable tokens.  Keep this observed alias off the source
+    # side so canonical "Da Gong" remains a distinct two-word name.
+    ("da", "gong"): "dagang",
+}
 ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper may spell the phrasal verb as the identically pronounced noun.
     ("break", "through"): "breakthrough",
@@ -381,7 +387,9 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
     cursor = 0
     while cursor < len(tokens):
         phrase = tuple(tokens[cursor:cursor + 2])
-        canonical_phrase = ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase)
+        canonical_phrase = TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS.get(
+            phrase
+        ) or ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase)
         if canonical_phrase is not None:
             acoustic_tokens.append(canonical_phrase)
             acoustic_indexes.append(word_indexes[cursor])
