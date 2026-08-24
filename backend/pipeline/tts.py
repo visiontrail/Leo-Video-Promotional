@@ -621,8 +621,8 @@ def _separate_lion_stilts_sequence(chunks: list[str]) -> list[str]:
     separated: list[str] = []
     pattern = re.compile(
         r"^(These performers up on thin stilts,)\s+"
-        r"(balancing, leaping between poles,\s+"
-        r"the lion weaving and dipping\.)$",
+        r"(balancing, leaping between poles,)\s+"
+        r"(the lion weaving and dipping\.)$",
         re.IGNORECASE,
     )
     for chunk in chunks:
