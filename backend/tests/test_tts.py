@@ -294,7 +294,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             tts._orpheus_prompt_text(
                 "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —"
             ),
-            "Nyoh-nyah cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian.",
+            "Nonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian.",
         )
 
     def test_orpheus_prompt_articulates_failed_opening_months_inflection(self):

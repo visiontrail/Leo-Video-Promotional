@@ -1205,12 +1205,13 @@ def _orpheus_prompt_text(text: str) -> str:
         flags=re.IGNORECASE,
     )
     # Orpheus reads the Peranakan cuisine name "Nyonya" as "Mionia" when it
-    # is sent verbatim.  Give the provider its conventional two-syllable
-    # pronunciation only in this observed culinary phrase; acoustic
-    # verification still requires Whisper to recover canonical "Nyonya".
+    # is sent verbatim, while a hyphenated phonetic hint loops its first
+    # syllable.  Use the established unhyphenated variant spelling only in
+    # this observed culinary phrase; acoustic verification still requires
+    # Whisper to recover canonical "Nyonya".
     stripped = re.sub(
         r"\bNyonya(\s+cuisine)\b",
-        r"Nyoh-nyah\1",
+        r"Nonya\1",
         stripped,
         flags=re.IGNORECASE,
     )
