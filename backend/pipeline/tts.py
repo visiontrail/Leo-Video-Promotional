@@ -675,6 +675,23 @@ def _separate_fragile_wouldnt_eat_sequence(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _separate_fragile_now_sequence(chunks: list[str]) -> list[str]:
+    """Isolate an observed sentence before a fragile rhetorical ``Now?``."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(Nobody made it a big deal\.)\s+"
+        r"(Now\?\s+You don't see that anymore\.)$",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _separate_repeated_clause_openings(chunks)
     stabilized = _separate_repeated_adjective_items(stabilized)
@@ -686,7 +703,8 @@ def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _separate_lion_stilts_sequence(stabilized)
     stabilized = _reattach_kuala_lumpur_sentence(stabilized)
     stabilized = _separate_empty_rhetorical_turn(stabilized)
-    return _separate_fragile_wouldnt_eat_sequence(stabilized)
+    stabilized = _separate_fragile_wouldnt_eat_sequence(stabilized)
+    return _separate_fragile_now_sequence(stabilized)
 
 
 def _split_tts_text(
@@ -1034,6 +1052,16 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
 def _orpheus_prompt_text(text: str) -> str:
     """Give every short LM request an explicit speech termination boundary."""
     stripped = text.rstrip()
+    # An isolated one-word rhetorical question between two short statements
+    # repeatedly yields a completed zero-frame WAV. Join only the observed
+    # continuation into natural provider prosody; canonical verification still
+    # requires the unchanged words "Now you don't see that anymore".
+    stripped = re.sub(
+        r"^Now\?\s+You don't see that anymore\.$",
+        "Now, you don't see that anymore.",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # Orpheus repeatedly realizes the opening phrase "Months of" as singular
     # "Month of". Expose the final plural morpheme to its tokenizer; the
     # canonical script remains unchanged and ASR must still recover "months".

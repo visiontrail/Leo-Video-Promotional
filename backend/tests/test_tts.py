@@ -251,10 +251,26 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             ["They just wouldn't eat it.", "No big deal."],
         )
 
+    def test_split_tts_text_separates_observed_fragile_now_sequence(self):
+        text = "Nobody made it a big deal. Now? You don't see that anymore."
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["Nobody made it a big deal.", "Now? You don't see that anymore."],
+        )
+
     def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
         self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
         self.assertEqual(tts._orpheus_prompt_text("A complete clause,"), "A complete clause.")
+
+    def test_orpheus_prompt_joins_observed_fragile_now_question(self):
+        self.assertEqual(
+            tts._orpheus_prompt_text("Now?\nYou don't see that anymore."),
+            "Now, you don't see that anymore.",
+        )
 
     def test_orpheus_prompt_articulates_failed_opening_months_inflection(self):
         text = (
