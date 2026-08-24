@@ -272,7 +272,8 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             chunks,
             [
-                "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —",
+                "Nyonya cuisine, Malay, Indian, Chinese,",
+                "Lebanese, even vegetarian —",
                 "everything hit.",
             ],
         )
@@ -1442,6 +1443,27 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             tts._orpheus_transcript_report(
                 "They discussed guanxi at dinner.",
                 words_for("They discussed Gongxi at dinner"),
+            )["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_nyonya_asr_spelling_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "Nyonya cuisine, Malay, Indian, Chinese.",
+            words_for("Nonia cuisine Malay Indian Chinese"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "Nonia cuisine was listed.",
+                words_for("Nyonya cuisine was listed"),
             )["verified"]
         )
 

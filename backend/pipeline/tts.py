@@ -117,6 +117,10 @@ ACOUSTIC_EQUIVALENTS = {
 # actually present in the script.
 TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     "guanxi": "gongxi",
+    # With the provider-side established spelling "Nonya", Whisper writes the
+    # correctly spoken Peranakan cuisine name as "Nonia".  Keep this observed
+    # alias directional so a canonical source word "Nonia" stays distinct.
+    "nonia": "nyonya",
 }
 ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Whisper may spell the phrasal verb as the identically pronounced noun.
@@ -705,7 +709,8 @@ def _separate_incomplete_cuisine_list(chunks: list[str]) -> list[str]:
     """Split an observed cuisine list that drops its concluding judgment."""
     separated: list[str] = []
     pattern = re.compile(
-        r"^(Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —)\s+"
+        r"^(Nyonya cuisine, Malay, Indian, Chinese,)\s+"
+        r"(Lebanese, even vegetarian —)\s+"
         r"(everything hit\.)$",
         re.IGNORECASE,
     )
