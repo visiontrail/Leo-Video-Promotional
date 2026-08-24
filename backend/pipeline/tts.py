@@ -612,15 +612,35 @@ def _reattach_kuala_lumpur_sentence(chunks: list[str]) -> list[str]:
     return adjusted
 
 
+def _separate_lion_stilts_sequence(chunks: list[str]) -> list[str]:
+    """Split an observed long list that loops before reaching its lion beat."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(These performers up on thin stilts,)\s+"
+        r"(balancing, leaping between poles,)\s+"
+        r"(the lion weaving and dipping\.)$",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     return _reattach_kuala_lumpur_sentence(
-        _separate_refuge_survival_sequence(
-            _separate_repeated_north_pacific_sequence(
-                _separate_fragile_moderation_sequence(
-                    _separate_fragile_battle_ready_sequence(
-                        _reattach_fragile_orpheus_continuations(
-                            _separate_repeated_adjective_items(
-                                _separate_repeated_clause_openings(chunks)
+        _separate_lion_stilts_sequence(
+            _separate_refuge_survival_sequence(
+                _separate_repeated_north_pacific_sequence(
+                    _separate_fragile_moderation_sequence(
+                        _separate_fragile_battle_ready_sequence(
+                            _reattach_fragile_orpheus_continuations(
+                                _separate_repeated_adjective_items(
+                                    _separate_repeated_clause_openings(chunks)
+                                )
                             )
                         )
                     )
