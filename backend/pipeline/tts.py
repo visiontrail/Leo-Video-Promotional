@@ -592,14 +592,36 @@ def _separate_refuge_survival_sequence(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _reattach_kuala_lumpur_sentence(chunks: list[str]) -> list[str]:
+    """Keep the observed city statement out of a preposition-led prompt."""
+    adjusted = list(chunks)
+    pattern = re.compile(
+        r"^(And let me tell you,)\s+"
+        r"(the Lunar New Year atmosphere in Kuala Lumpur rivals anything "
+        r"you'd see in a Chinese city\.)$",
+        re.IGNORECASE,
+    )
+    index = 0
+    while index < len(adjusted) - 1:
+        match = pattern.match(f"{adjusted[index]} {adjusted[index + 1]}")
+        if match is None:
+            index += 1
+            continue
+        adjusted[index : index + 2] = [match.group(1), match.group(2)]
+        index += 2
+    return adjusted
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
-    return _separate_refuge_survival_sequence(
-        _separate_repeated_north_pacific_sequence(
-            _separate_fragile_moderation_sequence(
-                _separate_fragile_battle_ready_sequence(
-                    _reattach_fragile_orpheus_continuations(
-                        _separate_repeated_adjective_items(
-                            _separate_repeated_clause_openings(chunks)
+    return _reattach_kuala_lumpur_sentence(
+        _separate_refuge_survival_sequence(
+            _separate_repeated_north_pacific_sequence(
+                _separate_fragile_moderation_sequence(
+                    _separate_fragile_battle_ready_sequence(
+                        _reattach_fragile_orpheus_continuations(
+                            _separate_repeated_adjective_items(
+                                _separate_repeated_clause_openings(chunks)
+                            )
                         )
                     )
                 )

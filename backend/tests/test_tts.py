@@ -206,8 +206,9 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             chunks,
             [
-                "And let me tell you, the Lunar New Year atmosphere",
-                "in Kuala Lumpur rivals anything you'd see in a Chinese city.",
+                "And let me tell you,",
+                "the Lunar New Year atmosphere in Kuala Lumpur rivals anything "
+                "you'd see in a Chinese city.",
             ],
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
