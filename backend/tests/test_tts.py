@@ -1235,12 +1235,15 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             ]
             return tts._orpheus_transcript_report(expected, words)
 
-        report = report_for("S -Lite Kinokuniya a local chain called Boxus")
+        report = report_for("S -Lite Kenakunya a local chain called Boxus")
 
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
         self.assertFalse(
             report_for("S Light Kinokuniya a local chain called Boxers")["verified"]
+        )
+        self.assertFalse(
+            report_for("S -Lite Kanakuniya a local chain called Boxes")["verified"]
         )
 
     def test_orpheus_transcript_normalizes_spoken_kilometer_unit(self):

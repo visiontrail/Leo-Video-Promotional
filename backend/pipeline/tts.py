@@ -92,6 +92,11 @@ ACOUSTIC_EQUIVALENTS = {
     # Whisper writes the plural bookstore name "Boxes" as the identically
     # pronounced nonce spelling "Boxus" in the observed proper-name list.
     "boxus": "boxes",
+    # Whisper large-v3-turbo writes the fully spoken Japanese bookstore name
+    # "Kinokuniya" as "Kenakunya" in the observed Orpheus proper-name list.
+    # Keep this exact alias local to acoustic verification; nearby spellings
+    # are still rejected.
+    "kenakunya": "kinokuniya",
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",
