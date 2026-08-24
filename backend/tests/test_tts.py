@@ -289,6 +289,14 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "Now, you don't see that anymore.",
         )
 
+    def test_orpheus_prompt_pronounces_nyonya_without_changing_canonical_text(self):
+        self.assertEqual(
+            tts._orpheus_prompt_text(
+                "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —"
+            ),
+            "Nyoh-nyah cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian.",
+        )
+
     def test_orpheus_prompt_articulates_failed_opening_months_inflection(self):
         text = (
             "Months of obsessive engineering, intelligence gathering, training, "

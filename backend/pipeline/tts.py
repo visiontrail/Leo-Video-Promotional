@@ -159,6 +159,7 @@ CHUNK_DETERMINERS = {"a", "an", "the"}
 PROTECTED_CHUNK_BOUNDARIES = {("kuala", "lumpur")}
 TERMINAL_SPEECH_PUNCTUATION_RE = re.compile(r"[.!?。！？][\"'’”)]*\s*$")
 TRAILING_CLAUSE_PUNCTUATION_RE = re.compile(r"[,;:，；：]+([\"'’”)]*)\s*$")
+TRAILING_DASH_PUNCTUATION_RE = re.compile(r"\s*[—–]+\s*$")
 
 
 class TtsIntegrityError(RuntimeError):
@@ -1203,6 +1204,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # Orpheus reads the Peranakan cuisine name "Nyonya" as "Mionia" when it
+    # is sent verbatim.  Give the provider its conventional two-syllable
+    # pronunciation only in this observed culinary phrase; acoustic
+    # verification still requires Whisper to recover canonical "Nyonya".
+    stripped = re.sub(
+        r"\bNyonya(\s+cuisine)\b",
+        r"Nyoh-nyah\1",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # Two consecutive short "it's ..." beats made the speech LM loop the
     # first clause three times and never advance to "It's survival". Keep the
     # exact canonical words, but join only this observed contrast into one
@@ -1215,6 +1226,12 @@ def _orpheus_prompt_text(text: str) -> str:
     )
     if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped):
         return stripped
+    # A semantic split can leave an em/en dash at the end of a canonical
+    # chunk.  The dash is an unspoken pause, so replace it instead of emitting
+    # the malformed provider sequence ``—.``.
+    dash_terminated = TRAILING_DASH_PUNCTUATION_RE.sub(".", stripped)
+    if dash_terminated != stripped:
+        return dash_terminated
     # A canonical chunk may end at a comma/semicolon chosen for semantic
     # splitting.  Replace that delimiter only in the provider prompt; appending
     # a period would otherwise create the malformed sequence `,.`.
