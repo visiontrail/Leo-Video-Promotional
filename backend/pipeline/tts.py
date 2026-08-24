@@ -137,6 +137,10 @@ DANGLING_CHUNK_WORDS = {
 # existing verified chunk identities do not churn.
 BAD_LEADING_CHUNK_WORDS = {"of"}
 CHUNK_DETERMINERS = {"a", "an", "the"}
+# Never split these observed multi-word proper names across Orpheus requests.
+# A stranded "Kuala" was pronounced/transcribed as the common noun "koala";
+# keeping the complete place name supplies the speech model with its meaning.
+PROTECTED_CHUNK_BOUNDARIES = {("kuala", "lumpur")}
 TERMINAL_SPEECH_PUNCTUATION_RE = re.compile(r"[.!?。！？][\"'’”)]*\s*$")
 TRAILING_CLAUSE_PUNCTUATION_RE = re.compile(r"[,;:，；：]+([\"'’”)]*)\s*$")
 
@@ -664,6 +668,20 @@ def _split_tts_text(
                         # grammatical context; the bounded four-word overflow is
                         # still independently token-budgeted and verified.
                         take = len(words)
+                    while (
+                        take > 1
+                        and take < len(words)
+                        and (
+                            words[take - 1]
+                            .strip(".,!?;:\"'’”()[]{}")
+                            .casefold(),
+                            words[take]
+                            .strip(".,!?;:\"'’”()[]{}")
+                            .casefold(),
+                        )
+                        in PROTECTED_CHUNK_BOUNDARIES
+                    ):
+                        take -= 1
                     while (
                         take > 1
                         and take < len(words)
