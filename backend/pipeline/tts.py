@@ -1020,6 +1020,16 @@ def _orpheus_prompt_text(text: str) -> str:
         stripped,
         flags=re.IGNORECASE,
     )
+    # Two consecutive short "it's ..." beats made the speech LM loop the
+    # first clause three times and never advance to "It's survival". Keep the
+    # exact canonical words, but join only this observed contrast into one
+    # provider-side prosodic unit so generation advances instead of repeating.
+    stripped = re.sub(
+        r"\b(it's a refuge)\.\s+(it's survival)\b",
+        r"\1, \2",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     if TERMINAL_SPEECH_PUNCTUATION_RE.search(stripped):
         return stripped
     # A canonical chunk may end at a comma/semicolon chosen for semantic

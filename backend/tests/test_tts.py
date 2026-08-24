@@ -324,6 +324,18 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "and silence and security guards in suits Kale's malls are packed"
         )["verified"])
 
+    def test_orpheus_prompt_joins_observed_refuge_survival_loop(self):
+        text = "a luxury experience — it's a refuge.\nIt's survival."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "a luxury experience — it's a refuge, It's survival.",
+        )
+        self.assertEqual(
+            tts._orpheus_prompt_text("It's a refuge. It matters."),
+            "It's a refuge. It matters.",
+        )
+
     def test_orpheus_transcript_accepts_only_exact_disproportionate_morphemes(self):
         expected = "This island produces disproportionate art."
 
