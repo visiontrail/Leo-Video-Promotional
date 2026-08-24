@@ -1225,6 +1225,24 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
 
+    def test_orpheus_transcript_normalizes_observed_eslite_boxes_spellings(self):
+        expected = "Eslite, Kinokuniya, a local chain called Boxes."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("S -Lite Kinokuniya a local chain called Boxus")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            report_for("S Light Kinokuniya a local chain called Boxers")["verified"]
+        )
+
     def test_orpheus_transcript_normalizes_spoken_kilometer_unit(self):
         expected = "along an eight-thousand-kilometer arc"
 

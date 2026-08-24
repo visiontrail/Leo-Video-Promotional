@@ -89,6 +89,9 @@ ACOUSTIC_EQUIVALENTS = {
     # Orpheus generations; spelling cannot distinguish the spoken utterance.
     "there": "they're",
     "their": "they're",
+    # Whisper writes the plural bookstore name "Boxes" as the identically
+    # pronounced nonce spelling "Boxus" in the observed proper-name list.
+    "boxus": "boxes",
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",
@@ -114,6 +117,10 @@ ACOUSTIC_PHRASE_EQUIVALENTS = {
     # Orpheus says the letters instead of the word "kale". Whisper may retain
     # that exact split; it is acoustically identical to canonical "KL's".
     ("k", "l's"): "kl's",
+    # Whisper segments the correctly pronounced bookstore name "Eslite" as
+    # the two acoustic tokens "S" and "Lite". Collapse only that exact pair;
+    # unrelated single-word or near-homophone spellings remain rejected.
+    ("s", "lite"): "eslite",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
