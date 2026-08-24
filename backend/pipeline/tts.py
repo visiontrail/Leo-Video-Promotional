@@ -128,6 +128,11 @@ TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     "poutien": "putien",
 }
 TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS = {
+    # The same provider-side "Poo Tien" hint may be tokenized by Whisper as
+    # the two-word spelling "Pu Tien" instead of the joined "Poutien" form.
+    # Normalize only the observed transcript side so a canonical two-word
+    # source remains distinct from the restaurant name "Putien".
+    ("pu", "tien"): "putien",
     # Whisper splits the correctly spoken Malay restaurant name "Dagang" into
     # two familiar syllable tokens.  Keep this observed alias off the source
     # side so canonical "Da Gong" remains a distinct two-word name.

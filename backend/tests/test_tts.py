@@ -1485,12 +1485,24 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             "Michelin-starred Putien — extraordinary.",
             words_for("Michelin-starred Poutien Extraordinary"),
         )
+        split_report = tts._orpheus_transcript_report(
+            "Michelin-starred Putien — extraordinary.",
+            words_for("Michelin starred Pu Tien Extraordinary"),
+        )
 
         self.assertTrue(report["verified"])
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertTrue(split_report["verified"])
+        self.assertEqual(split_report["exact_asr_word_coverage"], 1.0)
         self.assertFalse(
             tts._orpheus_transcript_report(
                 "A restaurant named Poutien reopened.",
+                words_for("A restaurant named Putien reopened"),
+            )["verified"]
+        )
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A restaurant named Pu Tien reopened.",
                 words_for("A restaurant named Putien reopened"),
             )["verified"]
         )
