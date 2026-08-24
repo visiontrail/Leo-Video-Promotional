@@ -1122,6 +1122,39 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["exact_asr_word_coverage"], 1.0)
         self.assertFalse(report_for("The one the size of a shoebox")["verified"])
 
+    def test_orpheus_transcript_accepts_theyre_there_homophone(self):
+        expected = (
+            "Three of the ten largest malls on Earth are here, and they're"
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "Three of the ten largest malls on Earth are here and there"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["expected_words"], 12)
+        self.assertEqual(report["transcript_words"], 12)
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertTrue(
+            tts._orpheus_transcript_report(
+                "Those malls are over there.",
+                [
+                    {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                    for index, word in enumerate("Those malls are over they're".split())
+                ],
+            )["verified"]
+        )
+        self.assertFalse(report_for(
+            "Three of the ten largest malls on Earth are here and they"
+        )["verified"])
+
     def test_orpheus_transcript_normalizes_break_through_compound_spelling(self):
         expected = "break through isolationist resistance in Congress."
         observed = "Breakthrough isolationist resistance in Congress".split()

@@ -83,6 +83,12 @@ ACOUSTIC_EQUIVALENTS = {
     # acoustically identical. Whisper consistently chooses the apostrophe in
     # the observed plural phrase "the ones the size of a shoebox".
     "one's": "ones",
+    # The locative "there", possessive "their", and contraction "they're"
+    # are exact homophones. Whisper consistently chose the locative spelling
+    # for the observed sentence-final contraction, even across three separate
+    # Orpheus generations; spelling cannot distinguish the spoken utterance.
+    "there": "they're",
+    "their": "they're",
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",
