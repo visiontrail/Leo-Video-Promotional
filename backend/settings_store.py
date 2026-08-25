@@ -466,10 +466,9 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "RENDER_PROTOCOL_TIMEOUT_MS", "render", "Browser protocol timeout", "int",
         unit="milliseconds", minimum=30000, maximum=86400000,
-        description="Minimum wait for one Chrome DevTools operation during a "
-                    "long frame-capture pass. The effective value also grows "
-                    "with the frame-derived total render budget, with the "
-                    "outer stall and total watchdogs kept later in that order.",
+        description="Maximum wait for one Chrome DevTools operation. Keep this "
+                    "shorter than the whole render budget so a wedged frame can "
+                    "trigger HyperFrames' lower-concurrency recovery.",
     ),
     # ── Direction ────────────────────────────────────────────────────────
     SettingSpec(

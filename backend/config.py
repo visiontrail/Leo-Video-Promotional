@@ -376,11 +376,11 @@ HYPERFRAMES_VERSION = os.getenv("HYPERFRAMES_VERSION", "0.6.99")
 RENDER_FPS = int(os.getenv("RENDER_FPS", "15"))
 RENDER_QUALITY = os.getenv("RENDER_QUALITY", "draft")  # draft | standard | high
 RENDER_WORKERS = os.getenv("RENDER_WORKERS", "2")      # integer or "auto"
-# HyperFrames waits for one long CDP Runtime.callFunctionOn while capturing a
-# composition. Its five-minute default is shorter than a normal eight-minute
-# episode render on this host, so pass an unattended-job-sized budget
-# explicitly instead of letting a healthy capture die at exactly 300 seconds.
-RENDER_PROTOCOL_TIMEOUT_MS = int(os.getenv("RENDER_PROTOCOL_TIMEOUT_MS", "1800000"))
+# This is the ceiling for one Chrome DevTools operation, not for the complete
+# render. Keep it bounded so HyperFrames can recover from a wedged frame by
+# reducing worker concurrency; the whole-job timeout scales separately with
+# the frame count in ``pipeline.composer``.
+RENDER_PROTOCOL_TIMEOUT_MS = int(os.getenv("RENDER_PROTOCOL_TIMEOUT_MS", "300000"))
 RENDER_RESOLUTION = os.getenv("RENDER_RESOLUTION", "landscape")  # 1920x1080
 
 OUTPUTS_DIR = resolve_project_path(os.getenv("OUTPUTS_DIR", "outputs"))

@@ -134,6 +134,9 @@ video, which is the exact bug this system was built to fix.
    dynamically. Animate only visual properties (opacity, x, y, scale, rotation,
    colour, transforms).
 9. Every timeline position must land inside the scene's duration.
+10. Every `<video>` must include `preload="none"`. HyperFrames injects its
+    pre-extracted JPEG frames during capture; preloading the original videos can
+    exhaust Chrome's per-origin connection pool and wedge `img.decode()`.
 
 # Craft
 
@@ -280,6 +283,10 @@ def validate_scene_html(
     # The spine owns scene timing; a scene that declares its own would double-schedule.
     if re.search(r"data-composition-id=\"" + re.escape(scene_id) + r"\"[^>]*data-(?:start|track-index)=", text):
         problems.append("composition root must not declare data-start/data-track-index")
+    for video_tag in re.findall(r"<video\b[^>]*>", text, flags=re.I):
+        if not re.search(r"\bpreload\s*=\s*([\"'])none\1", video_tag, flags=re.I):
+            problems.append('every <video> must declare preload="none"')
+            break
     for pattern, why in _FORBIDDEN:
         if pattern.search(text):
             problems.append(why)

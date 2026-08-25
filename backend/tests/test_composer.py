@@ -100,11 +100,11 @@ def test_render_command_allows_long_browser_capture(tmp_path, monkeypatch):
 
 
 def test_render_timeouts_stay_ordered_for_long_video(monkeypatch):
-    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 1_800_000)
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 300_000)
 
     total, protocol_ms, stall = composer._render_timeouts(7_346)
 
-    assert (total, protocol_ms, stall) == (11_319, 11_199_000, 11_259)
+    assert (total, protocol_ms, stall) == (11_319, 300_000, 11_259)
     assert protocol_ms // 1000 < stall < total
 
 
@@ -114,3 +114,14 @@ def test_render_timeouts_honor_configured_protocol_floor(monkeypatch):
     total, protocol_ms, stall = composer._render_timeouts(1)
 
     assert (total, protocol_ms, stall) == (1_920, 1_800_000, 1_860)
+
+
+def test_long_render_does_not_expand_one_cdp_operation(monkeypatch):
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 300_000)
+
+    short = composer._render_timeouts(1)
+    long = composer._render_timeouts(20_000)
+
+    assert short[1] == long[1] == 300_000
+    assert long[0] > short[0]
+    assert long[2] > short[2]

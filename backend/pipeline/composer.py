@@ -52,9 +52,11 @@ SILENCE_TIMEOUT = 120
 # kill a slow-but-live render, only a genuinely wedged one.
 RENDER_SECONDS_PER_FRAME = 1.5
 RENDER_TIMEOUT_FLOOR = 900  # never below 15 min, regardless of how short the clip is
-# Long screenshot captures emit no output until one Runtime.callFunctionOn
-# returns. Keep all three watchdogs ordered from inside out: CDP, silent-output
-# stall, then the total subprocess budget.
+# A CDP timeout guards one browser operation, while the frame-derived timeout
+# guards the whole unattended render. Do not scale the former with total frames:
+# HyperFrames needs a stuck Runtime.callFunctionOn to fail promptly so its
+# missing-frame/fewer-worker recovery can run. Keep all three watchdogs ordered
+# from inside out: CDP, silent-output stall, then the total subprocess budget.
 RENDER_PROTOCOL_TO_TOTAL_GRACE_SECONDS = 120
 RENDER_STALL_TIMEOUT_FLOOR = 600
 RENDER_STALL_GRACE_SECONDS = 60
@@ -69,13 +71,10 @@ def _render_timeouts(total_frames: int) -> tuple[int, int, int]:
         frame_budget,
         configured_protocol_seconds + RENDER_PROTOCOL_TO_TOTAL_GRACE_SECONDS,
     )
-    protocol_seconds = max(
-        configured_protocol_seconds,
-        render_timeout - RENDER_PROTOCOL_TO_TOTAL_GRACE_SECONDS,
-    )
+    protocol_seconds = configured_protocol_seconds
     stall_timeout = max(
         RENDER_STALL_TIMEOUT_FLOOR,
-        protocol_seconds + RENDER_STALL_GRACE_SECONDS,
+        render_timeout - RENDER_STALL_GRACE_SECONDS,
     )
     return render_timeout, protocol_seconds * 1000, stall_timeout
 

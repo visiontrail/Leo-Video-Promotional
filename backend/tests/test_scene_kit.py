@@ -154,6 +154,7 @@ def test_video_footage_declares_hyperframes_media_timing():
     assert 'data-start="0"' in video
     assert 'data-duration="12.00"' in video
     assert 'data-track-index="0"' in video
+    assert 'preload="none"' in video
     assert "muted" in video and "playsinline" in video
     assert " loop" in video
 
@@ -173,6 +174,7 @@ def test_collage_footage_is_clean_locked_off_full_bleed():
     assert 'class="stage"' not in html
     assert "scale: 1.16" not in html
     video = re.search(r"<video[^>]*>", html).group(0)
+    assert 'preload="none"' in video
     assert " loop" not in video
     assert "muted" in video and "playsinline" in video
 

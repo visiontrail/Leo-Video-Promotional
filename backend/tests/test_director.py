@@ -74,6 +74,17 @@ def test_scene_root_declaring_its_own_timing_is_rejected():
     assert any("data-start" in p for p in validate(bad))
 
 
+def test_video_without_non_preloading_contract_is_rejected():
+    bad = GOOD.replace(
+        '<div id="scene-01-head">Hello</div>',
+        '<video id="scene-01-media" src="footage/clip.mp4"></video>',
+    )
+    assert 'every <video> must declare preload="none"' in validate(bad)
+
+    good = bad.replace('<video ', '<video preload="none" ')
+    assert validate(good) == []
+
+
 def test_the_deterministic_kit_always_passes_its_own_gate():
     for archetype in scene_kit.ARCHETYPES:
         plan = scene_kit.ScenePlan(
