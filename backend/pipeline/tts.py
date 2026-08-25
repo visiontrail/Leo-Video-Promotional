@@ -118,9 +118,11 @@ ACOUSTIC_EQUIVALENTS = {
 TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     "guanxi": "gongxi",
     # With the provider-side established spelling "Nonya", Whisper writes the
-    # correctly spoken Peranakan cuisine name as "Nonia".  Keep this observed
-    # alias directional so a canonical source word "Nonia" stays distinct.
+    # correctly spoken Peranakan cuisine name as "Nonia" or "Nanya".  Keep
+    # these observed aliases directional so canonical source words using
+    # either spelling stay distinct.
     "nonia": "nyonya",
+    "nanya": "nyonya",
     # Whisper writes the correctly spoken Cantonese restaurant suffix "Lou"
     # as the identically pronounced name "Lu".  Keep it transcript-only so a
     # canonical person or place named "Lu" remains distinct in source text.

@@ -1495,19 +1495,21 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
                 for index, word in enumerate(observed.split())
             ]
 
-        report = tts._orpheus_transcript_report(
-            "Nyonya cuisine, Malay, Indian, Chinese.",
-            words_for("Nonia cuisine Malay Indian Chinese"),
-        )
+        for observed_spelling in ("Nonia", "Nanya"):
+            with self.subTest(observed_spelling=observed_spelling):
+                report = tts._orpheus_transcript_report(
+                    "Nyonya cuisine, Malay, Indian, Chinese.",
+                    words_for(f"{observed_spelling} cuisine Malay Indian Chinese"),
+                )
 
-        self.assertTrue(report["verified"])
-        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
-        self.assertFalse(
-            tts._orpheus_transcript_report(
-                "Nonia cuisine was listed.",
-                words_for("Nyonya cuisine was listed"),
-            )["verified"]
-        )
+                self.assertTrue(report["verified"])
+                self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+                self.assertFalse(
+                    tts._orpheus_transcript_report(
+                        f"{observed_spelling} cuisine was listed.",
+                        words_for("Nyonya cuisine was listed"),
+                    )["verified"]
+                )
 
     def test_orpheus_transcript_normalizes_observed_putien_asr_spelling_one_way(self):
         def words_for(observed: str) -> list[dict]:
