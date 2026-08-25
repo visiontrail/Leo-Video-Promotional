@@ -463,6 +463,14 @@ SPECS: tuple[SettingSpec, ...] = (
                     "CLI decide.",
         allow_blank=False,
     ),
+    SettingSpec(
+        "RENDER_PROTOCOL_TIMEOUT_MS", "render", "Browser protocol timeout", "int",
+        unit="milliseconds", minimum=30000, maximum=86400000,
+        description="Maximum wait for one Chrome DevTools operation during a "
+                    "long frame-capture pass. The 15-minute default prevents "
+                    "healthy multi-minute renders from dying at the CLI's "
+                    "five-minute default.",
+    ),
     # ── Direction ────────────────────────────────────────────────────────
     SettingSpec(
         "DIRECTOR_ENABLED", "director", "Agent direction", "bool",

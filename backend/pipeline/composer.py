@@ -196,6 +196,7 @@ def _build_render_command(
         "--fps", str(config.RENDER_FPS),
         "--quality", config.RENDER_QUALITY,
         "-w", str(config.RENDER_WORKERS),
+        "--protocol-timeout", str(config.RENDER_PROTOCOL_TIMEOUT_MS),
     ]
 
 

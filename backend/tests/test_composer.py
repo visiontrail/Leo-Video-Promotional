@@ -85,3 +85,11 @@ def test_portrait_render_command_uses_task_resolution(tmp_path):
     command = composer._build_render_command(tmp_path, tmp_path / "video.mp4", PORTRAIT)
 
     assert command[command.index("--resolution") + 1] == "portrait"
+
+
+def test_render_command_allows_long_browser_capture(tmp_path, monkeypatch):
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 900_000)
+
+    command = composer._build_render_command(tmp_path, tmp_path / "video.mp4")
+
+    assert command[command.index("--protocol-timeout") + 1] == "900000"
