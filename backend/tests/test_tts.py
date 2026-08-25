@@ -309,6 +309,27 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_keeps_parallel_history_verbs_with_their_objects(self):
+        text = (
+            "That's a compressed history of generations who built infrastructure, "
+            "opened businesses, established schools, shaped the economy of an entire "
+            "region — and paid for it in ways most of us never learned about."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "That's a compressed history of generations who built infrastructure,",
+                "opened businesses,",
+                "established schools,",
+                "shaped the economy of an entire region —",
+                "and paid for it in ways most of us never learned about.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
         self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
