@@ -128,9 +128,11 @@ video, which is the exact bug this system was built to fix.
    dynamically. Animate only visual properties (opacity, x, y, scale, rotation,
    colour, transforms).
 9. Every timeline position must land inside the scene's duration.
-10. Every `<video>` must include `preload="none"`. HyperFrames injects its
-    pre-extracted JPEG frames during capture; preloading the original videos can
-    exhaust Chrome's per-origin connection pool and wedge `img.decode()`.
+10. Every `<video>` must include `data-start="0"`, `data-duration="<this scene's
+    exact seconds>"`, `data-track-index="0"`, and `preload="none"`. The timing
+    attributes let HyperFrames own playback. Its renderer injects pre-extracted
+    JPEG frames during capture; preloading the original videos can exhaust
+    Chrome's per-origin connection pool and wedge `img.decode()`.
 
 # Craft
 
@@ -278,6 +280,15 @@ def validate_scene_html(
     if re.search(r"data-composition-id=\"" + re.escape(scene_id) + r"\"[^>]*data-(?:start|track-index)=", text):
         problems.append("composition root must not declare data-start/data-track-index")
     for video_tag in re.findall(r"<video\b[^>]*>", text, flags=re.I):
+        if not re.search(r'\bdata-start\s*=\s*(["\'])0(?:\.0+)?\1', video_tag, flags=re.I):
+            problems.append('every <video> must declare data-start="0"')
+            break
+        if not re.search(r'\bdata-duration\s*=\s*(["\'])\d+(?:\.\d+)?\1', video_tag, flags=re.I):
+            problems.append("every <video> must declare a numeric data-duration")
+            break
+        if not re.search(r'\bdata-track-index\s*=\s*(["\'])0\1', video_tag, flags=re.I):
+            problems.append('every <video> must declare data-track-index="0"')
+            break
         if not re.search(r"\bpreload\s*=\s*([\"'])none\1", video_tag, flags=re.I):
             problems.append('every <video> must declare preload="none"')
             break

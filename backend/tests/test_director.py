@@ -79,10 +79,33 @@ def test_video_without_non_preloading_contract_is_rejected():
         '<div id="scene-01-head">Hello</div>',
         '<video id="scene-01-media" src="footage/clip.mp4"></video>',
     )
-    assert 'every <video> must declare preload="none"' in validate(bad)
+    assert 'every <video> must declare data-start="0"' in validate(bad)
 
-    good = bad.replace('<video ', '<video preload="none" ')
+    good = bad.replace(
+        '<video ',
+        '<video data-start="0" data-duration="8.0" data-track-index="0" preload="none" ',
+    )
     assert validate(good) == []
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["data-start", "data-duration", "data-track-index", "preload"],
+)
+def test_video_requires_the_full_hyperframes_media_contract(missing):
+    attributes = {
+        "data-start": 'data-start="0"',
+        "data-duration": 'data-duration="8.0"',
+        "data-track-index": 'data-track-index="0"',
+        "preload": 'preload="none"',
+    }
+    tag = " ".join(value for key, value in attributes.items() if key != missing)
+    bad = GOOD.replace(
+        '<div id="scene-01-head">Hello</div>',
+        f'<video id="scene-01-media" src="footage/clip.mp4" {tag}></video>',
+    )
+
+    assert validate(bad)
 
 
 def test_the_deterministic_kit_always_passes_its_own_gate():
