@@ -121,6 +121,10 @@ TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     # correctly spoken Peranakan cuisine name as "Nonia".  Keep this observed
     # alias directional so a canonical source word "Nonia" stays distinct.
     "nonia": "nyonya",
+    # Whisper writes the correctly spoken Cantonese restaurant suffix "Lou"
+    # as the identically pronounced name "Lu".  Keep it transcript-only so a
+    # canonical person or place named "Lu" remains distinct in source text.
+    "lu": "lou",
     # The provider-side pronunciation hint "Poo Tien" keeps the restaurant
     # name complete, while Whisper joins the spoken syllables as "Poutien".
     # Keep the observed spelling transcript-only so canonical "Poutien" is
