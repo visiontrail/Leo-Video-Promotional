@@ -123,6 +123,10 @@ TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS = {
     # either spelling stay distinct.
     "nonia": "nyonya",
     "nanya": "nyonya",
+    # Whisper consistently writes the spoken geographic name "South Seas"
+    # with a possessive apostrophe.  Normalize only the observed transcript
+    # token so a canonical possessive "Sea's" remains distinct.
+    "sea's": "seas",
     # Whisper writes the correctly spoken Cantonese restaurant suffix "Lou"
     # as the identically pronounced name "Lu".  Keep it transcript-only so a
     # canonical person or place named "Lu" remains distinct in source text.

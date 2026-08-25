@@ -1586,6 +1586,27 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             )["verified"]
         )
 
+    def test_orpheus_transcript_normalizes_observed_south_seas_possessive_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "Digging into South Seas Chinese history.",
+            words_for("Digging into South Sea's Chinese history"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "The South Sea's history was discussed.",
+                words_for("The South Seas history was discussed"),
+            )["verified"]
+        )
+
     def test_orpheus_transcript_normalizes_observed_dagang_asr_split_one_way(self):
         def words_for(observed: str) -> list[dict]:
             return [
