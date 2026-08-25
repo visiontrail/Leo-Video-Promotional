@@ -7,7 +7,6 @@ from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 from backend import database as db
 from backend.models import (
-    TaskCreate,
     TaskConfig,
     TaskListResponse,
     TaskResponse,
@@ -327,8 +326,8 @@ async def render_task(task_id: str):
     task = await db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    if task.status != TaskStatus.AWAITING_REVIEW:
-        raise HTTPException(409, "Task is not awaiting review")
+    if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED):
+        raise HTTPException(409, "Task is not awaiting review or eligible for render recovery")
     if not task.audio_path or not Path(task.audio_path).exists():
         raise HTTPException(400, "No audio available to render from")
 

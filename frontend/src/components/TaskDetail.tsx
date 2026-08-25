@@ -115,6 +115,7 @@ export default function TaskDetail() {
 
   const isRunning = !['complete', 'failed', 'queued', 'awaiting_review'].includes(task.status)
   const awaitingReview = task.status === 'awaiting_review'
+  const canRender = awaitingReview || (task.status === 'failed' && !!task.audio_path)
   // Parked in the queue behind a future start time — still cancellable.
   const parked = task.status === 'queued' && isPendingStart(task.scheduled_at)
   const startDraft = startOverride ?? (task.scheduled_at ? toLocalInputValue(new Date(task.scheduled_at)) : '')
@@ -341,7 +342,7 @@ export default function TaskDetail() {
             <section className="detail-panel">
               <h3>Audio Preview</h3>
               <audio controls src={audioUrl(task.id)} />
-              {awaitingReview && (
+              {canRender && (
                 <>
                   <p className="detail-hint">
                     Listen to the generated audio. Render the video to continue, or edit the
