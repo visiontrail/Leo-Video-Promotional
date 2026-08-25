@@ -746,6 +746,24 @@ def _separate_incomplete_cuisine_list(chunks: list[str]) -> list[str]:
     return separated
 
 
+def _separate_fragile_beijing_lou_sequence(chunks: list[str]) -> list[str]:
+    """Split an observed long restaurant line that drifts across both names."""
+    separated: list[str] = []
+    pattern = re.compile(
+        r"^(A Cantonese place called Beijing Lou,)\s+"
+        r"(in the middle of touristy Malacca,)\s+"
+        r"(and somehow still incredible\.)$",
+        re.IGNORECASE,
+    )
+    for chunk in chunks:
+        match = pattern.match(chunk)
+        if match is None:
+            separated.append(chunk)
+            continue
+        separated.extend(match.groups())
+    return separated
+
+
 def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _separate_repeated_clause_openings(chunks)
     stabilized = _separate_repeated_adjective_items(stabilized)
@@ -759,7 +777,8 @@ def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _separate_empty_rhetorical_turn(stabilized)
     stabilized = _separate_fragile_wouldnt_eat_sequence(stabilized)
     stabilized = _separate_fragile_now_sequence(stabilized)
-    return _separate_incomplete_cuisine_list(stabilized)
+    stabilized = _separate_incomplete_cuisine_list(stabilized)
+    return _separate_fragile_beijing_lou_sequence(stabilized)
 
 
 def _split_tts_text(

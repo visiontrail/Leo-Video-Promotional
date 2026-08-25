@@ -280,6 +280,24 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(" ".join(" ".join(chunks).split()), text)
 
+    def test_split_tts_text_separates_observed_fragile_beijing_lou_sequence(self):
+        text = (
+            "A Cantonese place called Beijing Lou, in the middle of touristy "
+            "Malacca, and somehow still incredible."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "A Cantonese place called Beijing Lou,",
+                "in the middle of touristy Malacca,",
+                "and somehow still incredible.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
     def test_orpheus_prompt_adds_only_unspoken_terminal_punctuation(self):
         self.assertEqual(tts._orpheus_prompt_text("A short open phrase"), "A short open phrase.")
         self.assertEqual(tts._orpheus_prompt_text("Already complete!"), "Already complete!")
