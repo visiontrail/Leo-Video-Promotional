@@ -52,19 +52,32 @@ SILENCE_TIMEOUT = 120
 # kill a slow-but-live render, only a genuinely wedged one.
 RENDER_SECONDS_PER_FRAME = 1.5
 RENDER_TIMEOUT_FLOOR = 900  # never below 15 min, regardless of how short the clip is
-# The outer hang detector must never expire before HyperFrames' own CDP
-# operation budget. Long screenshot captures emit no output until the single
-# Runtime.callFunctionOn returns, so add a grace minute beyond that budget.
+# Long screenshot captures emit no output until one Runtime.callFunctionOn
+# returns. Keep all three watchdogs ordered from inside out: CDP, silent-output
+# stall, then the total subprocess budget.
+RENDER_PROTOCOL_TO_TOTAL_GRACE_SECONDS = 120
 RENDER_STALL_TIMEOUT_FLOOR = 600
 RENDER_STALL_GRACE_SECONDS = 60
 
 
-def _render_stall_timeout() -> int:
-    protocol_seconds = (config.RENDER_PROTOCOL_TIMEOUT_MS + 999) // 1000
-    return max(
+def _render_timeouts(total_frames: int) -> tuple[int, int, int]:
+    """Return total seconds, CDP milliseconds, and silent-stall seconds."""
+    configured_protocol_seconds = (config.RENDER_PROTOCOL_TIMEOUT_MS + 999) // 1000
+    frame_budget = int(300 + total_frames * RENDER_SECONDS_PER_FRAME)
+    render_timeout = max(
+        RENDER_TIMEOUT_FLOOR,
+        frame_budget,
+        configured_protocol_seconds + RENDER_PROTOCOL_TO_TOTAL_GRACE_SECONDS,
+    )
+    protocol_seconds = max(
+        configured_protocol_seconds,
+        render_timeout - RENDER_PROTOCOL_TO_TOTAL_GRACE_SECONDS,
+    )
+    stall_timeout = max(
         RENDER_STALL_TIMEOUT_FLOOR,
         protocol_seconds + RENDER_STALL_GRACE_SECONDS,
     )
+    return render_timeout, protocol_seconds * 1000, stall_timeout
 
 
 def _narration_completeness_failures(alignment: dict) -> list[str]:
@@ -184,6 +197,8 @@ def _build_render_command(
     project_dir: Path,
     video_path: Path,
     frame: FrameSpec = LANDSCAPE,
+    *,
+    protocol_timeout_ms: int | None = None,
 ) -> list[str]:
     """Build the render command for the current HyperFrames CLI (v0.6.x).
 
@@ -205,7 +220,11 @@ def _build_render_command(
         "--fps", str(config.RENDER_FPS),
         "--quality", config.RENDER_QUALITY,
         "-w", str(config.RENDER_WORKERS),
-        "--protocol-timeout", str(config.RENDER_PROTOCOL_TIMEOUT_MS),
+        "--protocol-timeout", str(
+            protocol_timeout_ms
+            if protocol_timeout_ms is not None
+            else config.RENDER_PROTOCOL_TIMEOUT_MS
+        ),
     ]
 
 
@@ -662,16 +681,21 @@ async def compose_video(
     # --- 5. Render ---------------------------------------------------------
     video_path = output_dir_path / "video.mp4"
     total_frames = max(1, round(float(board["total_duration"]) * config.RENDER_FPS))
-    render_timeout = max(RENDER_TIMEOUT_FLOOR, int(300 + total_frames * RENDER_SECONDS_PER_FRAME))
-    render_stall_timeout = _render_stall_timeout()
+    render_timeout, protocol_timeout_ms, render_stall_timeout = _render_timeouts(total_frames)
     emit(
         f"Rendering ~{total_frames} frames "
         f"({board['total_duration']:.0f}s @ {config.RENDER_FPS}fps, {config.RENDER_QUALITY}, "
-        f"{config.RENDER_WORKERS} worker(s)); render timeout {render_timeout}s, "
+        f"{config.RENDER_WORKERS} worker(s)); protocol timeout {protocol_timeout_ms}ms, "
         f"stall timeout {render_stall_timeout}s"
+        f", render timeout {render_timeout}s"
     )
 
-    render_command = _build_render_command(output_dir_path, video_path, frame)
+    render_command = _build_render_command(
+        output_dir_path,
+        video_path,
+        frame,
+        protocol_timeout_ms=protocol_timeout_ms,
+    )
     returncode, output = await stream_subprocess(
         name="HyperFrames render",
         command=render_command,

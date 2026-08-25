@@ -90,13 +90,27 @@ def test_portrait_render_command_uses_task_resolution(tmp_path):
 def test_render_command_allows_long_browser_capture(tmp_path, monkeypatch):
     monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 1_800_000)
 
-    command = composer._build_render_command(tmp_path, tmp_path / "video.mp4")
+    command = composer._build_render_command(
+        tmp_path,
+        tmp_path / "video.mp4",
+        protocol_timeout_ms=11_199_000,
+    )
 
-    assert command[command.index("--protocol-timeout") + 1] == "1800000"
-    assert composer._render_stall_timeout() == 1_860
+    assert command[command.index("--protocol-timeout") + 1] == "11199000"
 
 
-def test_render_stall_timeout_never_preempts_protocol_timeout(monkeypatch):
-    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 30_001)
+def test_render_timeouts_stay_ordered_for_long_video(monkeypatch):
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 1_800_000)
 
-    assert composer._render_stall_timeout() == composer.RENDER_STALL_TIMEOUT_FLOOR
+    total, protocol_ms, stall = composer._render_timeouts(7_346)
+
+    assert (total, protocol_ms, stall) == (11_319, 11_199_000, 11_259)
+    assert protocol_ms // 1000 < stall < total
+
+
+def test_render_timeouts_honor_configured_protocol_floor(monkeypatch):
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 1_800_000)
+
+    total, protocol_ms, stall = composer._render_timeouts(1)
+
+    assert (total, protocol_ms, stall) == (1_920, 1_800_000, 1_860)
