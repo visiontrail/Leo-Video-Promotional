@@ -482,7 +482,8 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
             continue
 
         weighted_terms: dict[str, int] = {}
-        for value, weight in (
+        discovery_terms: dict[str, int] = {}
+        weighted_sources = (
             # The excerpt is the narration for which the clip/interval was
             # actually selected. It is a stronger constraint than the broad
             # discovery query: without it, a "fiat money" search result chosen
@@ -492,14 +493,19 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
             (clip.get("query", ""), 3),
             (clip.get("purpose", ""), 2),
             (clip.get("title", ""), 1),
-        ):
+        )
+        for source_index, (value, weight) in enumerate(weighted_sources):
             for term in _terms(value):
                 weighted_terms[term] = max(weighted_terms.get(term, 0), weight)
+                if source_index:
+                    discovery_terms[term] = max(discovery_terms.get(term, 0), weight)
         distinctive = set(weighted_terms) - common_terms
+        discovery_distinctive = set(discovery_terms) - common_terms
         excerpt_terms = _terms(clip.get("script_excerpt", "")) - common_terms
         minimum_excerpt_matches = min(3, len(excerpt_terms))
 
         best_id, best_score, best_matches, best_excerpt_matches = None, 0.0, [], []
+        best_overflow_matches: list[str] = []
         for plan in plans:
             if plan["id"] in used:
                 continue
@@ -518,6 +524,32 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
                 best_score = score
                 best_matches = matches
                 best_excerpt_matches = excerpt_matches
+        # Distinct shots can legitimately illustrate different scenes while
+        # sharing the same source sentence (for example an opening landmark and
+        # a closing skyline callback). Once the exact excerpt scene is occupied,
+        # permit an overflow placement only when the clip's query, purpose, and
+        # title independently match at least two distinctive narration terms.
+        if best_id is None and excerpt_terms:
+            for plan in plans:
+                if plan["id"] in used:
+                    continue
+                scene = scenes_by_id.get(plan["id"])
+                if not scene:
+                    continue
+                overflow_matches = sorted(
+                    discovery_distinctive & scene_terms[plan["id"]]
+                )
+                if len(overflow_matches) < 2:
+                    continue
+                score = sum(discovery_terms[term] for term in overflow_matches)
+                if score > best_score:
+                    best_id = plan["id"]
+                    best_score = score
+                    best_matches = sorted(distinctive & scene_terms[plan["id"]])
+                    best_excerpt_matches = sorted(
+                        excerpt_terms & scene_terms[plan["id"]]
+                    )
+                    best_overflow_matches = overflow_matches
         if best_id is None or best_score <= 0:
             continue
 
@@ -529,6 +561,8 @@ def attach_footage(plans: list[dict], storyboard: dict, manifest: dict | None, t
         plan["footage_query"] = str(clip.get("query") or "")[:160]
         plan["footage_match_terms"] = best_matches
         plan["footage_script_match_terms"] = best_excerpt_matches
+        if best_overflow_matches:
+            plan["footage_overflow_match_terms"] = best_overflow_matches
         plan["footage_match_score"] = best_score
         plan["footage_confidence"] = round(confidence, 3)
         if fallback_excerpt:
@@ -556,7 +590,12 @@ def visual_grounding_report(plans: list[dict], storyboard: dict) -> dict:
         if plan.get("archetype") == "footage":
             match_terms = plan.get("footage_match_terms") or []
             script_match_terms = plan.get("footage_script_match_terms")
-            script_grounded = script_match_terms is None or len(script_match_terms) >= 2
+            overflow_match_terms = plan.get("footage_overflow_match_terms") or []
+            script_grounded = (
+                script_match_terms is None
+                or len(script_match_terms) >= 2
+                or len(overflow_match_terms) >= 2
+            )
             grounded = (
                 grounded
                 and len(match_terms) >= 2

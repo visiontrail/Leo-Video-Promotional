@@ -326,6 +326,48 @@ def test_fallback_analyzed_excerpt_clips_are_all_placed_before_generic_results(
     assert all(plan["footage_analysis_confidence"] == 0.25 for plan in placed)
 
 
+def test_duplicate_excerpt_clip_overflows_only_with_distinctive_scene_grounding(
+    tmp_path: Path,
+):
+    data = board(3)
+    shared_excerpt = (
+        "Chinese communities in Malaysia were moved into controlled villages "
+        "during the Malayan Emergency."
+    )
+    data["scenes"][0]["text"] = shared_excerpt
+    data["scenes"][1]["text"] = (
+        "Diaspora businesses and schools reveal deep roots in everyday street life."
+    )
+    data["scenes"][2]["text"] = "A completely unrelated closing thought."
+    plans = visual_plan.fallback_plan(data)
+    footage_dir = tmp_path / "footage"
+    footage_dir.mkdir()
+    (footage_dir / "village.mp4").write_bytes(b"x")
+    (footage_dir / "street.mp4").write_bytes(b"x")
+    clips = [
+        {
+            "local_path": "footage/village.mp4",
+            "query": "Malayan Emergency resettlement village",
+            "purpose": "controlled villages during the emergency",
+            "script_excerpt": shared_excerpt,
+            "analysis": {"confidence": 0.9, "reason": "Historical village footage."},
+        },
+        {
+            "local_path": "footage/street.mp4",
+            "query": "Chinese Malaysian community street",
+            "purpose": "diaspora deep roots and everyday street life",
+            "script_excerpt": shared_excerpt,
+            "analysis": {"confidence": 0.9, "reason": "Community street footage."},
+        },
+    ]
+
+    assert visual_plan.attach_footage(plans, data, {"clips": clips}, tmp_path) == 2
+    assert plans[0]["footage_src"] == "footage/village.mp4"
+    assert plans[1]["footage_src"] == "footage/street.mp4"
+    assert len(plans[1]["footage_overflow_match_terms"]) >= 2
+    assert visual_plan.visual_grounding_report(plans, data)["passed"] is True
+
+
 def test_visual_grounding_report_requires_every_scene_and_grounded_footage():
     data = board(1)
     plans = visual_plan.fallback_plan(data)
