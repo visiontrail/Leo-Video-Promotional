@@ -23,6 +23,20 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(excerpt.startswith("The Lunar New Year atmosphere"))
 
+    def test_script_excerpt_ignores_generic_words_when_scores_would_tie(self):
+        script = (
+            "Kuala Lumpur has become a world shopping mall capital. "
+            "The Lunar New Year atmosphere in Kuala Lumpur rivals anything in a Chinese city."
+        )
+
+        excerpt = web_footage.matching_script_excerpt(
+            script,
+            "Kuala Lumpur shopping mall interior malls as the new public square "
+            "packed with ordinary families",
+        )
+
+        self.assertTrue(excerpt.startswith("Kuala Lumpur has become"))
+
     async def test_scout_search_depth_scales_with_requested_inventory(self):
         search = AsyncMock(return_value=[])
 

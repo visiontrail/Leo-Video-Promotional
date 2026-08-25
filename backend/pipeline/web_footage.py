@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend import config
+from backend.pipeline import visual_plan
 from backend.pipeline.extractors.youtube import _yt_dlp_common_args
 from backend.pipeline.opencli import OpenCLIError, first_json, run_opencli
 
@@ -147,10 +148,14 @@ def matching_script_excerpt(script: str, query: str, *, limit: int = 1200) -> st
     chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n|(?<=[.!?])\s+", script) if chunk.strip()]
     if not chunks:
         return script[:limit]
-    terms = {word.lower() for word in WORD_RE.findall(query)}
+    # Use the same normalized, stopword-free vocabulary as scene grounding.
+    # Otherwise generic words such as "the", "with", and "new" can tie an
+    # exact visual query and make the length tiebreaker select a later,
+    # semantically unrelated narration sentence.
+    terms = visual_plan._terms(query)
 
     def score(chunk: str) -> tuple[int, int]:
-        words = {word.lower() for word in WORD_RE.findall(chunk)}
+        words = visual_plan._terms(chunk)
         return len(terms & words), min(len(chunk), limit)
 
     best = max(chunks, key=score)
