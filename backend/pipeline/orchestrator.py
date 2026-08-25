@@ -303,14 +303,21 @@ async def run_regenerate(task: TaskResponse, log: LogCallback | None = None):
 
     task_log("Regenerate: Updating publication title with independent Agent")
     await update_task(task.id, status=TaskStatus.TITLING.value, error_message=None)
-    title_artifact = await _generate_task_title(
-        task,
-        task_dir,
-        task_log,
-        source_title=task.source_title or task.id,
-        summary=summary,
-    )
-    title = title_artifact.title
+    try:
+        title_artifact = await _generate_task_title(
+            task,
+            task_dir,
+            task_log,
+            source_title=task.source_title or task.id,
+            summary=summary,
+        )
+        title = title_artifact.title
+    except Exception as exc:
+        title = task.generated_title or task.source_title or task.id
+        task_log(
+            "Regenerate: Title update failed; retaining prior title "
+            f"'{title}': {exc}"
+        )
 
     # Keep cover art aligned with an edited script. This still precedes the TTS
     # subprocess, so a thumbnail failure consumes no model-synthesis memory.
