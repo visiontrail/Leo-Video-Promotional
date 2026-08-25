@@ -321,7 +321,7 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             chunks,
             [
-                "That's a compressed history of generations who built infrastructure,",
+                "That's a compressed history of generations who built infrastructure, "
                 "opened businesses,",
                 "established schools,",
                 "shaped the economy of an entire region —",

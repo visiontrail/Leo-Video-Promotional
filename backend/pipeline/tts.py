@@ -788,8 +788,8 @@ def _separate_parallel_history_sequence(chunks: list[str]) -> list[str]:
     """Keep each verb in an observed historical list with its object."""
     adjusted = list(chunks)
     pattern = re.compile(
-        r"^(That's a compressed history of generations who built infrastructure,)\s+"
-        r"(opened businesses,)\s+"
+        r"^(That's a compressed history of generations who built infrastructure,\s+"
+        r"opened businesses,)\s+"
         r"(established schools,)\s+"
         r"(shaped the economy of an entire region —)\s+"
         r"(and paid for it in ways most of us never learned about\.)$",
