@@ -588,25 +588,45 @@ def visual_grounding_report(plans: list[dict], storyboard: dict) -> dict:
         grounded, overlap = _plan_grounding(plan, scene)
         reason = "copy grounded in narration"
         if plan.get("archetype") == "footage":
-            match_terms = plan.get("footage_match_terms") or []
-            script_match_terms = plan.get("footage_script_match_terms")
-            overflow_match_terms = plan.get("footage_overflow_match_terms") or []
-            script_grounded = (
-                script_match_terms is None
-                or len(script_match_terms) >= 2
-                or len(overflow_match_terms) >= 2
-            )
-            grounded = (
-                grounded
-                and len(match_terms) >= 2
-                and script_grounded
-                and float(plan.get("footage_confidence") or 0) >= 0.65
-            )
-            reason = (
-                f"footage matched on {', '.join(match_terms)}"
-                if grounded
-                else "footage lacked two distinctive narration matches"
-            )
+            if plan.get("collage_broll"):
+                # Collages are generated for an exact scene id from a metaphor
+                # grounded in that scene's narration. They do not pass through
+                # the public-footage matcher, so audit the metaphor directly
+                # instead of requiring metadata that only downloaded footage
+                # owns.
+                match_terms = sorted(
+                    _terms(scene.get("text", ""))
+                    & _terms(plan.get("collage_metaphor", ""))
+                )
+                grounded = (
+                    bool((plan.get("collage_qa") or {}).get("passed"))
+                    and len(match_terms) >= 2
+                )
+                reason = (
+                    f"collage metaphor matched on {', '.join(match_terms)}"
+                    if grounded
+                    else "collage metaphor lacked two narration matches or media QA"
+                )
+            else:
+                match_terms = plan.get("footage_match_terms") or []
+                script_match_terms = plan.get("footage_script_match_terms")
+                overflow_match_terms = plan.get("footage_overflow_match_terms") or []
+                script_grounded = (
+                    script_match_terms is None
+                    or len(script_match_terms) >= 2
+                    or len(overflow_match_terms) >= 2
+                )
+                grounded = (
+                    grounded
+                    and len(match_terms) >= 2
+                    and script_grounded
+                    and float(plan.get("footage_confidence") or 0) >= 0.65
+                )
+                reason = (
+                    f"footage matched on {', '.join(match_terms)}"
+                    if grounded
+                    else "footage lacked two distinctive narration matches"
+                )
         results.append(
             {
                 "id": scene["id"],

@@ -386,6 +386,30 @@ def test_visual_grounding_report_requires_every_scene_and_grounded_footage():
     assert report["passed"] is False
 
 
+def test_visual_grounding_report_audits_collage_metaphor_and_media_qa():
+    data = board(1)
+    data["scenes"][0]["text"] = (
+        "An old brick mobile phone becomes the shape of the new tower."
+    )
+    plans = visual_plan.fallback_plan(data)
+    plans[0].update(
+        {
+            "archetype": "footage",
+            "collage_broll": True,
+            "collage_metaphor": "A brick mobile phone rises like a tower.",
+            "collage_qa": {"passed": True},
+        }
+    )
+
+    report = visual_plan.visual_grounding_report(plans, data)
+
+    assert report["passed"] is True
+    assert "brick" in report["scenes"][0]["reason"]
+
+    plans[0]["collage_qa"] = {"passed": False}
+    assert visual_plan.visual_grounding_report(plans, data)["passed"] is False
+
+
 def test_outro_plan_is_spine_owned():
     data = board(1)
     outro = visual_plan.outro_plan(data)

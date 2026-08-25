@@ -831,8 +831,8 @@ def _render_footage(plan: ScenePlan) -> str:
     accent = accent_hex(plan.accent, plan.theme)
     if plan.footage_kind == "video":
         # Public footage may loop to cover a longer narration beat. Generated
-        # paper-collage motion is a one-pass assembly: once it reaches the end,
-        # the browser keeps the completed last frame visible for the scene.
+        # paper-collage media is pre-extended by cloning its completed last
+        # frame to the exact scene duration, so it must never loop.
         loop_attribute = "" if plan.collage_broll else " loop"
         media = (
             f'      <video id="{plan.id}-media" class="clip media" src="{_esc(plan.footage_src)}" '

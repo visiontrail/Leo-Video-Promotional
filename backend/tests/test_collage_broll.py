@@ -194,8 +194,12 @@ def test_generate_falls_back_locally_when_web_video_fails(tmp_path: Path):
         raw.write_bytes(b"raw")
         return raw, "https://gemini.google.com/videos/test"
 
-    async def normalize(_raw, item_dir, _frame, target_duration):
-        final = collage_broll._final_clip_path(item_dir, target_duration)
+    async def normalize(
+        _raw, item_dir, _frame, target_duration, playback_duration=None
+    ):
+        final = collage_broll._final_clip_path(
+            item_dir, playback_duration or target_duration
+        )
         final.write_bytes(b"final")
         return final
 
@@ -259,8 +263,12 @@ def test_generate_falls_back_locally_when_web_still_fails(tmp_path: Path):
         raw.write_bytes(b"local")
         return raw
 
-    async def normalize(_raw, item_dir, _frame, target_duration):
-        final = collage_broll._final_clip_path(item_dir, target_duration)
+    async def normalize(
+        _raw, item_dir, _frame, target_duration, playback_duration=None
+    ):
+        final = collage_broll._final_clip_path(
+            item_dir, playback_duration or target_duration
+        )
         final.write_bytes(b"final")
         return final
 
@@ -383,3 +391,25 @@ def test_normalize_trims_without_replaying_the_source(tmp_path: Path):
     assert "-stream_loop" not in command
     assert command[command.index("-t") + 1] == str(target_duration)
     assert final.name == "final-6.25s-noaudio.mp4"
+
+
+def test_normalize_holds_last_frame_until_longer_scene_ends(tmp_path: Path):
+    raw = tmp_path / "gemini.mp4"
+    raw.write_bytes(b"video")
+
+    with patch.object(collage_broll, "_media_command", AsyncMock()) as media_command:
+        final = asyncio.run(
+            collage_broll._normalize_video(
+                raw,
+                tmp_path,
+                LANDSCAPE,
+                8.0,
+                17.3,
+            )
+        )
+
+    command = media_command.await_args.args[0]
+    filters = command[command.index("-vf") + 1]
+    assert "tpad=stop_mode=clone:stop_duration=9.300" in filters
+    assert command[command.index("-t") + 1] == "17.3"
+    assert final.name == "final-17.3s-noaudio.mp4"

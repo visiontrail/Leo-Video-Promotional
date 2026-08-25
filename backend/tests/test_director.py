@@ -196,3 +196,47 @@ def test_untouched_drafts_are_not_counted_as_authored(tmp_path, monkeypatch):
     assert outcome.authored == []
     assert outcome.rejected == ["scene-01"]
     assert outcome.failures
+
+
+def test_local_model_director_crews_queue_by_config(tmp_path, monkeypatch):
+    plans = [
+        scene_kit.ScenePlan(id=f"scene-{index:02d}", duration=8.0, headline="Draft")
+        for index in range(1, 4)
+    ]
+    assembler.write_scene_files(tmp_path, plans)
+    storyboard = {
+        "title": "T",
+        "scenes": [
+            {"id": plan.id, "text": "A concrete scene.", "duration": 8.0}
+            for plan in plans
+        ],
+    }
+    visual_plans = [{"id": plan.id} for plan in plans]
+    active = 0
+    maximum_active = 0
+
+    async def fake_agent(*args, **kwargs):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return (list(args[2]), None)
+
+    monkeypatch.setattr(director, "SCENES_PER_AGENT", 1)
+    monkeypatch.setattr(director, "_run_agent", fake_agent)
+    monkeypatch.setattr(director.config, "DIRECTOR_MAX_CONCURRENT_AGENTS", 1)
+    monkeypatch.setattr(
+        "backend.pipeline.agent.build_agent_env", lambda *a, **k: {}, raising=False
+    )
+
+    asyncio.run(
+        director.direct_scenes(
+            tmp_path,
+            storyboard,
+            visual_plans,
+            plans,
+        )
+    )
+
+    assert maximum_active == 1

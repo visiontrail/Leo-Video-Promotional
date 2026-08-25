@@ -366,6 +366,16 @@ DIRECTOR_ENABLED = _env_bool("DIRECTOR_ENABLED", "1")
 # Cap how many scenes are handed to agents (0 = no cap). Each crew is a `claude`
 # CLI process and a provider round-trip, so this is the cost/latency dial.
 DIRECTOR_MAX_SCENES = int(os.getenv("DIRECTOR_MAX_SCENES", "0"))
+# Local thinking models commonly serialize requests and can take several
+# minutes before the first token during working hours. Queue director crews by
+# default so a request's timeout measures its own provider work, not time spent
+# behind other crews. Remote/high-throughput deployments may raise this.
+DIRECTOR_MAX_CONCURRENT_AGENTS = max(
+    1, int(os.getenv("DIRECTOR_MAX_CONCURRENT_AGENTS", "1"))
+)
+# A director crew may make multiple model turns while writing six scene files.
+# The unattended pipeline values eventual completion over interactive latency.
+DIRECTOR_AGENT_TIMEOUT = max(60, int(os.getenv("DIRECTOR_AGENT_TIMEOUT", "3600")))
 # Run `hyperframes inspect` before the render and let the agents repair the
 # layout failures it reports. It drives headless Chrome over the timeline, so it
 # costs a couple of minutes on a long episode; turning it off only skips the

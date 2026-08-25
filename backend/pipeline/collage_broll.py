@@ -646,15 +646,27 @@ async def _normalize_video(
     raw: Path,
     item_dir: Path,
     frame: FrameSpec,
-    target_duration: float,
+    motion_duration: float,
+    playback_duration: float | None = None,
 ) -> Path:
-    """Trim and normalize a generated clip without replaying source frames."""
-    final = _final_clip_path(item_dir, target_duration)
+    """Normalize one-pass motion, then hold its last frame for the full scene."""
+    playback_duration = max(
+        motion_duration,
+        _seconds(playback_duration, motion_duration),
+    )
+    final = _final_clip_path(item_dir, playback_duration)
+    hold_duration = max(0.0, playback_duration - motion_duration)
+    filters = (
+        f"scale={frame.media_width}:{frame.media_height}:"
+        "force_original_aspect_ratio=increase,"
+        f"crop={frame.media_width}:{frame.media_height},fps={CLIP_FPS}"
+    )
+    if hold_duration > 1 / CLIP_FPS:
+        filters += f",tpad=stop_mode=clone:stop_duration={hold_duration:.3f}"
     await _media_command(
         [
             "ffmpeg", "-y", "-i", str(raw),
-            "-t", str(target_duration), "-vf",
-            f"scale={frame.media_width}:{frame.media_height}:force_original_aspect_ratio=increase,crop={frame.media_width}:{frame.media_height},fps={CLIP_FPS}",
+            "-t", str(playback_duration), "-vf", filters,
             "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(final),
         ],
         timeout=300,
@@ -666,6 +678,8 @@ async def probe_video(
     path: Path,
     frame: FrameSpec,
     target_duration: float,
+    *,
+    motion_duration: float | None = None,
 ) -> dict[str, Any]:
     process = await asyncio.create_subprocess_exec(
         "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path),
@@ -682,13 +696,17 @@ async def probe_video(
     rate = str(stream.get("avg_frame_rate") or "0/1").split("/")
     fps = float(rate[0]) / max(1.0, float(rate[1]))
     duration = float(data.get("format", {}).get("duration") or stream.get("duration") or 0)
+    verified_motion_duration = min(
+        target_duration,
+        max(1 / CLIP_FPS, _seconds(motion_duration, target_duration)),
+    )
     motion = await _probe_motion(
         path,
         width=int(stream.get("width") or 0),
         height=int(stream.get("height") or 0),
-        duration_seconds=target_duration,
+        duration_seconds=verified_motion_duration,
     )
-    required_motion_seconds = min(4.0, max(1.0, target_duration * 0.5))
+    required_motion_seconds = min(4.0, max(1.0, verified_motion_duration * 0.5))
     checks = {
         "dimensions": (stream.get("width"), stream.get("height")) == (frame.media_width, frame.media_height),
         "duration": abs(duration - target_duration) <= 0.15,
@@ -706,6 +724,10 @@ async def probe_video(
         "height": stream.get("height"),
         "duration": round(duration, 3),
         "target_duration": round(target_duration, 3),
+        "motion_duration": round(verified_motion_duration, 3),
+        "held_last_frame_seconds": round(
+            max(0.0, target_duration - verified_motion_duration), 3
+        ),
         "fps": round(fps, 3),
         "audio_streams": len(audio),
         "motion": motion,
@@ -889,6 +911,10 @@ async def generate_collage_broll(
     for index, spec in enumerate(specs, start=1):
         scene_id = spec["scene_id"]
         target_duration = _seconds(spec.get("target_duration_seconds"), 8.0)
+        playback_duration = max(
+            target_duration,
+            _seconds(spec.get("script_duration_seconds"), target_duration),
+        )
         item_dir = root / f"{index:02d}-{scene_id}"
         item_dir.mkdir(parents=True, exist_ok=True)
         still_prompt = image_prompt(spec, frame)
@@ -906,6 +932,7 @@ async def generate_collage_broll(
             "gemini_url": "",
             "script_duration_seconds": spec["script_duration_seconds"],
             "target_duration_seconds": target_duration,
+            "playback_duration_seconds": playback_duration,
             "playback_policy": "play_once_then_hold_last_frame",
             "qa": {},
             "generation_warnings": [],
@@ -914,9 +941,14 @@ async def generate_collage_broll(
         manifest["items"].append(item)
         _write_json(manifest_path, manifest)
         try:
-            cached_final = _final_clip_path(item_dir, target_duration)
+            cached_final = _final_clip_path(item_dir, playback_duration)
             if cached_final.is_file():
-                cached_qa = await probe_video(cached_final, frame, target_duration)
+                cached_qa = await probe_video(
+                    cached_final,
+                    frame,
+                    playback_duration,
+                    motion_duration=target_duration,
+                )
                 if cached_qa["passed"]:
                     # Rebuild the sheet because an existing filename may have
                     # been produced for an older fixed-duration clip.
@@ -942,6 +974,59 @@ async def generate_collage_broll(
                     _log(log, f"Collage B-roll {index}/{len(specs)}: reused verified clip for {scene_id}")
                     _write_json(manifest_path, manifest)
                     continue
+            # Migrate clips generated by the earlier one-play contract without
+            # spending another web-generation turn. Their verified motion is
+            # preserved exactly and the completed last frame is cloned until
+            # the narration scene ends.
+            cached_motion = _final_clip_path(item_dir, target_duration)
+            if cached_motion.is_file() and cached_motion != cached_final:
+                cached_motion_qa = await probe_video(
+                    cached_motion,
+                    frame,
+                    target_duration,
+                    motion_duration=target_duration,
+                )
+                if cached_motion_qa["passed"]:
+                    migrated = await _normalize_video(
+                        cached_motion,
+                        item_dir,
+                        frame,
+                        target_duration,
+                        playback_duration,
+                    )
+                    migrated_qa = await probe_video(
+                        migrated,
+                        frame,
+                        playback_duration,
+                        motion_duration=target_duration,
+                    )
+                    if migrated_qa["passed"]:
+                        migrated_sheet = await _contact_sheet(
+                            migrated, item_dir, frame, target_duration
+                        )
+                        cached_still = item_dir / "frames" / "last-frame.jpg"
+                        item.update(
+                            {
+                                "status": "ready",
+                                "still_path": (
+                                    str(cached_still.relative_to(task_dir))
+                                    if cached_still.is_file()
+                                    else ""
+                                ),
+                                "video_path": str(migrated.relative_to(task_dir)),
+                                "contact_sheet": str(migrated_sheet.relative_to(task_dir)),
+                                "still_provider": "existing_verified_artifact",
+                                "video_provider": "existing_verified_artifact_with_last_frame_hold",
+                                "qa": migrated_qa,
+                            }
+                        )
+                        _log(
+                            log,
+                            f"Collage B-roll {index}/{len(specs)}: extended verified "
+                            f"{scene_id} motion to its {playback_duration:.3f}s scene",
+                        )
+                        _write_json(manifest_path, manifest)
+                        continue
             _log(log, f"Collage B-roll {index}/{len(specs)}: generating {frame.aspect_ratio} still for {scene_id}")
             try:
                 still, chatgpt_url = await _generate_still(still_prompt, item_dir)
@@ -971,8 +1056,19 @@ async def generate_collage_broll(
                 )
                 gemini_url = ""
                 item["video_provider"] = "deterministic_local_paper_assembly"
-            final = await _normalize_video(raw, item_dir, frame, target_duration)
-            qa = await probe_video(final, frame, target_duration)
+            final = await _normalize_video(
+                raw,
+                item_dir,
+                frame,
+                target_duration,
+                playback_duration,
+            )
+            qa = await probe_video(
+                final,
+                frame,
+                playback_duration,
+                motion_duration=target_duration,
+            )
             if not qa["passed"]:
                 raise RuntimeError(f"normalized collage clip failed QA: {qa['checks']}")
             sheet = await _contact_sheet(final, item_dir, frame, target_duration)
@@ -1038,6 +1134,9 @@ def attach_collage(plans: list[dict], manifest: dict | None, task_dir: Path) -> 
                 "collage_qa": item.get("qa", {}),
                 "collage_script_duration_seconds": item.get("script_duration_seconds"),
                 "collage_target_duration_seconds": item.get("target_duration_seconds"),
+                "collage_playback_duration_seconds": item.get(
+                    "playback_duration_seconds"
+                ),
                 "collage_playback_policy": "play_once_then_hold_last_frame",
             }
         )

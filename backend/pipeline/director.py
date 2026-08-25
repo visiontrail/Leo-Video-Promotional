@@ -38,15 +38,9 @@ LogCallback = Callable[[str], None]
 # that it can shape continuity across a run of scenes.
 SCENES_PER_AGENT = 6
 
-# Concurrent agents. Each spawns a `claude` CLI process, so this is a real
-# resource knob — the box also has to run headless Chrome for the render.
-MAX_CONCURRENT_AGENTS = 3
-
 # Turns per agent: read the brief, write N scenes, self-check. Generous, since
 # the agent writes one file per tool call.
 MAX_TURNS = 40
-
-AGENT_TIMEOUT = 900
 
 # Structural gate. Each pattern must appear in an authored scene file.
 _FORBIDDEN = (
@@ -361,8 +355,9 @@ async def _run_agent(
         log(f"Director crew {batch_no}/{batch_total}: {label} {', '.join(ids)}")
 
     turns = 0
+    timeout = max(60, int(config.DIRECTOR_AGENT_TIMEOUT))
     try:
-        async with asyncio.timeout(AGENT_TIMEOUT):
+        async with asyncio.timeout(timeout):
             async for message in query(prompt=prompt, options=options):
                 if isinstance(message, AssistantMessage):
                     turns += 1
@@ -373,7 +368,7 @@ async def _run_agent(
                     detail = "; ".join(str(e) for e in (message.errors or [message.result or "?"]))
                     return ids, f"crew {batch_no} reported an error: {detail}"
     except TimeoutError:
-        return ids, f"crew {batch_no} timed out after {AGENT_TIMEOUT}s"
+        return ids, f"crew {batch_no} timed out after {timeout}s"
     except Exception as exc:  # noqa: BLE001 - a crew failure must not sink the render
         tail = f" | stderr: {' '.join(stderr_lines)[-400:]}" if stderr_lines else ""
         return ids, f"crew {batch_no} failed: {exc.__class__.__name__}: {exc}{tail}"
@@ -425,14 +420,16 @@ async def direct_scenes(
     env = build_agent_env(model, endpoint, api_key)
     resolved_model = (config.ANTHROPIC_MODEL or model or "").strip() or None
     outcome.agents_run = len(batches)
+    concurrency = max(1, int(config.DIRECTOR_MAX_CONCURRENT_AGENTS))
 
     if log:
         log(
             f"Director: {len(pairs)} scenes across {len(batches)} agent crew(s), "
-            f"{MAX_CONCURRENT_AGENTS} at a time (model={resolved_model or 'default'})"
+            f"{concurrency} at a time, {config.DIRECTOR_AGENT_TIMEOUT}s per crew "
+            f"(model={resolved_model or 'default'})"
         )
 
-    gate = asyncio.Semaphore(MAX_CONCURRENT_AGENTS)
+    gate = asyncio.Semaphore(concurrency)
 
     async def run(batch_no: int, batch: Sequence[tuple[dict, dict]]):
         async with gate:
