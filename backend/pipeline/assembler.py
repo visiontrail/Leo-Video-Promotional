@@ -39,6 +39,46 @@ TRACK_CAPTION = 4
 TRACK_CHROME = 5
 TRACK_CHARACTER = 6
 
+# HyperFrames statically discovers/extracts these videos before it opens the
+# browser capture pages. During capture, the engine injects the extracted JPEG
+# for each active video. Leaving the original ``src`` attached is harmful: its
+# runtime changes ``preload`` back to ``auto`` while seeking, enough concurrent
+# media requests consume Chrome's per-origin connection pool, and the injected
+# JPEG's ``img.decode()`` never returns. Keep the video elements (the injector
+# addresses them by id), but detach only their network sources in automation.
+# Normal interactive preview is deliberately untouched.
+CAPTURE_VIDEO_SOURCE_GUARD = """    <script>
+      (function () {
+        if (!navigator.webdriver) return;
+        const detachVideoSources = (root) => {
+          const videos = [];
+          if (root instanceof HTMLVideoElement) videos.push(root);
+          if (root && typeof root.querySelectorAll === "function") {
+            videos.push(...root.querySelectorAll("video"));
+          }
+          for (const video of videos) {
+            if (video.dataset.hfCaptureSourceDetached === "true") continue;
+            video.dataset.hfCaptureSourceDetached = "true";
+            video.pause();
+            video.removeAttribute("src");
+            for (const source of video.querySelectorAll("source")) {
+              source.removeAttribute("src");
+            }
+            video.load();
+          }
+        };
+        new MutationObserver((records) => {
+          for (const record of records) {
+            for (const node of record.addedNodes) {
+              if (node instanceof Element) detachVideoSources(node);
+            }
+          }
+        }).observe(document.documentElement, { childList: true, subtree: true });
+        document.addEventListener("DOMContentLoaded", () => detachVideoSources(document), { once: true });
+      })();
+    </script>
+"""
+
 LINT_TIMEOUT = 180
 # `inspect` drives the composition in headless Chrome and samples the timeline,
 # so it costs real time on a long episode — but it is the only check that sees
@@ -366,7 +406,7 @@ def build_spine(
     <meta charset="UTF-8" />
     <meta name="viewport" content="width={frame.width}, height={frame.height}" />
     <style>{_spine_css(theme, frame)}    </style>
-  </head>
+{CAPTURE_VIDEO_SOURCE_GUARD}  </head>
   <body>
     <div id="root" data-composition-id="root" data-start="0" data-duration="{total}"
          data-width="{frame.width}" data-height="{frame.height}"

@@ -46,6 +46,16 @@ def test_spine_has_no_remote_asset_references():
     assert "https://" not in html and "http://" not in html
 
 
+def test_spine_detaches_original_video_sources_only_in_browser_capture():
+    html = assembler.build_spine(board([]), audio_src="audio/a.wav", mounts=[])
+
+    assert "if (!navigator.webdriver) return;" in html
+    assert 'root.querySelectorAll("video")' in html
+    assert 'video.removeAttribute("src")' in html
+    assert "video.load();" in html
+    assert "new MutationObserver" in html
+
+
 def test_spine_omits_brand_overlay_by_default():
     html = assembler.build_spine(board([]), audio_src="audio/a.wav", mounts=[])
 
