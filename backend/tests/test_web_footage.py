@@ -258,6 +258,8 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(web_footage, "_yt_dlp_bin", return_value="yt-dlp"),
+                patch.object(config, "YTDLP_COOKIES", ""),
+                patch.object(config, "YTDLP_COOKIES_FROM_BROWSER", "chrome"),
                 patch.object(web_footage, "_run_command", AsyncMock(side_effect=fake_run)) as runner,
             ):
                 _path, sectioned = await web_footage._download_youtube(
@@ -268,6 +270,9 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sectioned)
         self.assertEqual(
             command[command.index("--download-sections") + 1], "*66.000-73.000"
+        )
+        self.assertEqual(
+            command[command.index("--cookies-from-browser") + 1], "chrome"
         )
         self.assertNotIn("bestaudio", command[command.index("-f") + 1])
 

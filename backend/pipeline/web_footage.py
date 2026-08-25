@@ -396,7 +396,12 @@ async def _download_youtube(
     sectioned = float(candidate.get("duration_seconds") or 0) > 0
     command = [
         _yt_dlp_bin(),
-        *_yt_dlp_common_args(include_cookies=False),
+        # The app launcher configures a browser cookie source specifically so
+        # YouTube can select an accessible player/manifest.  Anonymous
+        # section downloads frequently resolve to direct media URLs that
+        # reject FFmpeg with HTTP 403, even though the same candidate works
+        # through the signed-in HLS player selected with those cookies.
+        *_yt_dlp_common_args(include_cookies=True),
         "--no-playlist",
         "-f",
         "bestvideo[height<=720][ext=mp4]/bestvideo[height<=720]/best[height<=720]",
