@@ -10,6 +10,23 @@ from backend.pipeline.opencli import OpenCLIResult
 
 
 class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scout_search_depth_scales_with_requested_inventory(self):
+        search = AsyncMock(return_value=[])
+
+        with TemporaryDirectory() as directory, patch.object(
+            web_footage, "search_youtube", search
+        ):
+            await web_footage.supplement_web_footage(
+                task_dir=Path(directory),
+                manifest={"provider_id": "opencli-web", "clips": [], "errors": []},
+                query_plan=[{"query": "city skyline", "purpose": "Show the city"}],
+                target_total=8,
+                orientation="landscape",
+                script="The city grew across the horizon.",
+            )
+
+        search.assert_awaited_once_with("city skyline", limit=8)
+
     async def test_non_youtube_candidate_is_rejected(self):
         candidate = {
             "platform": "bilibili",
@@ -274,7 +291,9 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             command[command.index("--cookies-from-browser") + 1], "chrome"
         )
-        self.assertNotIn("bestaudio", command[command.index("-f") + 1])
+        format_selector = command[command.index("-f") + 1]
+        self.assertTrue(format_selector.startswith("best[protocol^=m3u8]"))
+        self.assertNotIn("bestaudio", format_selector)
 
     async def test_rejected_candidate_makes_scout_try_next_search_result(self):
         rejected = {

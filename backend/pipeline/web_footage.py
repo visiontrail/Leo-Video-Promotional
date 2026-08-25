@@ -404,6 +404,10 @@ async def _download_youtube(
         *_yt_dlp_common_args(include_cookies=True),
         "--no-playlist",
         "-f",
+        # Prefer the signed-in HLS manifest.  Some videos still expose an
+        # anonymous MP4-only format alongside it, but that direct media URL
+        # returns 403 when FFmpeg opens a requested time section.
+        "best[protocol^=m3u8][height<=720]/"
         "bestvideo[height<=720][ext=mp4]/bestvideo[height<=720]/best[height<=720]",
         "-o",
         str(template),
@@ -598,6 +602,11 @@ async def supplement_web_footage(
     manifest["updated_at"] = _now()
     _write_manifest(manifest_file, manifest)
 
+    # A strict N-clip delivery gate needs enough candidates to survive
+    # unsuitable visuals and provider-specific download failures.  Keep the
+    # small-task floor, scale with the requested inventory, and cap the search
+    # so one difficult query cannot make an automated run unbounded.
+    candidate_limit = max(4, min(12, target_total))
     for shot in query_plan:
         if len(manifest.get("clips", [])) >= target_total:
             break
@@ -606,7 +615,7 @@ async def supplement_web_footage(
             continue
         _emit(log, f"Web footage: searching YouTube for '{query}'")
         try:
-            results = await search_youtube(query)
+            results = await search_youtube(query, limit=candidate_limit)
         except Exception as exc:  # noqa: BLE001 - record and continue with the next shot
             manifest.setdefault("errors", []).append(
                 {"query": query, "stage": "youtube-search", "message": str(exc)}
