@@ -88,8 +88,15 @@ def test_portrait_render_command_uses_task_resolution(tmp_path):
 
 
 def test_render_command_allows_long_browser_capture(tmp_path, monkeypatch):
-    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 900_000)
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 1_800_000)
 
     command = composer._build_render_command(tmp_path, tmp_path / "video.mp4")
 
-    assert command[command.index("--protocol-timeout") + 1] == "900000"
+    assert command[command.index("--protocol-timeout") + 1] == "1800000"
+    assert composer._render_stall_timeout() == 1_860
+
+
+def test_render_stall_timeout_never_preempts_protocol_timeout(monkeypatch):
+    monkeypatch.setattr(composer.config, "RENDER_PROTOCOL_TIMEOUT_MS", 30_001)
+
+    assert composer._render_stall_timeout() == composer.RENDER_STALL_TIMEOUT_FLOOR

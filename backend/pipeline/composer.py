@@ -52,10 +52,19 @@ SILENCE_TIMEOUT = 120
 # kill a slow-but-live render, only a genuinely wedged one.
 RENDER_SECONDS_PER_FRAME = 1.5
 RENDER_TIMEOUT_FLOOR = 900  # never below 15 min, regardless of how short the clip is
-# The real hang detector: HyperFrames reports capture progress continuously, so
-# going silent for this long means it is wedged rather than merely slow. Warmup
-# (Chrome launch, first-frame compile) is the longest legitimate quiet stretch.
-RENDER_STALL_TIMEOUT = 600
+# The outer hang detector must never expire before HyperFrames' own CDP
+# operation budget. Long screenshot captures emit no output until the single
+# Runtime.callFunctionOn returns, so add a grace minute beyond that budget.
+RENDER_STALL_TIMEOUT_FLOOR = 600
+RENDER_STALL_GRACE_SECONDS = 60
+
+
+def _render_stall_timeout() -> int:
+    protocol_seconds = (config.RENDER_PROTOCOL_TIMEOUT_MS + 999) // 1000
+    return max(
+        RENDER_STALL_TIMEOUT_FLOOR,
+        protocol_seconds + RENDER_STALL_GRACE_SECONDS,
+    )
 
 
 def _narration_completeness_failures(alignment: dict) -> list[str]:
@@ -654,11 +663,12 @@ async def compose_video(
     video_path = output_dir_path / "video.mp4"
     total_frames = max(1, round(float(board["total_duration"]) * config.RENDER_FPS))
     render_timeout = max(RENDER_TIMEOUT_FLOOR, int(300 + total_frames * RENDER_SECONDS_PER_FRAME))
+    render_stall_timeout = _render_stall_timeout()
     emit(
         f"Rendering ~{total_frames} frames "
         f"({board['total_duration']:.0f}s @ {config.RENDER_FPS}fps, {config.RENDER_QUALITY}, "
         f"{config.RENDER_WORKERS} worker(s)); render timeout {render_timeout}s, "
-        f"stall timeout {RENDER_STALL_TIMEOUT}s"
+        f"stall timeout {render_stall_timeout}s"
     )
 
     render_command = _build_render_command(output_dir_path, video_path, frame)
@@ -669,7 +679,7 @@ async def compose_video(
         log=log,
         cwd=config.HYPERFRAME_DIR,
         timeout=render_timeout,
-        stall_timeout=RENDER_STALL_TIMEOUT,
+        stall_timeout=render_stall_timeout,
     )
 
     if returncode != 0:

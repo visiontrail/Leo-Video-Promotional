@@ -380,7 +380,7 @@ RENDER_WORKERS = os.getenv("RENDER_WORKERS", "2")      # integer or "auto"
 # composition. Its five-minute default is shorter than a normal eight-minute
 # episode render on this host, so pass an unattended-job-sized budget
 # explicitly instead of letting a healthy capture die at exactly 300 seconds.
-RENDER_PROTOCOL_TIMEOUT_MS = int(os.getenv("RENDER_PROTOCOL_TIMEOUT_MS", "900000"))
+RENDER_PROTOCOL_TIMEOUT_MS = int(os.getenv("RENDER_PROTOCOL_TIMEOUT_MS", "1800000"))
 RENDER_RESOLUTION = os.getenv("RENDER_RESOLUTION", "landscape")  # 1920x1080
 
 OUTPUTS_DIR = resolve_project_path(os.getenv("OUTPUTS_DIR", "outputs"))

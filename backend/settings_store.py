@@ -467,9 +467,10 @@ SPECS: tuple[SettingSpec, ...] = (
         "RENDER_PROTOCOL_TIMEOUT_MS", "render", "Browser protocol timeout", "int",
         unit="milliseconds", minimum=30000, maximum=86400000,
         description="Maximum wait for one Chrome DevTools operation during a "
-                    "long frame-capture pass. The 15-minute default prevents "
+                    "long frame-capture pass. The 30-minute default prevents "
                     "healthy multi-minute renders from dying at the CLI's "
-                    "five-minute default.",
+                    "five-minute default; the outer stall watchdog is always "
+                    "kept at least one minute longer.",
     ),
     # ── Direction ────────────────────────────────────────────────────────
     SettingSpec(
