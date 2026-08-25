@@ -118,6 +118,24 @@ def _scene_choices(storyboard: dict, count: int, force_opening: bool) -> list[di
     return sorted(selected, key=lambda scene: float(scene.get("start") or 0))
 
 
+def _without_reserved_scenes(
+    storyboard: dict,
+    reserved_scene_ids: set[str] | None,
+) -> dict:
+    """Keep generated collage concepts off scenes already owned by public footage."""
+    reserved = {str(scene_id) for scene_id in (reserved_scene_ids or set())}
+    if not reserved:
+        return storyboard
+    return {
+        **storyboard,
+        "scenes": [
+            scene
+            for scene in storyboard.get("scenes") or []
+            if str(scene.get("id") or "") not in reserved
+        ],
+    }
+
+
 def _fallback_spec(scene: dict, index: int) -> dict[str, Any]:
     text = str(scene.get("text") or "").strip()
     meaning = re.split(r"(?<=[.!?。！？])\s*", text)[0][:220] or "A hidden process becomes visible"
@@ -780,6 +798,7 @@ async def generate_collage_broll(
     provider_id: int | None = None,
     ai_endpoint: str | None = None,
     ai_model: str | None = None,
+    reserved_scene_ids: set[str] | None = None,
     log: LogCallback | None = None,
 ) -> dict[str, Any]:
     """Run the former three-gate workflow automatically, one web job at a time."""
@@ -806,13 +825,15 @@ async def generate_collage_broll(
         "items": [],
         "errors": [],
     }
+    available_storyboard = _without_reserved_scenes(storyboard, reserved_scene_ids)
     specs_path = root / "visual-spec.json"
     cached_specs: list[dict[str, Any]] = []
     if specs_path.is_file():
         try:
             payload = json.loads(specs_path.read_text(encoding="utf-8"))
             valid_scene_ids = {
-                str(scene.get("id") or "") for scene in storyboard.get("scenes") or []
+                str(scene.get("id") or "")
+                for scene in available_storyboard.get("scenes") or []
             }
             if (
                 isinstance(payload, list)
@@ -822,7 +843,10 @@ async def generate_collage_broll(
                     or (
                         bool(payload)
                         and str(payload[0].get("scene_id") or "")
-                        == str((storyboard.get("scenes") or [{}])[0].get("id") or "")
+                        == str(
+                            (available_storyboard.get("scenes") or [{}])[0].get("id")
+                            or ""
+                        )
                     )
                 )
                 and all(
@@ -840,7 +864,7 @@ async def generate_collage_broll(
         _log(log, f"Collage B-roll: reusing {len(specs)} existing visual spec(s)")
     else:
         specs = await plan_specs(
-            storyboard,
+            available_storyboard,
             count=count,
             force_opening=force_opening,
             frame=frame,
@@ -850,7 +874,8 @@ async def generate_collage_broll(
             log=log,
         )
     scenes_by_id = {
-        str(scene.get("id") or ""): scene for scene in storyboard.get("scenes") or []
+        str(scene.get("id") or ""): scene
+        for scene in available_storyboard.get("scenes") or []
     }
     specs = [
         _with_scene_timing(spec, scenes_by_id[str(spec.get("scene_id") or "")])
@@ -980,7 +1005,6 @@ async def generate_collage_broll(
 def attach_collage(plans: list[dict], manifest: dict | None, task_dir: Path) -> int:
     """Promote successful generated items to clean, full-bleed scene plates."""
     by_id = {plan.get("id"): plan for plan in plans}
-    plan_positions = {plan.get("id"): index for index, plan in enumerate(plans)}
     occupied = {
         str(plan.get("id"))
         for plan in plans
@@ -997,21 +1021,9 @@ def attach_collage(plans: list[dict], manifest: dict | None, task_dir: Path) -> 
         if not plan or not raw or not path.is_file():
             continue
         if preferred_id in occupied:
-            preferred_position = plan_positions.get(preferred_id, 0)
-            candidates = [
-                candidate
-                for candidate in plans
-                if str(candidate.get("id") or "") not in occupied
-            ]
-            if not candidates:
-                continue
-            plan = min(
-                candidates,
-                key=lambda candidate: abs(
-                    plan_positions.get(str(candidate.get("id") or ""), 0)
-                    - preferred_position
-                ),
-            )
+            item["placement_status"] = "conflict"
+            item["placement_error"] = "target scene is already occupied by public footage"
+            continue
         placed_scene_id = str(plan.get("id") or "")
         plan.update(
             {

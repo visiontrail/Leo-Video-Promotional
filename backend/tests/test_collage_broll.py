@@ -34,6 +34,19 @@ def test_scene_selection_forces_opening_and_spreads_the_rest():
     assert selected[-1]["id"] == "scene-06"
 
 
+def test_reserved_public_footage_scenes_are_removed_before_collage_planning():
+    available = collage_broll._without_reserved_scenes(
+        _board(5),
+        {"scene-01", "scene-03"},
+    )
+
+    assert [scene["id"] for scene in available["scenes"]] == [
+        "scene-02",
+        "scene-04",
+        "scene-05",
+    ]
+
+
 def test_prompts_follow_the_task_orientation_and_keep_media_clean():
     spec = collage_broll._fallback_spec(_board(1)["scenes"][0], 0)
 
@@ -120,7 +133,7 @@ def test_attach_collage_only_promotes_ready_existing_clips(tmp_path: Path):
     assert plans[1]["archetype"] == "topic"
 
 
-def test_attach_collage_rehomes_a_clip_instead_of_overwriting_public_footage(
+def test_attach_collage_rejects_a_conflict_instead_of_misplacing_the_clip(
     tmp_path: Path,
 ):
     clip = tmp_path / "collage_broll" / "clip.mp4"
@@ -146,10 +159,10 @@ def test_attach_collage_rehomes_a_clip_instead_of_overwriting_public_footage(
         ]
     }
 
-    assert collage_broll.attach_collage(plans, manifest, tmp_path) == 1
+    assert collage_broll.attach_collage(plans, manifest, tmp_path) == 0
     assert plans[0]["footage_src"] == "footage/public.mp4"
-    assert plans[1]["collage_broll"] is True
-    assert manifest["items"][0]["placed_scene_id"] == "scene-02"
+    assert plans[1]["archetype"] == "topic"
+    assert manifest["items"][0]["placement_status"] == "conflict"
 
 
 def test_generate_falls_back_locally_when_web_video_fails(tmp_path: Path):

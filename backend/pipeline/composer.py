@@ -351,7 +351,11 @@ async def compose_video(
 
     # Mirror to the task log (pipeline.log + LogPanel) when available, else the
     # module logger (start.sh log). Prefer the callback to avoid double-logging.
-    emit = lambda message: log(message) if log else logger.info(message)
+    def emit(message: str) -> None:
+        if log:
+            log(message)
+        else:
+            logger.info(message)
 
     # --- 1. Storyboard -----------------------------------------------------
     manifest_failures = _orpheus_manifest_failures(script_path, audio_path, tts_model)
@@ -431,6 +435,11 @@ async def compose_video(
     force_collage_opening = opening_style == "paper_collage"
     if collage_broll_enabled or force_collage_opening:
         requested_collages = collage_broll_count if collage_broll_enabled else 1
+        public_footage_scene_ids = {
+            str(plan.get("id") or "")
+            for plan in plans
+            if plan.get("archetype") == "footage" and not plan.get("collage_broll")
+        }
         collage_manifest = await collage_broll.generate_collage_broll(
             board,
             output_dir_path,
@@ -440,6 +449,7 @@ async def compose_video(
             provider_id=provider_id,
             ai_endpoint=ai_endpoint,
             ai_model=ai_model,
+            reserved_scene_ids=public_footage_scene_ids,
             log=emit,
         )
         collage_attached = collage_broll.attach_collage(
