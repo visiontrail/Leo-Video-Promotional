@@ -632,7 +632,9 @@ async def supplement_web_footage(
             )
             continue
 
-        excerpt = matching_script_excerpt(script, query)
+        purpose = str(shot.get("purpose") or "").strip()
+        excerpt_context = " ".join(part for part in (query, purpose) if part)
+        excerpt = matching_script_excerpt(script, excerpt_context)
         for candidate in candidates:
             source_page_url = str(candidate["source_page_url"])
             _emit(
@@ -645,7 +647,7 @@ async def supplement_web_footage(
                 rejected_candidates.append(
                     {
                         "query": query,
-                        "purpose": str(shot.get("purpose") or ""),
+                        "purpose": purpose,
                         "title": str(candidate.get("title") or ""),
                         "source_page_url": source_page_url,
                         "creator": str(candidate.get("creator") or ""),
@@ -714,7 +716,7 @@ async def supplement_web_footage(
             entry = {
                 "id": clip_id,
                 "query": query,
-                "purpose": str(shot.get("purpose") or ""),
+                "purpose": purpose,
                 **candidate,
                 "duration_seconds": round(trimmed["duration_seconds"], 3),
                 "source_duration_seconds": round(source_duration, 3),

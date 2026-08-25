@@ -10,6 +10,19 @@ from backend.pipeline.opencli import OpenCLIResult
 
 
 class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    def test_footage_purpose_disambiguates_script_excerpt(self):
+        script = (
+            "The Lunar New Year atmosphere in Kuala Lumpur filled every street. "
+            "Because Chinese communities in Malaysia also built Chinese New Villages."
+        )
+
+        excerpt = web_footage.matching_script_excerpt(
+            script,
+            "Chinese New Year lanterns Malaysia festive Lunar atmosphere streets",
+        )
+
+        self.assertTrue(excerpt.startswith("The Lunar New Year atmosphere"))
+
     async def test_scout_search_depth_scales_with_requested_inventory(self):
         search = AsyncMock(return_value=[])
 
@@ -363,6 +376,11 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
                 ) as analyzer,
                 patch.object(
                     web_footage,
+                    "matching_script_excerpt",
+                    wraps=web_footage.matching_script_excerpt,
+                ) as excerpt_matcher,
+                patch.object(
+                    web_footage,
                     "_download_youtube",
                     AsyncMock(side_effect=fake_download),
                 ) as downloader,
@@ -399,6 +417,9 @@ class WebFootageAnalysisTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(analyzer.await_count, 2)
+        excerpt_matcher.assert_called_once_with(
+            "The city grew across the horizon.", "city skyline Show the city"
+        )
         downloader.assert_awaited_once()
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["clips"][0]["source_page_url"], accepted["source_page_url"])
