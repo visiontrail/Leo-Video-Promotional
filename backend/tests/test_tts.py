@@ -327,6 +327,12 @@ class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
             ),
             "Nonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian.",
         )
+        self.assertEqual(
+            tts._orpheus_prompt_text(
+                "Nyonya cooking — that's Chinese and Malay, married together."
+            ),
+            "Nonya cooking — that's Chinese and Malay, married together.",
+        )
 
     def test_orpheus_prompt_pronounces_putien_without_changing_canonical_text(self):
         self.assertEqual(
