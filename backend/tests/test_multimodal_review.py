@@ -83,6 +83,79 @@ def test_missing_or_unsubstantiated_gemini_rows_fail_closed(tmp_path: Path):
     assert normalized["structure_valid"] is False
 
 
+def test_review_prompt_calibrates_single_midpoint_and_designed_cards():
+    prompt = multimodal_review._review_prompt(
+        "City story",
+        [
+            {
+                "id": "scene-01",
+                "scene": _scene(
+                    "scene-01",
+                    0,
+                    "A multi-sentence account of a city changing over twenty years.",
+                ),
+            }
+        ],
+    )
+
+    assert "85-94 means the core subject" in prompt
+    assert "One midpoint frame cannot depict every clause" in prompt
+    assert "illustration or text/data card qualifies" in prompt
+
+
+def test_match_verdict_without_issues_enforces_strong_match_floor(tmp_path: Path):
+    scene = _scene("scene-01", 0, "Lion dancers balance on high poles.")
+    normalized = multimodal_review.normalise_batch(
+        {
+            "image_received": True,
+            "reviews": [
+                {
+                    "id": "scene-01",
+                    "score": 68,
+                    "verdict": "match",
+                    "visual_summary": "Lion dancers balancing on high poles.",
+                    "alignment_reason": "Directly illustrates the narrated subject.",
+                    "issues": [],
+                }
+            ],
+        },
+        _frames(tmp_path, [scene]),
+        minimum_scene_score=70,
+    )
+
+    review = normalized["reviews"][0]
+    assert review["raw_score"] == 68
+    assert review["score"] == 85
+    assert review["score_calibrated"] is True
+    assert "strong-match floor" in review["score_calibration_reason"]
+
+
+def test_match_floor_does_not_hide_reported_issues(tmp_path: Path):
+    scene = _scene("scene-01", 0, "Gongxi Raya and Deparaya greetings.")
+    normalized = multimodal_review.normalise_batch(
+        {
+            "image_received": True,
+            "reviews": [
+                {
+                    "id": "scene-01",
+                    "score": 63,
+                    "verdict": "match",
+                    "visual_summary": "A lantern and crescent card.",
+                    "alignment_reason": "The festivals are symbolized.",
+                    "issues": ["The named greetings are not visible."],
+                }
+            ],
+        },
+        _frames(tmp_path, [scene]),
+        minimum_scene_score=70,
+    )
+
+    review = normalized["reviews"][0]
+    assert review["score"] == 63
+    assert review["score_calibrated"] is False
+    assert review["passed"] is False
+
+
 class ReviewVideoTests(unittest.IsolatedAsyncioTestCase):
     async def test_keyframe_extraction_retries_transient_failure(self):
         extract_once = AsyncMock(side_effect=[RuntimeError("busy"), None])

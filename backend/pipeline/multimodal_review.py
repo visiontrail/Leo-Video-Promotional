@@ -226,8 +226,16 @@ def _review_prompt(title: str, frames: list[dict]) -> str:
         '"alignment_reason":"why it matches or does not",'
         '"issues":["specific issue"],'
         '"suggested_visual":"replacement concept if score is below 70"}]}. '
-        "Use integer scores from 0 to 100. A score of 70 means clearly relevant; "
-        "85 means strong correspondence; 95+ means exceptionally literal and precise. "
+        "Use integer scores from 0 to 100 and apply this calibration literally: "
+        "95-100 means exceptionally literal and precise; 85-94 means the core subject, "
+        "setting, quantities, and visible claim correspond strongly with no substantive "
+        "contradiction; 70-84 means the frame is relevant but omits or weakly represents "
+        "at least one material core claim; below 70 means a subject mismatch, material "
+        "contradiction, or largely generic visual. One midpoint frame cannot depict every "
+        "clause or temporal beat in a multi-sentence scene, so do not penalize an otherwise "
+        "strong 85-94 match merely for that limitation. Do not reserve 85+ for photographic "
+        "realism: an illustration or text/data card qualifies when its visible message and "
+        "supporting imagery strongly represent the core narration without contradiction. "
         "Include every supplied scene id exactly once. If the attachment is absent or "
         "unreadable, set image_received to false and do not invent reviews."
     )
@@ -253,6 +261,24 @@ def _score(value: Any) -> int:
         return max(0, min(100, int(round(float(value)))))
     except (TypeError, ValueError):
         return 0
+
+
+def _calibrate_score(
+    raw_score: int,
+    gemini_verdict: str,
+    issues: list[str],
+    *,
+    substantiated: bool,
+) -> tuple[int, str]:
+    """Make numeric scores consistent with the reviewer's own rubric verdict."""
+    if not substantiated:
+        return 0, ""
+    verdict = gemini_verdict.strip().lower()
+    if verdict == "match" and not issues and raw_score < 85:
+        return 85, "match verdict with no reported issues requires the 85 strong-match floor"
+    if verdict == "mismatch" and raw_score >= 45:
+        return 44, "mismatch verdict cannot carry a partial-or-better numeric score"
+    return raw_score, ""
 
 
 def normalise_batch(
@@ -283,15 +309,25 @@ def normalise_batch(
         row = by_id.get(scene_id, {})
         visual_summary = str(row.get("visual_summary") or "").strip()
         alignment_reason = str(row.get("alignment_reason") or "").strip()
-        score = _score(row.get("score")) if image_received else 0
-        if not visual_summary or not alignment_reason:
-            score = 0
-        issues = row.get("issues") if isinstance(row.get("issues"), list) else []
+        raw_score = _score(row.get("score")) if image_received else 0
+        raw_issues = row.get("issues") if isinstance(row.get("issues"), list) else []
+        issues = [str(issue).strip()[:300] for issue in raw_issues if str(issue).strip()][:6]
+        gemini_verdict = str(row.get("verdict") or "").strip()
+        substantiated = bool(image_received and visual_summary and alignment_reason)
+        score, calibration_reason = _calibrate_score(
+            raw_score,
+            gemini_verdict,
+            issues,
+            substantiated=substantiated,
+        )
         reviews.append(
             {
                 "id": scene_id,
                 "timestamp": float(frame["timestamp"]),
                 "score": score,
+                "raw_score": raw_score,
+                "score_calibrated": score != raw_score,
+                "score_calibration_reason": calibration_reason,
                 "passed": score >= minimum_scene_score,
                 "verdict": (
                     "match"
@@ -300,10 +336,10 @@ def normalise_batch(
                     if score >= 45
                     else "mismatch"
                 ),
-                "gemini_verdict": str(row.get("verdict") or "").strip(),
+                "gemini_verdict": gemini_verdict,
                 "visual_summary": visual_summary,
                 "alignment_reason": alignment_reason,
-                "issues": [str(issue)[:300] for issue in issues[:6]],
+                "issues": issues,
                 "suggested_visual": str(row.get("suggested_visual") or "").strip()[:500],
             }
         )
