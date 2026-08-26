@@ -17,7 +17,7 @@ import {
 } from '../api'
 import LogPanel from './LogPanel'
 import FootagePanel from './FootagePanel'
-import { IconChevronLeft } from './Icons'
+import { IconChevronLeft, IconChevronRight } from './Icons'
 import { countdown, formatStart, isPendingStart, localInputToIso, toLocalInputValue } from '../schedule'
 
 const STAGES = ['extracting', 'digesting', 'titling', 'sourcing', 'tts', 'awaiting_review', 'composing', 'complete'] as const
@@ -69,6 +69,7 @@ export default function TaskDetail() {
 
   const [startOverride, setStartOverride] = useState<string | null>(null)
   const [titleCopied, setTitleCopied] = useState(false)
+  const [expandedLogTaskId, setExpandedLogTaskId] = useState<string | null>(null)
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteTask(id!),
@@ -120,6 +121,7 @@ export default function TaskDetail() {
   const parked = task.status === 'queued' && isPendingStart(task.scheduled_at)
   const startDraft = startOverride ?? (task.scheduled_at ? toLocalInputValue(new Date(task.scheduled_at)) : '')
   const startMoved = !!startOverride && localInputToIso(startDraft) !== task.scheduled_at
+  const logsExpanded = expandedLogTaskId === task.id
 
   return (
     <div className="detail-workspace">
@@ -191,47 +193,64 @@ export default function TaskDetail() {
         </div>
       </header>
 
-      <div className="detail-progress">
-        <div className="pipeline-stages">
-          {STAGES.map((s) => (
-            <div key={s} className={`stage ${stageState(task.status, s)}`}>
-              {STAGE_LABELS[s]}
-            </div>
-          ))}
-        </div>
-        <dl className="detail-facts">
-          <div>
-            <dt>Duration</dt>
-            <dd>{task.config.target_duration_minutes} min</dd>
-          </div>
-          <div>
-            <dt>Voices</dt>
-            <dd>{task.config.voice_1} + {task.config.voice_2}</dd>
-          </div>
-          <div>
-            <dt>Character</dt>
-            <dd>{task.config.include_character ? 'On' : 'Off'}</dd>
-          </div>
-          <div>
-            <dt>Captions</dt>
-            <dd>{task.config.captions_enabled !== false ? 'On · single line' : 'Off'}</dd>
-          </div>
-          <div>
-            <dt>Origin</dt>
-            <dd>{task.origin_type === 'content_plan' ? 'Content plan' : 'Manual task'}</dd>
-          </div>
-          <div>
-            <dt>Target release</dt>
-            <dd>{task.planned_publish_at ? formatStart(task.planned_publish_at) : 'Not planned'}</dd>
-          </div>
-          <div>
-            <dt>Spoken ending</dt>
-            <dd title={task.config.closing_remarks}>{task.config.closing_remarks || 'Default close'}</dd>
-          </div>
-        </dl>
-      </div>
+      <details key={task.id} className="detail-progress">
+        <summary className="detail-progress-toggle">
+          <span className="detail-progress-title">
+            <strong>Execution flow</strong>
+            <span>Configuration basics</span>
+          </span>
+          <span className="detail-progress-state">
+            {STAGES.length} stages &middot; {STAGE_LABELS[task.status] || task.status.replaceAll('_', ' ')}
+          </span>
+          <span className="detail-progress-disclosure" aria-hidden="true">
+            <span className="detail-progress-show">Show details</span>
+            <span className="detail-progress-hide">Hide details</span>
+            <IconChevronRight />
+          </span>
+        </summary>
 
-      <div className="detail-body">
+        <div className="detail-progress-content">
+          <div className="pipeline-stages">
+            {STAGES.map((s) => (
+              <div key={s} className={`stage ${stageState(task.status, s)}`}>
+                {STAGE_LABELS[s]}
+              </div>
+            ))}
+          </div>
+          <dl className="detail-facts">
+            <div>
+              <dt>Duration</dt>
+              <dd>{task.config.target_duration_minutes} min</dd>
+            </div>
+            <div>
+              <dt>Voices</dt>
+              <dd>{task.config.voice_1} + {task.config.voice_2}</dd>
+            </div>
+            <div>
+              <dt>Character</dt>
+              <dd>{task.config.include_character ? 'On' : 'Off'}</dd>
+            </div>
+            <div>
+              <dt>Captions</dt>
+              <dd>{task.config.captions_enabled !== false ? 'On · single line' : 'Off'}</dd>
+            </div>
+            <div>
+              <dt>Origin</dt>
+              <dd>{task.origin_type === 'content_plan' ? 'Content plan' : 'Manual task'}</dd>
+            </div>
+            <div>
+              <dt>Target release</dt>
+              <dd>{task.planned_publish_at ? formatStart(task.planned_publish_at) : 'Not planned'}</dd>
+            </div>
+            <div>
+              <dt>Spoken ending</dt>
+              <dd title={task.config.closing_remarks}>{task.config.closing_remarks || 'Default close'}</dd>
+            </div>
+          </dl>
+        </div>
+      </details>
+
+      <div className={`detail-body${logsExpanded ? '' : ' is-log-collapsed'}`}>
         <section className="detail-column detail-main">
           {task.origin_type === 'content_plan' && (
             <div className="task-origin-banner">
@@ -407,7 +426,13 @@ export default function TaskDetail() {
         </section>
 
         <aside className="detail-column detail-rail">
-          <LogPanel taskId={task.id} taskStatus={task.status} fill />
+          <LogPanel
+            taskId={task.id}
+            taskStatus={task.status}
+            fill
+            expanded={logsExpanded}
+            onExpandedChange={(expanded) => setExpandedLogTaskId(expanded ? task.id : null)}
+          />
         </aside>
       </div>
     </div>

@@ -4692,12 +4692,109 @@ video {
 }
 
 .detail-progress {
-  display: grid;
   flex: 0 0 auto;
+  margin: clamp(16px, 2vw, 26px) 0;
+}
+
+.detail-progress-toggle {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  padding: 10px 14px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  transition: border-color .18s ease, background .18s ease;
+}
+
+.detail-progress-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.detail-progress-toggle:hover {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.detail-progress-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, white);
+  outline-offset: 2px;
+}
+
+.detail-progress[open] .detail-progress-toggle {
+  margin-bottom: 10px;
+}
+
+.detail-progress-title {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.detail-progress-title strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.detail-progress-title span {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.detail-progress-state {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .7px;
+  text-transform: uppercase;
+}
+
+.detail-progress-disclosure {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.detail-progress-disclosure svg {
+  width: 15px;
+  height: 15px;
+  transition: transform .18s ease;
+}
+
+.detail-progress-hide {
+  display: none;
+}
+
+.detail-progress[open] .detail-progress-show {
+  display: none;
+}
+
+.detail-progress[open] .detail-progress-hide {
+  display: inline;
+}
+
+.detail-progress[open] .detail-progress-disclosure svg {
+  transform: rotate(90deg);
+}
+
+.detail-progress-content {
+  display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   gap: 10px;
-  margin: clamp(16px, 2vw, 26px) 0;
 }
 
 .detail-progress .pipeline-stages {
@@ -4744,6 +4841,11 @@ video {
   flex: 1;
   grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 520px);
   gap: clamp(16px, 1.8vw, 26px);
+  transition: grid-template-columns .22s ease;
+}
+
+.detail-body.is-log-collapsed {
+  grid-template-columns: minmax(0, 1fr) 52px;
 }
 
 .detail-column {
@@ -4762,6 +4864,7 @@ video {
 /* The rail never scrolls itself — the log body inside it does. */
 .detail-rail {
   display: flex;
+  justify-content: flex-end;
   overflow: hidden;
 }
 
@@ -4959,12 +5062,60 @@ video {
   min-height: 0;
   flex-direction: column;
   margin-top: 0;
+  transition: width .22s ease;
 }
 
 .log-panel.is-fill .log-panel-body {
   min-height: 0;
   flex: 1;
   max-height: none;
+}
+
+.log-panel.is-fill.is-collapsed {
+  width: 52px;
+}
+
+.log-panel.is-collapsed .log-panel-head {
+  height: 100%;
+  align-items: stretch;
+  padding-right: 0;
+}
+
+.log-panel.is-collapsed .log-panel-toggle {
+  display: flex;
+  width: 52px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 8px;
+  text-align: center;
+}
+
+.log-panel-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.log-panel-chevron svg {
+  width: 15px;
+  height: 15px;
+}
+
+.log-panel.is-collapsed .log-panel-toggle strong,
+.log-panel.is-collapsed .log-panel-toggle em {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.log-panel.is-collapsed .log-panel-toggle strong {
+  letter-spacing: .3px;
+}
+
+.log-panel.is-collapsed .log-panel-toggle em {
+  margin-top: auto;
+  font-size: 9px;
+  letter-spacing: .7px;
 }
 
 /* Stacked layout: the canvas scrolls, so the log column gets a cap back. */
@@ -4974,6 +5125,10 @@ video {
   }
 
   .detail-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-body.is-log-collapsed {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -4987,8 +5142,27 @@ video {
     max-height: 46vh;
   }
 
-  .detail-progress {
-    grid-template-columns: minmax(0, 1fr);
+  .log-panel.is-fill.is-collapsed {
+    width: 100%;
+  }
+
+  .log-panel.is-collapsed .log-panel-head {
+    height: auto;
+  }
+
+  .log-panel.is-collapsed .log-panel-toggle {
+    display: grid;
+    width: 100%;
+    grid-template-columns: auto 1fr auto;
+    padding: 12px 14px;
+    text-align: left;
+  }
+
+  .log-panel.is-collapsed .log-panel-toggle strong,
+  .log-panel.is-collapsed .log-panel-toggle em {
+    margin-top: 0;
+    transform: none;
+    writing-mode: horizontal-tb;
   }
 
   .detail-facts {
@@ -5023,6 +5197,22 @@ video {
 
   .detail-progress .pipeline-stages {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-progress-toggle {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+  }
+
+  .detail-progress-state {
+    width: 100%;
+    margin-left: 0;
+    order: 3;
+  }
+
+  .detail-progress-disclosure {
+    margin-left: auto;
   }
 
   .detail-quick-actions button {
