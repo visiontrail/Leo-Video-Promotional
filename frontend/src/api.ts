@@ -33,6 +33,7 @@ export interface TaskConfig {
 
 export interface Provider {
   id: number;
+  provider_type: string;
   name: string;
   endpoint: string;
   api_key_masked: string;
@@ -42,11 +43,22 @@ export interface Provider {
 }
 
 export interface ProviderInput {
+  provider_type: string;
   name: string;
   endpoint: string;
   api_key?: string;
   model: string;
   is_default?: boolean;
+}
+
+export interface ProviderCatalogEntry {
+  id: string;
+  label: string;
+  default_endpoint: string;
+  default_model: string;
+  models: string[];
+  notes: string;
+  endpoint_needs_input: boolean;
 }
 
 export interface ProviderTestRequest {
@@ -218,15 +230,6 @@ export interface FootageManifest {
   errors: Array<{ query?: string; stage?: string; message: string }>;
   rights_review_required?: boolean;
   publication_blockers?: string[];
-}
-
-export interface Settings {
-  ai_endpoint: string;
-  ai_model: string;
-  tts_device: string;
-  default_voice_1: string;
-  default_voice_2: string;
-  available_voices: Record<string, { gender: string; lang: string }>;
 }
 
 /** One runtime setting (formerly a .env variable), as described by the backend. */
@@ -455,11 +458,6 @@ export async function recordContentPlanPublication(id: string, publicationUrl: s
   })
 }
 
-export async function fetchSettings(): Promise<Settings> {
-  const res = await fetch(`${BASE}/api/settings`);
-  return res.json();
-}
-
 // ── Runtime settings ─────────────────────────────────────────────────
 async function settingsRequest(path: string, init: RequestInit): Promise<SettingsSchema> {
   const res = await fetch(`${BASE}${path}`, {
@@ -531,6 +529,13 @@ export function voicePreviewUrl(voice: string, ttsModel?: string): string {
 
 export async function fetchProviders(): Promise<Provider[]> {
   const res = await fetch(`${BASE}/api/providers`);
+  const data = await res.json();
+  return data.providers;
+}
+
+export async function fetchProviderCatalog(): Promise<ProviderCatalogEntry[]> {
+  const res = await fetch(`${BASE}/api/providers/catalog`);
+  if (!res.ok) throw new Error('Failed to load provider catalog');
   const data = await res.json();
   return data.providers;
 }

@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.provider_catalog import PROVIDER_TYPES
+
 
 class SourceType(str, Enum):
     TOPIC = "topic"
@@ -363,23 +365,58 @@ class ManualPublicationRecord(BaseModel):
 
 
 class ProviderCreate(BaseModel):
+    provider_type: str = "custom"
     name: str
     endpoint: str
     api_key: Optional[str] = None
     model: str
     is_default: bool = False
 
+    @field_validator("provider_type")
+    @classmethod
+    def validate_provider_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in PROVIDER_TYPES:
+            raise ValueError(f"Unknown provider type: {value}")
+        return normalized
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        if re.search(r"\{[^{}]+\}", value):
+            raise ValueError("Replace endpoint placeholders before saving")
+        return value
+
 
 class ProviderUpdate(BaseModel):
+    provider_type: Optional[str] = None
     name: Optional[str] = None
     endpoint: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
     is_default: Optional[bool] = None
 
+    @field_validator("provider_type")
+    @classmethod
+    def validate_provider_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized not in PROVIDER_TYPES:
+            raise ValueError(f"Unknown provider type: {value}")
+        return normalized
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_endpoint(cls, value: str | None) -> str | None:
+        if value is not None and re.search(r"\{[^{}]+\}", value):
+            raise ValueError("Replace endpoint placeholders before saving")
+        return value
+
 
 class ProviderResponse(BaseModel):
     id: int
+    provider_type: str = "custom"
     name: str
     endpoint: str
     api_key_masked: str
@@ -390,6 +427,20 @@ class ProviderResponse(BaseModel):
 
 class ProviderListResponse(BaseModel):
     providers: list[ProviderResponse]
+
+
+class ProviderCatalogEntry(BaseModel):
+    id: str
+    label: str
+    default_endpoint: str
+    default_model: str
+    models: list[str]
+    notes: str
+    endpoint_needs_input: bool = False
+
+
+class ProviderCatalogResponse(BaseModel):
+    providers: list[ProviderCatalogEntry]
 
 
 class ProviderTestRequest(BaseModel):
@@ -403,15 +454,6 @@ class ProviderTestResponse(BaseModel):
     ok: bool
     message: str
     latency_ms: Optional[int] = None
-
-
-class SettingsResponse(BaseModel):
-    ai_endpoint: str
-    ai_model: str
-    tts_device: str
-    default_voice_1: str
-    default_voice_2: str
-    available_voices: dict
 
 
 class VoiceOption(BaseModel):
@@ -429,12 +471,6 @@ class TtsModelOption(BaseModel):
     provider: str
     single_speaker: bool
     is_default: bool
-
-
-class SettingsUpdate(BaseModel):
-    ai_endpoint: Optional[str] = None
-    ai_api_key: Optional[str] = None
-    ai_model: Optional[str] = None
 
 
 class SettingField(BaseModel):
