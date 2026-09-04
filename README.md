@@ -226,6 +226,23 @@ load or when the returned audit omits its Humanizer markers. The gate may
 change phrasing, but it must preserve names, dates, numbers, quotations, source
 notes, and factual claims.
 
+## Account Ops Design Taste boundary
+
+The project vendors `Leonxlnx/taste-skill` main commit
+`ccbc15639c97057cbfcf32ecebc38ef716e4bb37` as `design-taste-frontend` in both
+`.agents/skills/design-taste-frontend` and the Claude-compatible
+`.claude/skills/design-taste-frontend` path. The restricted
+`account-ops-design-taste` OpenCode agent must load that Skill before reviewing
+an Account Ops landing page, campaign page, editorial explainer, portfolio, or
+other presentation surface.
+
+The upstream Skill explicitly excludes dashboards, admin panels, data tables,
+and multi-step product UI. It is therefore not injected into Account Ops post,
+reply, quote-repost, or image-prompt generation. Those publishing paths keep
+their Humanizer gate, while the Design Taste agent returns an out-of-scope
+classification instead of applying marketing-page rules to the operations
+console.
+
 ## Video orientation and paper-collage B-roll
 
 Each new task has one final-video orientation: **16:9 landscape** (default) or **9:16 portrait**.

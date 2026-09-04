@@ -35,6 +35,20 @@ agent must load the project `humanizer` skill and preserve the planner's facts,
 dates, names, quotations, and source notes. The backend rejects content when
 the humanizer Skill trace or its `humanizer_applied` audit flag is missing.
 
+## Review Account Ops presentation surfaces
+
+The project also vendors `design-taste-frontend` for Account Ops landing pages,
+public campaign pages, editorial explainers, portfolios, and similar
+presentation surfaces. Run the restricted `account-ops-design-taste` agent for
+these reviews. Its prompt requires a successful Skill load before it classifies
+the brief and returns design guidance.
+
+Do not use this Skill for the Account Ops console, dashboards, admin panels,
+data tables, or multi-step workflows. Those surfaces are expressly out of
+scope in the upstream Skill. Do not load it into publication agents: it is a
+frontend design Skill, not a social-copy editor. Humanizer remains the
+mandatory gate for every publication-bound text field.
+
 When the task says it is the planning stage, stop after step 4. Do not generate
 an image and do not create, edit, or delete any social post.
 
