@@ -21,6 +21,24 @@ const manifestPath = path.join(
   'cli-manifest.json',
 )
 const videoPath = path.join(geminiDir, 'video.js')
+const twitterUtilsPath = path.join(
+  runtimeDir,
+  'node_modules',
+  '@jackwener',
+  'opencli',
+  'clis',
+  'twitter',
+  'utils.js',
+)
+const twitterPostPath = path.join(
+  runtimeDir,
+  'node_modules',
+  '@jackwener',
+  'opencli',
+  'clis',
+  'twitter',
+  'post.js',
+)
 
 const helperMarker = 'export async function attachGeminiFile(page, filePath)'
 const helperSource = fs.readFileSync(
@@ -33,7 +51,10 @@ function replaceOnce(source, before, after, label) {
   if (!source.includes(before)) {
     throw new Error(`OpenCLI ${label} patch anchor was not found; pinned upstream changed`)
   }
-  return source.replace(before, after)
+  // A replacement string treats `$&`, `$'`, and similar sequences specially.
+  // Adapter source contains React's `__reactProps$` key, so use a replacer
+  // function to insert every patch byte literally.
+  return source.replace(before, () => after)
 }
 
 let utils = fs.readFileSync(utilsPath, 'utf8')
@@ -73,6 +94,64 @@ fs.copyFileSync(
   path.join(runtimeDir, 'patches', 'gemini-video-command.js'),
   videoPath,
 )
+
+// Chrome's extension debugger can enable file-chooser interception but still
+// receive no Page.fileChooserOpened event when X exposes a hidden file input.
+// Upstream already has a bounded DataTransfer fallback for recoverable bridge
+// failures; classify this chooser timeout narrowly so that fallback can run.
+let twitterUtils = fs.readFileSync(twitterUtilsPath, 'utf8')
+twitterUtils = replaceOnce(
+  twitterUtils,
+  'return /unknown action|not supported|not[-\\s]?allowed|notallowederror/i.test(msg);',
+  'return /unknown action|not supported|not[-\\s]?allowed|notallowederror|filechooseropened\\s+not\\s+received/i.test(msg);',
+  'Twitter file chooser fallback',
+)
+fs.writeFileSync(twitterUtilsPath, twitterUtils)
+
+let twitterPost = fs.readFileSync(twitterPostPath, 'utf8')
+twitterPost = replaceOnce(
+  twitterPost,
+  '        const input = document.querySelector(${JSON.stringify(FILE_INPUT_SELECTOR)});',
+  `        const inputs = Array.from(document.querySelectorAll(\${JSON.stringify(FILE_INPUT_SELECTOR)}));
+        const input = inputs.find((candidate) => {
+            const dialog = candidate.closest('[role="dialog"]');
+            return dialog && (dialog.offsetParent !== null || dialog.getClientRects().length > 0);
+        }) || inputs[0];`,
+  'Twitter active composer input',
+)
+twitterPost = replaceOnce(
+  twitterPost,
+  `        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return { ok: true };`,
+  `        // X exposes duplicate hidden inputs and React does not observe an
+        // untrusted DOM change event here. Invoke the active input's current
+        // React handler when available; retain native events for non-React UI.
+        const reactPropsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+        const reactOnChange = reactPropsKey && input[reactPropsKey]?.onChange;
+        if (typeof reactOnChange === 'function') {
+            const nativeEvent = new Event('change', { bubbles: true });
+            reactOnChange({
+                bubbles: true,
+                currentTarget: input,
+                defaultPrevented: false,
+                isDefaultPrevented: () => false,
+                isPropagationStopped: () => false,
+                nativeEvent,
+                persist() {},
+                preventDefault() { nativeEvent.preventDefault(); },
+                stopPropagation() { nativeEvent.stopPropagation(); },
+                target: input,
+                type: 'change',
+            });
+        } else {
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return { ok: true };`,
+  'Twitter React file input notification',
+)
+fs.writeFileSync(twitterPostPath, twitterPost)
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
 const askEntry = manifest.find(
@@ -122,4 +201,4 @@ if (videoIndex >= 0) manifest[videoIndex] = videoEntry
 else manifest.push(videoEntry)
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 
-console.log('Applied project Gemini image-upload and Create Video patches to OpenCLI 1.8.6')
+console.log('Applied project Gemini media and Twitter React upload-fallback patches to OpenCLI 1.8.6')

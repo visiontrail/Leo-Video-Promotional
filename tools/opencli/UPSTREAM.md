@@ -11,7 +11,12 @@
   frames, selects 16:9 or 9:16, waits for generation, and captures the browser
   download. It detects Gemini's `generated-video` completion component (rather
   than assuming a native `<video>` element) and can resume an existing Gemini
-  conversation when a late result only needs downloading. The patch is pinned
-  to 1.8.6 and fails installation if its upstream anchors change.
+  conversation when a late result only needs downloading. The same postinstall
+  patch classifies the Browser Bridge's bounded `Page.fileChooserOpened not
+  received` failure as recoverable for X/Twitter images, binds the fallback to
+  the active composer when X renders duplicate hidden inputs, and notifies the
+  current React `onChange` handler after assigning the `DataTransfer` files.
+  The patch is pinned to 1.8.6 and fails installation if its upstream anchors
+  change.
 
 No global OpenCLI npm package or global Claude Code skill is required.
