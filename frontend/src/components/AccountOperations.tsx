@@ -200,14 +200,14 @@ function AutomationEditor({
       <AutomationStatusBar automation={automation} status={status} />
 
       <div className="ops-route-line" aria-label="Operation route">
-        <span>{executorLabel}</span><i>→</i><span>OpenCLI</span><i>→</i><span>{engagement ? 'Following + Grok' : 'ChatGPT'}</span><i>→</i><span>@{draft.account_handle}</span>
+        <span>{executorLabel}</span><i>→</i><span>OpenCLI</span><i>→</i><span>{engagement ? 'Following + Grok' : 'ChatGPT'}</span><i>→</i><span>Humanizer</span><i>→</i><span>@{draft.account_handle}</span>
       </div>
 
       <div className="ops-form-grid">
         <div className="form-group">
           <label htmlFor="ops-account">Required X account</label>
           <input id="ops-account" value={draft.account_handle} onChange={(event) => set('account_handle', event.target.value)} />
-          <small>Agent switches accounts and verifies this handle before every write.</small>
+          <small>Agent verifies this handle and applies Humanizer before every public write.</small>
         </div>
         <div className="form-group">
           <label htmlFor="ops-timezone">Timezone</label>

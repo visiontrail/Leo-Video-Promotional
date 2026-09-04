@@ -9,7 +9,7 @@ from typing import Any
 from PIL import Image
 
 from backend import config, database
-from backend.account_ops.opencode import run_content_agent
+from backend.account_ops.opencode import run_content_agent, run_humanizer_agent
 from backend.account_ops.x_engagement import (
     account_switch_prompt,
     engagement_prompt,
@@ -165,6 +165,30 @@ def _content_object(value: str | dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def _humanized_content_object(
+    value: str | dict[str, Any],
+    *,
+    original: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    parsed = _content_object(value)
+    if parsed.get("humanizer_applied") is not True:
+        raise OpenCLIError(
+            "Account Ops content is missing the required humanizer_applied audit flag"
+        )
+    if original is not None:
+        changed = [
+            key
+            for key, expected in original.items()
+            if key not in {"post_text", "humanizer_applied"}
+            and parsed.get(key) != expected
+        ]
+        if changed:
+            raise OpenCLIError(
+                "Humanizer changed protected Account Ops fields: " + ", ".join(changed)
+            )
+    return parsed
+
+
 def _conversation_url(text: str) -> str:
     match = re.search(r"https://chatgpt\.com/c/[a-zA-Z0-9-]+", text)
     return match.group(0) if match else ""
@@ -213,6 +237,7 @@ async def _plan_content(
         "Treat source_notes as provenance for the operator; do not append a source list "
         "to the X post unless it fits naturally."
     )
+    planner_raw: dict[str, Any]
     if automation.executor == AccountAutomationExecutor.OPENCODE:
         result = await run_content_agent(
             model=automation.opencode_model,
@@ -221,12 +246,28 @@ async def _plan_content(
         )
         content = _content_object(result.text)
         conversation_url = _conversation_url(result.stdout)
-        return content, conversation_url, {
+        planner_raw = {
             "opencode_session_id": result.session_id,
             "opencode_stdout": result.stdout,
             "opencode_stderr": result.stderr,
         }
-    return await _plan_with_opencli(prompt)
+    else:
+        content, conversation_url, planner_raw = await _plan_with_opencli(prompt)
+
+    humanizer = await run_humanizer_agent(
+        model=automation.opencode_model,
+        content=content,
+        event_date=run.event_date,
+    )
+    content = _humanized_content_object(humanizer.text, original=content)
+    planner_raw["humanizer"] = {
+        "skill": "humanizer",
+        "applied": True,
+        "opencode_session_id": humanizer.session_id,
+        "opencode_stdout": humanizer.stdout,
+        "opencode_stderr": humanizer.stderr,
+    }
+    return content, conversation_url, planner_raw
 
 
 def _new_images(image_dir: Path, before: set[Path]) -> list[Path]:
@@ -402,7 +443,17 @@ async def _find_published_post(handle: str, post_text: str) -> dict[str, Any] | 
     return None
 
 
-async def _publish(post_text: str, image_path: Path, handle: str) -> tuple[str, str, str]:
+async def _publish(
+    post_text: str,
+    image_path: Path,
+    handle: str,
+    *,
+    humanizer_applied: bool,
+) -> tuple[str, str, str]:
+    if not humanizer_applied:
+        raise OpenCLIError(
+            "Refusing to publish Account Ops copy without the Humanizer gate"
+        )
     try:
         result = await run_opencli(
             [
@@ -539,6 +590,7 @@ async def _execute_engagement_run(
                 excluded_urls=exclusions,
             ),
             title=f"X engagement · {run.event_date} · @{automation.account_handle}",
+            require_humanizer=True,
         )
         manifest.update(
             {
@@ -680,7 +732,10 @@ async def execute_run(run: AccountRunResponse) -> None:
             await log(f"Switched X to @{automation.account_handle} and verified it")
         await log("Publishing the post and image to X")
         post_url, post_id, publish_raw = await _publish(
-            str(content["post_text"]), publish_image_path, automation.account_handle
+            str(content["post_text"]),
+            publish_image_path,
+            automation.account_handle,
+            humanizer_applied=content.get("humanizer_applied") is True,
         )
         completed_at = datetime.now(timezone.utc).isoformat()
         manifest.update(

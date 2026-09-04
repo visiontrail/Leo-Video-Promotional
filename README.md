@@ -214,6 +214,18 @@ publisher is registered in this phase, so enabling only the master switch still
 cannot publish a video. The master switch is also visible under **Admin →
 System → Video Publication**.
 
+## Account Ops publication copy gate
+
+The project vendors `blader/humanizer` in both `.agents/skills/humanizer` and
+the Claude-compatible `.claude/skills/humanizer` path. Every Account Ops text
+that can be published to X passes a Humanizer gate: Today in History
+`post_text` uses a separate restricted copy-edit agent, while Following feed
+replies and quote-reposts load and apply the Skill before each write. The run
+fails closed when the agent trace does not show a successful Humanizer Skill
+load or when the returned audit omits its Humanizer markers. The gate may
+change phrasing, but it must preserve names, dates, numbers, quotations, source
+notes, and factual claims.
+
 ## Video orientation and paper-collage B-roll
 
 Each new task has one final-video orientation: **16:9 landscape** (default) or **9:16 portrait**.

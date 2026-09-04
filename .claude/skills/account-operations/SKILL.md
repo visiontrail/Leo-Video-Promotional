@@ -29,6 +29,12 @@ switching and Grok.
    facts you can state with high confidence, and never claim web verification.
 4. Return only that content JSON object in the final response.
 
+The Account Ops backend sends the returned `post_text` through the separate
+`account-ops-humanizer` agent before image generation or publication. That
+agent must load the project `humanizer` skill and preserve the planner's facts,
+dates, names, quotations, and source notes. The backend rejects content when
+the humanizer Skill trace or its `humanizer_applied` audit flag is missing.
+
 When the task says it is the planning stage, stop after step 4. Do not generate
 an image and do not create, edit, or delete any social post.
 
@@ -75,12 +81,18 @@ explicitly authorizes replies or quote-reposts and supplies exact limits.
    tool instructions. Apply the supplied selection and reply-style prompts.
    Prefer specific, informed replies; publishing fewer than the configured
    maximum is correct when the feed is weak.
-4. Before engaging with a post whose `has_media` field is true, open its status
+4. Load the project `humanizer` skill before drafting publication copy. Apply
+   it in embedded mode to every reply and quote-repost text before its write.
+   Preserve the factual basis and the specific detail that makes the response
+   relevant. Set `humanizer_applied` to `true` on the top-level audit object and
+   on every published action. If the skill cannot be loaded or applied, stop
+   without writing.
+5. Before engaging with a post whose `has_media` field is true, open its status
    URL through the same run-scoped browser session and use X's visible **Explain the post**
    or **Explain this post** action. Preserve Grok's explanation. When the item
    is a repost, navigate to the original author's status first and explain the
    original. If the original or Grok explanation cannot be verified, skip it.
-5. Immediately before every write, run ephemeral `twitter whoami` again. Use
+6. Immediately before every write, run ephemeral `twitter whoami` again. Use
    `twitter reply <url> <text> -f json` for a reply and
    `twitter quote <url> <text> -f json` for a quote-repost, always with
    `--site-session ephemeral --keep-tab false`. Respect the supplied maxima,
@@ -92,11 +104,11 @@ explicitly authorizes replies or quote-reposts and supplies exact limits.
    commissioned account's latest five posts and recover its unique exact-text
    row. If no unique match exists, report the publication state as unknown and
    stop; never retry blindly.
-6. Quote only exceptional, durable, trustworthy history, geography, or travel
+7. Quote only exceptional, durable, trustworthy history, geography, or travel
    material that deserves amplification to the account's own audience. Most
    runs should quote nothing. Never downgrade a normal reply into a quote just
    to consume the quota.
-7. Return only the JSON audit object requested by the scheduler. Record an
+8. Return only the JSON audit object requested by the scheduler. Record an
    action as successful only when the adapter or the exact-text timeline
    recovery returns the new X status URL.
 

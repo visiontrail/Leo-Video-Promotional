@@ -44,6 +44,35 @@ def _assistant_text(stdout: str) -> tuple[str, str]:
     return session_id, text
 
 
+def loaded_skill_names(stdout: str) -> set[str]:
+    """Return successfully loaded Skill tool names from an OpenCode event stream."""
+    loaded: set[str] = set()
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "tool_use":
+            continue
+        part = event.get("part")
+        if not isinstance(part, dict) or part.get("tool") != "skill":
+            continue
+        state = part.get("state")
+        if not isinstance(state, dict) or state.get("status") != "completed":
+            continue
+        tool_input = state.get("input")
+        if isinstance(tool_input, dict) and isinstance(tool_input.get("name"), str):
+            loaded.add(tool_input["name"].strip())
+    return loaded
+
+
+def require_skill_loaded(stdout: str, name: str) -> None:
+    if name not in loaded_skill_names(stdout):
+        raise OpenCodeError(
+            f"Account Ops agent did not load the required project skill: {name}"
+        )
+
+
 async def run_content_agent(
     *,
     model: str,
@@ -69,6 +98,34 @@ CONTENT PROMPT:
         env=env,
         timeout=config.OPENCODE_TIMEOUT,
     )
+
+
+async def run_humanizer_agent(
+    *,
+    model: str,
+    content: dict[str, object],
+    event_date: str,
+) -> OpenCodeResult:
+    """Humanize publication-bound copy through a separately auditable Skill run."""
+    prompt = f"""Load the project skill `humanizer` and use its embedded mode.
+
+This is the mandatory pre-publication copy gate for an Account Ops Today in History post dated {event_date}. Rewrite only the `post_text` value so it sounds naturally written while preserving every fact, name, number, date, quotation, and claim. Keep it in English, one paragraph, 80-260 characters, and suitable for X. Preserve all other JSON fields exactly. Add the top-level field `humanizer_applied` with the boolean value true.
+
+Return only the complete JSON object, without Markdown or commentary.
+
+CONTENT JSON:
+{json.dumps(content, ensure_ascii=False)}
+"""
+    result = await _run_agent(
+        model=model,
+        agent="account-ops-humanizer",
+        title=f"Humanize Account Ops copy · {event_date}",
+        prompt=prompt,
+        env=os.environ.copy(),
+        timeout=max(config.OPENCODE_TIMEOUT, 180),
+    )
+    require_skill_loaded(result.stdout, "humanizer")
+    return result
 
 
 async def run_operational_agent(

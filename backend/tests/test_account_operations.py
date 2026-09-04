@@ -8,10 +8,18 @@ from unittest.mock import AsyncMock, patch
 from PIL import Image
 
 from backend import config, database
-from backend.account_ops.opencode import OpenCodeError, _assistant_text
+from backend.account_ops.opencode import (
+    OpenCodeError,
+    OpenCodeResult,
+    _assistant_text,
+    loaded_skill_names,
+    require_skill_loaded,
+    run_humanizer_agent,
+)
 from backend.account_ops.orchestrator import (
     _content_object,
     _ensure_account,
+    _humanized_content_object,
     _prepare_publish_image,
     _publish,
     _render_prompt,
@@ -21,6 +29,7 @@ from backend.account_ops.schedule import next_daily_run, next_scheduled_run
 from backend.account_ops.worker import get_worker_status
 from backend.account_ops.x_engagement import (
     OperationalAgentResult,
+    engagement_prompt,
     parse_engagement_result,
     recover_action_urls,
     validate_engagement_result,
@@ -269,6 +278,42 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(content["title"], "Event")
 
+    def test_humanized_content_requires_an_explicit_audit_flag(self):
+        content = {
+            "title": "Event",
+            "year": 1900,
+            "event_summary": "Summary",
+            "historical_reflection": "Reflection",
+            "post_text": "In 1900, an event changed public life and institutions in ways that remained visible for many years afterward.",
+            "image_prompt": "Scene",
+            "source_notes": ["A", "B"],
+        }
+
+        with self.assertRaisesRegex(OpenCLIError, "humanizer_applied"):
+            _humanized_content_object(content)
+
+        content["humanizer_applied"] = True
+        self.assertTrue(_humanized_content_object(content)["humanizer_applied"])
+
+    def test_humanizer_cannot_change_protected_content_fields(self):
+        original = {
+            "title": "Event",
+            "year": 1900,
+            "event_summary": "Summary",
+            "historical_reflection": "Reflection",
+            "post_text": "In 1900, an event changed public life and institutions in ways that remained visible for many years afterward.",
+            "image_prompt": "Scene",
+            "source_notes": ["A", "B"],
+        }
+        humanized = {
+            **original,
+            "title": "A different event",
+            "humanizer_applied": True,
+        }
+
+        with self.assertRaisesRegex(OpenCLIError, "title"):
+            _humanized_content_object(humanized, original=original)
+
     def test_publish_image_is_compacted_for_browser_upload(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -353,7 +398,12 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
             return timeline
 
         with patch("backend.account_ops.orchestrator.run_opencli", opencli):
-            url, post_id, raw = await _publish(post_text, Path("image.jpg"), "AQuietAtlas")
+            url, post_id, raw = await _publish(
+                post_text,
+                Path("image.jpg"),
+                "AQuietAtlas",
+                humanizer_applied=True,
+            )
 
         self.assertEqual(url, "https://x.com/AQuietAtlas/status/1234")
         self.assertEqual(post_id, "1234")
@@ -375,7 +425,12 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
             AsyncMock(return_value=wrong_account),
         ) as opencli:
             with self.assertRaisesRegex(OpenCLIError, "wrong account @SomeoneElse"):
-                await _publish("A commissioned post.", Path("image.jpg"), "AQuietAtlas")
+                await _publish(
+                    "A commissioned post.",
+                    Path("image.jpg"),
+                    "AQuietAtlas",
+                    humanizer_applied=True,
+                )
 
         self.assertIn("ephemeral", opencli.await_args.args[0])
 
@@ -391,7 +446,12 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("backend.account_ops.orchestrator.run_opencli", opencli):
             with self.assertRaisesRegex(OpenCLIError, "safe to retry"):
-                await _publish("Nothing went out.", Path("image.jpg"), "AQuietAtlas")
+                await _publish(
+                    "Nothing went out.",
+                    Path("image.jpg"),
+                    "AQuietAtlas",
+                    humanizer_applied=True,
+                )
 
     async def test_an_unreadable_timeline_leaves_the_publication_state_unknown(self):
         async def opencli(args, **kwargs):
@@ -399,7 +459,26 @@ class AccountOrchestrationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("backend.account_ops.orchestrator.run_opencli", opencli):
             with self.assertRaisesRegex(OpenCLIError, "UNKNOWN"):
-                await _publish("Ambiguous.", Path("image.jpg"), "AQuietAtlas")
+                await _publish(
+                    "Ambiguous.",
+                    Path("image.jpg"),
+                    "AQuietAtlas",
+                    humanizer_applied=True,
+                )
+
+    async def test_publish_refuses_copy_that_skipped_humanizer(self):
+        with (
+            patch("backend.account_ops.orchestrator.run_opencli", AsyncMock()) as opencli,
+            self.assertRaisesRegex(OpenCLIError, "without the Humanizer gate"),
+        ):
+            await _publish(
+                "Ungated copy.",
+                Path("image.jpg"),
+                "AQuietAtlas",
+                humanizer_applied=False,
+            )
+
+        opencli.assert_not_awaited()
 
 
 class OpenCodeOutputTests(unittest.TestCase):
@@ -419,6 +498,85 @@ class OpenCodeOutputTests(unittest.TestCase):
     def test_empty_event_stream_is_an_error(self):
         with self.assertRaises(OpenCodeError):
             _assistant_text('{"type":"step_finish","sessionID":"ses_123"}')
+
+    def test_completed_skill_tool_calls_are_recovered_from_the_trace(self):
+        trace = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "tool_use",
+                        "part": {
+                            "tool": "skill",
+                            "state": {
+                                "status": "completed",
+                                "input": {"name": "humanizer"},
+                            },
+                        },
+                    }
+                ),
+                '{"type":"text","part":{"text":"done"}}',
+            ]
+        )
+
+        self.assertEqual(loaded_skill_names(trace), {"humanizer"})
+        require_skill_loaded(trace, "humanizer")
+        with self.assertRaisesRegex(OpenCodeError, "account-operations"):
+            require_skill_loaded(trace, "account-operations")
+
+
+class HumanizerAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_humanizer_agent_requires_a_real_skill_tool_trace(self):
+        result = OpenCodeResult(
+            session_id="ses_humanizer",
+            text='{"humanizer_applied":true}',
+            stdout='{"type":"text","part":{"text":"done"}}',
+            stderr="",
+        )
+        with (
+            patch(
+                "backend.account_ops.opencode._run_agent",
+                AsyncMock(return_value=result),
+            ),
+            self.assertRaisesRegex(OpenCodeError, "humanizer"),
+        ):
+            await run_humanizer_agent(
+                model="oneapi/test",
+                content={"post_text": "A pivotal moment."},
+                event_date="2026-09-04",
+            )
+
+    async def test_humanizer_agent_uses_the_restricted_project_agent(self):
+        trace = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "skill",
+                    "state": {
+                        "status": "completed",
+                        "input": {"name": "humanizer"},
+                    },
+                },
+            }
+        )
+        result = OpenCodeResult(
+            session_id="ses_humanizer",
+            text='{"humanizer_applied":true}',
+            stdout=trace,
+            stderr="",
+        )
+        with patch(
+            "backend.account_ops.opencode._run_agent",
+            AsyncMock(return_value=result),
+        ) as run_agent:
+            actual = await run_humanizer_agent(
+                model="oneapi/test",
+                content={"post_text": "A pivotal moment."},
+                event_date="2026-09-04",
+            )
+
+        self.assertEqual(actual, result)
+        self.assertEqual(run_agent.await_args.kwargs["agent"], "account-ops-humanizer")
+        self.assertIn("humanizer_applied", run_agent.await_args.kwargs["prompt"])
 
 
 class EngagementResultTests(unittest.IsolatedAsyncioTestCase):
@@ -440,12 +598,14 @@ class EngagementResultTests(unittest.IsolatedAsyncioTestCase):
             "account_handle": "AQuietAtlas",
             "account_switched": False,
             "following_feed_used": True,
+            "humanizer_applied": True,
             "scanned_posts": 12,
             "replies": [
                 {
                     "target_url": "https://x.com/MapArchive/status/100",
                     "target_author": "MapArchive",
-                    "reply_text": "The faded rail spur says more than the border line—the map still remembers how people actually moved.",
+                    "reply_text": "The faded rail spur says more than the border line; the map still remembers how people actually moved.",
+                    "humanizer_applied": True,
                     "result_url": "https://x.com/AQuietAtlas/status/200",
                     "has_media": True,
                     "media_explanation": "Grok describes a 1912 railway map with a discontinued branch line.",
@@ -463,6 +623,28 @@ class EngagementResultTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(validated["replies"]), 1)
         self.assertIn("railway map", validated["replies"][0]["media_explanation"])
+
+    async def test_every_published_action_requires_a_humanizer_marker(self):
+        missing_run_marker = self.result()
+        missing_run_marker.pop("humanizer_applied")
+        with self.assertRaisesRegex(OpenCLIError, "Humanizer was applied"):
+            validate_engagement_result(missing_run_marker, self.automation)
+
+        missing_action_marker = self.result()
+        missing_action_marker["replies"][0].pop("humanizer_applied")
+        with self.assertRaisesRegex(OpenCLIError, "before publication"):
+            validate_engagement_result(missing_action_marker, self.automation)
+
+    async def test_engagement_prompt_requires_humanizer_before_writes(self):
+        prompt = engagement_prompt(
+            self.automation,
+            run_id="acct_test",
+            excluded_urls=set(),
+        )
+
+        self.assertIn("`account-operations` and `humanizer`", prompt)
+        self.assertIn("Load `humanizer` before drafting", prompt)
+        self.assertIn('"humanizer_applied": true', prompt)
 
     async def test_browser_element_array_before_final_audit_is_ignored(self):
         verbose_output = (
@@ -517,7 +699,7 @@ class EngagementResultTests(unittest.IsolatedAsyncioTestCase):
                 '[{"author":"MapArchive","text":"Original","url":'
                 '"https://x.com/MapArchive/status/100"},'
                 '{"author":"AQuietAtlas","text":"@MapArchive The faded rail spur '
-                'says more than the border line—the map still remembers how people '
+                'says more than the border line; the map still remembers how people '
                 'actually moved.","url":"https://x.com/AQuietAtlas/status/200"}]'
             ),
             stderr="",
