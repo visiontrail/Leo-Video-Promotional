@@ -1,0 +1,1033 @@
+"""Video-Promotional regressions beyond the shared FrontierTechSN TTS suite."""
+import io
+import json
+import tempfile
+import unittest
+import wave
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import httpx
+
+from backend import config
+from backend.pipeline import tts
+
+
+def wav_bytes(*, frames: int = 24_000, sample_rate: int = 24_000) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(b"\0\0" * frames)
+    return buffer.getvalue()
+
+
+def write_wav(path: Path, *, frames: int = 24_000, sample_rate: int = 24_000) -> None:
+    path.write_bytes(wav_bytes(frames=frames, sample_rate=sample_rate))
+
+
+class GenerateTtsTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def verified_report(_path, text, _verification_dir, **_kwargs):
+        count = len(tts._lexical_tokens(text))
+        return {
+            "verified": True,
+            "expected_words": count,
+            "transcript_words": count,
+            "matched_exact_words": count,
+            "exact_asr_word_coverage": 1.0,
+            "leading_anchor": True,
+            "trailing_anchor": True,
+            "failure_reasons": [],
+        }
+
+
+    def test_split_tts_text_separates_repeated_north_pacific_opening(self):
+        text = (
+            "North Pacific for six aircraft carriers. The North Pacific. In winter."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "North Pacific for six aircraft carriers.",
+                "The North Pacific. In winter.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+
+    def test_split_tts_text_keeps_kuala_lumpur_in_one_utterance(self):
+        text = (
+            "And let me tell you, the Lunar New Year atmosphere in Kuala "
+            "Lumpur rivals anything you'd see in a Chinese city."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "And let me tell you,",
+                "the Lunar New Year atmosphere in Kuala Lumpur rivals anything "
+                "you'd see in a Chinese city.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+    def test_split_tts_text_separates_repetition_prone_lion_stilts_list(self):
+        text = (
+            "These performers up on thin stilts, balancing, leaping between "
+            "poles, the lion weaving and dipping."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "These performers up on thin stilts,",
+                "balancing, leaping between poles,",
+                "the lion weaving and dipping.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+    def test_split_tts_text_separates_observed_empty_rhetorical_turn(self):
+        text = "Or has it? Because here's where the story takes a turn."
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["Or has it?", "Because here's where the story takes a turn."],
+        )
+
+    def test_split_tts_text_separates_observed_wouldnt_eat_substitution(self):
+        text = "They just wouldn't eat it. No big deal."
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["They just wouldn't eat it.", "No big deal."],
+        )
+
+    def test_split_tts_text_separates_observed_fragile_now_sequence(self):
+        text = "Nobody made it a big deal. Now? You don't see that anymore."
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["Nobody made it a big deal.", "Now? You don't see that anymore."],
+        )
+
+    def test_split_tts_text_separates_observed_incomplete_cuisine_list(self):
+        text = (
+            "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian — "
+            "everything hit."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "Nyonya cuisine,",
+                "Malay, Indian, Chinese,",
+                "Lebanese, even vegetarian —",
+                "everything hit.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+    def test_split_tts_text_separates_observed_fragile_beijing_lou_sequence(self):
+        text = (
+            "A Cantonese place called Beijing Lou, in the middle of touristy "
+            "Malacca, and somehow still incredible."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "A Cantonese place called Beijing Lou,",
+                "in the middle of touristy Malacca,",
+                "and somehow still incredible.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+    def test_split_tts_text_separates_observed_truncated_shopping_mall_sequence(self):
+        text = "In a shopping mall! In Kuala Lumpur! Who expects that?"
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["In a shopping mall!", "In Kuala Lumpur!", "Who expects that?"],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+    def test_split_tts_text_keeps_parallel_history_verbs_with_their_objects(self):
+        text = (
+            "That's a compressed history of generations who built infrastructure, "
+            "opened businesses, established schools, shaped the economy of an entire "
+            "region — and paid for it in ways most of us never learned about."
+        )
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            [
+                "That's a compressed history of generations who built infrastructure, "
+                "opened businesses,",
+                "established schools,",
+                "shaped the economy of an entire region —",
+                "and paid for it in ways most of us never learned about.",
+            ],
+        )
+        self.assertEqual(" ".join(" ".join(chunks).split()), text)
+
+
+    def test_orpheus_prompt_joins_observed_fragile_now_question(self):
+        self.assertEqual(
+            tts._orpheus_prompt_text("Now?\nYou don't see that anymore."),
+            "Now, you don't see that anymore.",
+        )
+
+    def test_orpheus_prompt_pronounces_nyonya_without_changing_canonical_text(self):
+        self.assertEqual(
+            tts._orpheus_prompt_text(
+                "Nyonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian —"
+            ),
+            "Nonya cuisine, Malay, Indian, Chinese, Lebanese, even vegetarian.",
+        )
+        self.assertEqual(
+            tts._orpheus_prompt_text(
+                "Nyonya cooking — that's Chinese and Malay, married together."
+            ),
+            "Nonya cooking — that's Chinese and Malay, married together.",
+        )
+
+    def test_orpheus_prompt_pronounces_putien_without_changing_canonical_text(self):
+        self.assertEqual(
+            tts._orpheus_prompt_text("Michelin-starred Putien — extraordinary."),
+            "Michelin-starred Poo Tien — extraordinary.",
+        )
+
+
+    def test_orpheus_prompt_articulates_skim_before_the(self):
+        text = "They trained pilots to skim the water surface at low altitudes."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "They trained pilots to skimm, the water surface at low altitudes.",
+        )
+
+    def test_orpheus_prompt_articulates_yamaguchi_and_nagumo(self):
+        text = (
+            "Despite urging from his subordinate Yamaguchi to launch a third "
+            "strike, Nagumo declined."
+        )
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Despite urging from his subordinate Yama Goochi to launch a third "
+            "strike, Nah-goo-moh declined.",
+        )
+
+    def test_orpheus_prompt_articulates_dismissed_before_the(self):
+        text = "worst moments now dismissed the United States after one morning."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "worst moments now dismissed. The United States after one morning.",
+        )
+
+    def test_orpheus_prompt_articulates_freed_before_the(self):
+        text = "Freed the U-boats to attack Atlantic convoys."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Free-d the U-boats to attack Atlantic convoys.",
+        )
+
+    def test_orpheus_prompt_articulates_hulls_before_were(self):
+        text = "Hulls were patched. But the message?"
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "Hulls. Were patched. But the message?",
+        )
+
+
+    def test_orpheus_prompt_spells_out_kl_initialism(self):
+        text = "and silence and security guards in suits. KL's malls are packed."
+
+        prompt = tts._orpheus_prompt_text(text)
+
+        self.assertEqual(
+            prompt,
+            "and silence and security guards in suits. K L's malls are packed.",
+        )
+        self.assertEqual(tts._lexical_tokens(prompt), tts._lexical_tokens(text))
+
+    def test_orpheus_transcript_accepts_split_kl_but_rejects_kales(self):
+        expected = "and silence and security guards in suits. KL's malls are packed."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "and silence and security guards in suits K L's malls are packed"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for(
+            "and silence and security guards in suits Kale's malls are packed"
+        )["verified"])
+
+    def test_orpheus_prompt_joins_observed_refuge_survival_loop(self):
+        text = "a luxury experience — it's a refuge.\nIt's survival."
+
+        self.assertEqual(
+            tts._orpheus_prompt_text(text),
+            "a luxury experience — it's a refuge, It's survival.",
+        )
+        self.assertEqual(
+            tts._orpheus_prompt_text("It's a refuge. It matters."),
+            "It's a refuge. It matters.",
+        )
+
+    def test_orpheus_splits_observed_refuge_survival_loop(self):
+        text = "a luxury experience — it's a refuge.\nIt's survival."
+
+        chunks = tts._split_tts_text(text, max_words=12)
+
+        self.assertEqual(
+            chunks,
+            ["a luxury experience — it's a refuge.", "It's survival."],
+        )
+        self.assertEqual(
+            [word for chunk in chunks for word in tts._lexical_tokens(chunk)],
+            tts._lexical_tokens(text),
+        )
+
+
+    async def test_orpheus_submits_polls_and_downloads_wav(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-1", "status": "queued"})
+            if request.url.path.endswith("/audio"):
+                return httpx.Response(200, content=wav_bytes())
+            return httpx.Response(200, json={"id": "job-1", "status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Remote narration.")
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                )
+
+            self.assertEqual(tts._read_pcm_wav(Path(result)).duration_seconds, 1.0)
+            submitted = __import__("json").loads(requests[0].content)
+            self.assertEqual(submitted["voice_id"], "tara")
+            self.assertEqual(submitted["input"], "Remote narration.")
+            self.assertEqual(submitted["temperature"], 0.8)
+            self.assertEqual(submitted["top_p"], 0.95)
+            self.assertEqual(submitted["top_k"], 40)
+            self.assertEqual(submitted["min_p"], 0.05)
+            self.assertEqual(requests[0].headers["X-API-Key"], "test-secret")
+            self.assertEqual(
+                [request.url.path for request in requests],
+                [
+                    "/v1/audio/jobs",
+                    "/v1/audio/jobs/job-1",
+                    "/v1/audio/jobs/job-1/audio",
+                ],
+            )
+
+    async def test_orpheus_poll_recovers_transient_errors_without_resubmitting(self):
+        requests = []
+        messages = []
+        poll_attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal poll_attempts
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-poll-retry"})
+            if request.url.path.endswith("/audio"):
+                return httpx.Response(200, content=wav_bytes())
+            poll_attempts += 1
+            if poll_attempts == 1:
+                raise httpx.ReadError("", request=request)
+            if poll_attempts == 2:
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": "7"},
+                    json={"detail": "busy"},
+                )
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Retry the already accepted job.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "ORPHEUS_TTS_POLL_SECONDS", 2),
+                patch.object(config, "ORPHEUS_TTS_RETRY_TIMEOUT", 4 * 3600),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script),
+                    str(root / "audio"),
+                    ["tara"],
+                    "orpheus-en",
+                    log=messages.append,
+                )
+                result_exists = Path(result).is_file()
+
+        self.assertTrue(result_exists)
+        self.assertEqual(sum(request.method == "POST" for request in requests), 1)
+        self.assertEqual(
+            [request.url.path for request in requests if request.method == "GET"],
+            [
+                "/v1/audio/jobs/job-poll-retry",
+                "/v1/audio/jobs/job-poll-retry",
+                "/v1/audio/jobs/job-poll-retry",
+                "/v1/audio/jobs/job-poll-retry/audio",
+            ],
+        )
+        self.assertTrue(any("ReadError" in message for message in messages))
+        self.assertTrue(any("HTTPStatusError (HTTP 429)" in message for message in messages))
+        self.assertTrue(any("continuous retry window 14400s" in message for message in messages))
+        self.assertEqual([call.args[0] for call in sleeper.await_args_list], [2, 7])
+
+    async def test_orpheus_poll_fails_after_continuous_retry_timeout(self):
+        requests = []
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            async def sleep(self, seconds):
+                self.now += seconds
+
+        clock = FakeClock()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-poll-timeout"})
+            raise httpx.ReadError("", request=request)
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Wait through a continuous outage.")
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "TTS_TIMEOUT", 60),
+                patch.object(config, "ORPHEUS_TTS_POLL_SECONDS", 1),
+                patch.object(config, "ORPHEUS_TTS_RETRY_TIMEOUT", 4),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "time", clock),
+                patch.object(tts, "asyncio", clock),
+            ):
+                with self.assertRaises(TimeoutError) as caught:
+                    await tts.generate_tts(
+                        str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                    )
+
+        error = str(caught.exception)
+        self.assertIn("job-poll-timeout", error)
+        self.assertIn("no successful poll for 4s", error)
+        self.assertIn("ReadError", error)
+        self.assertEqual(sum(request.method == "POST" for request in requests), 1)
+
+    async def test_orpheus_poll_fails_fast_for_permanent_http_error(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-poll-denied"})
+            return httpx.Response(401, json={"detail": "denied"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Do not retry permanent failures.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+            ):
+                with self.assertRaises(RuntimeError) as caught:
+                    await tts.generate_tts(
+                        str(script), str(root / "audio"), ["tara"], "orpheus-en"
+                    )
+
+        self.assertIn("HTTPStatusError (HTTP 401)", str(caught.exception))
+        self.assertEqual(len(requests), 2)
+        sleeper.assert_not_awaited()
+
+    async def test_orpheus_audio_download_retries_invalid_and_interrupted_payloads(self):
+        requests = []
+        messages = []
+        download_attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal download_attempts
+            requests.append(request)
+            if request.method == "POST":
+                return httpx.Response(202, json={"id": "job-download-retry"})
+            if request.url.path.endswith("/audio"):
+                download_attempts += 1
+                if download_attempts == 1:
+                    return httpx.Response(200, content=b"not a wav")
+                if download_attempts == 2:
+                    raise httpx.ReadError("", request=request)
+                return httpx.Response(200, content=wav_bytes())
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Retry only the finished audio download.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(config, "ORPHEUS_TTS_POLL_SECONDS", 2),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script),
+                    str(root / "audio"),
+                    ["tara"],
+                    "orpheus-en",
+                    log=messages.append,
+                )
+                result_exists = Path(result).is_file()
+
+        self.assertTrue(result_exists)
+        self.assertEqual(sum(request.method == "POST" for request in requests), 1)
+        self.assertEqual(download_attempts, 3)
+        self.assertTrue(any("TtsIntegrityError" in message for message in messages))
+        self.assertTrue(any("ReadError" in message for message in messages))
+        self.assertEqual([call.args[0] for call in sleeper.await_args_list], [2, 4])
+
+    async def test_orpheus_completed_empty_wav_resubmits_without_download_backoff(self):
+        requests = []
+        messages = []
+        post_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal post_count
+            requests.append(request)
+            if request.method == "POST":
+                post_count += 1
+                return httpx.Response(202, json={"id": f"job-{post_count}"})
+            if request.url.path.endswith("/audio"):
+                if "job-1" in request.url.path:
+                    return httpx.Response(200, content=wav_bytes(frames=0))
+                return httpx.Response(200, content=wav_bytes())
+            return httpx.Response(200, json={"status": "completed"})
+
+        original_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "script.txt"
+            script.write_text("Speaker 1: Retry a completed empty result.")
+            sleeper = AsyncMock()
+            with (
+                patch.object(config, "ORPHEUS_TTS_API_KEY", "test-secret"),
+                patch.object(tts.httpx, "AsyncClient", client_factory),
+                patch.object(tts, "asyncio", SimpleNamespace(sleep=sleeper)),
+                patch.object(
+                    tts,
+                    "_verify_orpheus_part",
+                    AsyncMock(side_effect=self.verified_report),
+                ),
+            ):
+                result = await tts.generate_tts(
+                    str(script),
+                    str(root / "audio"),
+                    ["tara"],
+                    "orpheus-en",
+                    log=messages.append,
+                )
+                result_exists = Path(result).is_file()
+
+        self.assertTrue(result_exists)
+        self.assertEqual(post_count, 2)
+        self.assertEqual(
+            sum(request.url.path.endswith("/audio") for request in requests),
+            2,
+        )
+        self.assertTrue(any(
+            "completed with an empty WAV" in message for message in messages
+        ))
+        sleeper.assert_not_awaited()
+
+
+    def test_orpheus_transcript_normalizes_a_thousand_across_asr_words(self):
+        expected = "nearly a thousand tons of ships in that same hour."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("nearly a thousand tons of ships in that same hour")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            report_for("nearly a hundred tons of ships in that same hour")["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_numeric_teen_ordinal(self):
+        expected = "On December eleventh, he declared war."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("On December 11th he declared war")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for("On December 12th he declared war")["verified"])
+
+
+    def test_orpheus_transcript_normalizes_spoken_decade(self):
+        expected = (
+            "you'd see a Wall Street guy carrying in a nineteen-eighties movie,"
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "You'd see a Wall Street guy carrying in a 1980s movie."
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["expected_words"], 11)
+        self.assertEqual(report["transcript_words"], 11)
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertTrue(
+            report_for(
+                "You'd see a Wall Street guy carrying in a 1980's movie."
+            )["verified"]
+        )
+        self.assertFalse(
+            report_for(
+                "You'd see a Wall Street guy carrying in a 1990s movie."
+            )["verified"]
+        )
+        self.assertFalse(
+            report_for(
+                "You'd see a Wall Street guy carrying in a 1980 movie."
+            )["verified"]
+        )
+
+
+    def test_orpheus_transcript_accepts_ones_apostrophe_homophone(self):
+        expected = "the ones the size of a shoebox."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("The one's the size of a shoebox")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for("The one the size of a shoebox")["verified"])
+
+    def test_orpheus_transcript_accepts_theyre_there_homophone(self):
+        expected = (
+            "Three of the ten largest malls on Earth are here, and they're"
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "Three of the ten largest malls on Earth are here and there"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["expected_words"], 12)
+        self.assertEqual(report["transcript_words"], 12)
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertTrue(
+            tts._orpheus_transcript_report(
+                "Those malls are over there.",
+                [
+                    {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                    for index, word in enumerate("Those malls are over they're".split())
+                ],
+            )["verified"]
+        )
+        self.assertFalse(report_for(
+            "Three of the ten largest malls on Earth are here and they"
+        )["verified"])
+
+
+    def test_orpheus_transcript_normalizes_observed_eslite_boxes_spellings(self):
+        expected = "Eslite, Kinokuniya, a local chain called Boxes."
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("S -Lite Kenakunya a local chain called Boxus")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            report_for("S Light Kinokuniya a local chain called Boxers")["verified"]
+        )
+        self.assertFalse(
+            report_for("S -Lite Kanakuniya a local chain called Boxes")["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_gongxi_syllables(self):
+        expected = (
+            'They say "Gongxi Raya." Gongxi for the New Year, Raya for Eid.'
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "They say Gong Shi Raya Gong Shi for the New Year Raya for Eid"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for(
+            "They say Gong She Raya Gong Shi for the New Year Raya for Eid"
+        )["verified"])
+
+    def test_orpheus_transcript_normalizes_observed_gongxi_asr_spelling_one_way(self):
+        expected = "You see at festivals, the red robes, the Gongxi Raya."
+
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            expected,
+            words_for("You see at festivals the red robes the guanxi Raya"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "They discussed guanxi at dinner.",
+                words_for("They discussed Gongxi at dinner"),
+            )["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_nyonya_asr_spelling_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        for observed_spelling in ("Nonia", "Nanya"):
+            with self.subTest(observed_spelling=observed_spelling):
+                report = tts._orpheus_transcript_report(
+                    "Nyonya cuisine, Malay, Indian, Chinese.",
+                    words_for(f"{observed_spelling} cuisine Malay Indian Chinese"),
+                )
+
+                self.assertTrue(report["verified"])
+                self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+                self.assertFalse(
+                    tts._orpheus_transcript_report(
+                        f"{observed_spelling} cuisine was listed.",
+                        words_for("Nyonya cuisine was listed"),
+                    )["verified"]
+                )
+
+    def test_orpheus_transcript_normalizes_observed_putien_asr_spelling_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "Michelin-starred Putien — extraordinary.",
+            words_for("Michelin-starred Poutien Extraordinary"),
+        )
+        split_report = tts._orpheus_transcript_report(
+            "Michelin-starred Putien — extraordinary.",
+            words_for("Michelin starred Pu Tien Extraordinary"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertTrue(split_report["verified"])
+        self.assertEqual(split_report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A restaurant named Poutien reopened.",
+                words_for("A restaurant named Putien reopened"),
+            )["verified"]
+        )
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A restaurant named Pu Tien reopened.",
+                words_for("A restaurant named Putien reopened"),
+            )["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_lou_asr_spelling_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "A Cantonese place called Beijing Lou, in Malacca.",
+            words_for("A Cantonese place called Beijing Lu in Malacca"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A person named Lu arrived.",
+                words_for("A person named Lou arrived"),
+            )["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_south_seas_possessive_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "Digging into South Seas Chinese history.",
+            words_for("Digging into South Sea's Chinese history"),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "The South Sea's history was discussed.",
+                words_for("The South Seas history was discussed"),
+            )["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_dagang_asr_split_one_way(self):
+        def words_for(observed: str) -> list[dict]:
+            return [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+
+        report = tts._orpheus_transcript_report(
+            "There was a restaurant called Dagang that we went to twice, even.",
+            words_for(
+                "There was a restaurant called Da Gong that we went to twice even"
+            ),
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            tts._orpheus_transcript_report(
+                "A place called Da Gong reopened.",
+                words_for("A place called Dagang reopened"),
+            )["verified"]
+        )
+
+    def test_orpheus_transcript_normalizes_observed_deparaya_syllables(self):
+        expected = (
+            'When Deepavali and Eid land on the same day, they say "Deparaya."'
+        )
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for(
+            "When Deepavali and Eid land on the same day they say De Pariah"
+        )
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for(
+            "When Deepavali and Eid land on the same day they say De Parade"
+        )["verified"])
+
+    def test_orpheus_transcript_normalizes_spoken_kilometer_unit(self):
+        expected = "along an eight-thousand-kilometer arc"
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("along an 8,000 km arc")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(report_for("along an 8,000 mile arc")["verified"])
+
+    def test_orpheus_transcript_normalizes_pre_arranged_compound_spelling(self):
+        expected = "waiting for a single pre-arranged signal"
+
+        def report_for(observed: str) -> dict:
+            words = [
+                {"text": word, "start": index * 0.2, "end": index * 0.2 + 0.1}
+                for index, word in enumerate(observed.split())
+            ]
+            return tts._orpheus_transcript_report(expected, words)
+
+        report = report_for("waiting for a single prearranged signal")
+
+        self.assertTrue(report["verified"])
+        self.assertEqual(report["exact_asr_word_coverage"], 1.0)
+        self.assertFalse(
+            report_for("waiting for a single prearrangement signal")["verified"]
+        )
+
+
+    def test_orpheus_cache_is_invalidated_when_speed_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "part.wav"
+            write_wav(path)
+            text = "A fully verified utterance."
+            with patch.object(config, "ORPHEUS_TTS_SPEED_PERCENT", 100):
+                tts._write_orpheus_part_metadata(
+                    path,
+                    text,
+                    job_id="job-1",
+                    request_token_budget=512,
+                    integrity=self.verified_report(None, text, None),
+                )
+                self.assertIsNotNone(tts._load_cached_orpheus_part(path, text))
+            with patch.object(config, "ORPHEUS_TTS_SPEED_PERCENT", 140):
+                self.assertIsNone(tts._load_cached_orpheus_part(path, text))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -19,6 +19,8 @@ import {
   DEFAULT_CLOSING_REMARKS,
 } from '../api'
 import type { ContentPlanInput, ContentPlanItem, TaskConfig } from '../api'
+import { useVoicePreview } from '../hooks/useVoicePreview'
+import { IconPlay, IconStop } from './Icons'
 import { localInputToIso, toLocalInputValue } from '../schedule'
 
 const PLAN_LABELS: Record<string, string> = {
@@ -158,6 +160,13 @@ export default function ContentPlanning() {
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: fetchProviders })
   const { data: ttsModels = [] } = useQuery({ queryKey: ['tts-models'], queryFn: fetchTtsModels })
   const selectedTtsModel = planDraft.taskConfig.tts_model || 'vibevoice-0.5b'
+  const { audioRef, playingVoice, loading, previewError, stopPreview, togglePreview } = useVoicePreview(selectedTtsModel)
+  const closePlanForm = () => {
+    stopPreview()
+    setPlanFormOpen(false)
+    setEditingId(null)
+    planDialogRef.current?.close()
+  }
   const { data: voices = [] } = useQuery({
     queryKey: ['voices', selectedTtsModel],
     queryFn: () => fetchVoices(selectedTtsModel),
@@ -193,6 +202,7 @@ export default function ContentPlanning() {
       id ? updateContentPlanItem(id, input) : createContentPlanItem(input)
     ),
     onSuccess: () => {
+      stopPreview()
       setPlanDraft(EMPTY_PLAN())
       setEditingId(null)
       setPlanFormOpen(false)
@@ -363,14 +373,17 @@ export default function ContentPlanning() {
         className="planning-modal planning-modal--plan"
         aria-labelledby="plan-form-title"
         aria-describedby="plan-form-description"
+        onCancel={closePlanForm}
         onClose={() => {
+          stopPreview()
           setPlanFormOpen(false)
           setEditingId(null)
         }}
         onClick={(event) => {
-          if (event.target === event.currentTarget) event.currentTarget.close()
+          if (event.target === event.currentTarget) closePlanForm()
         }}
       >
+        <audio ref={audioRef} onEnded={stopPreview} hidden />
         {planFormOpen && (
           <form className="planning-form plan-form" onSubmit={submitPlan}>
             <div className="planning-form-heading">
@@ -379,7 +392,7 @@ export default function ContentPlanning() {
                 <h2 id="plan-form-title">{editingId ? 'Revise the plan' : 'Schedule a video'}</h2>
                 <p id="plan-form-description">The generation time creates and controls a real pipeline task.</p>
               </div>
-              <button className="planning-modal-close" type="button" aria-label="Close video plan form" onClick={() => planDialogRef.current?.close()}>×</button>
+              <button className="planning-modal-close" type="button" aria-label="Close video plan form" onClick={closePlanForm}>×</button>
             </div>
             <div className="planning-field-grid planning-field-grid--three">
               <div className="form-group">
@@ -485,18 +498,35 @@ export default function ContentPlanning() {
                 </div>
                 <div className="form-group">
                   <label htmlFor="plan-voice-1">Host voice</label>
-                  <select id="plan-voice-1" value={selectedVoice1} onChange={(e) => setTaskConfig({ voice_1: e.target.value })}>
-                    {voices.length === 0 && <option value={selectedVoice1}>{selectedVoice1}</option>}
-                    {voices.map((voice) => <option key={voice.name} value={voice.name}>{voice.name}</option>)}
-                  </select>
+                  <div className="voice-row">
+                    <select id="plan-voice-1" value={selectedVoice1} onChange={(e) => { stopPreview(); setTaskConfig({ voice_1: e.target.value }) }}>
+                      {voices.length === 0 && <option value={selectedVoice1}>{selectedVoice1}</option>}
+                      {voices.map((voice) => <option key={voice.name} value={voice.name}>{voice.name}</option>)}
+                    </select>
+                    <button type="button" className="icon-btn voice-preview"
+                      disabled={!voices.find((v) => v.name === selectedVoice1)?.preview_available}
+                      aria-label={playingVoice === selectedVoice1 ? `Stop ${selectedVoice1} preview` : `Preview ${selectedVoice1}`}
+                      onClick={() => togglePreview(selectedVoice1)}>
+                      {playingVoice === selectedVoice1 ? <IconStop /> : <IconPlay />}
+                    </button>
+                  </div>
                 </div>
                 <div className="form-group">
                   <label htmlFor="plan-voice-2">Co-host voice</label>
-                  <select id="plan-voice-2" disabled={planDraft.taskConfig.script_format !== 'dialogue'} value={selectedVoice2} onChange={(e) => setTaskConfig({ voice_2: e.target.value })}>
-                    {voices.length === 0 && <option value={selectedVoice2}>{selectedVoice2}</option>}
-                    {voices.map((voice) => <option key={voice.name} value={voice.name}>{voice.name}</option>)}
-                  </select>
+                  <div className="voice-row">
+                    <select id="plan-voice-2" disabled={planDraft.taskConfig.script_format !== 'dialogue'} value={selectedVoice2} onChange={(e) => { stopPreview(); setTaskConfig({ voice_2: e.target.value }) }}>
+                      {voices.length === 0 && <option value={selectedVoice2}>{selectedVoice2}</option>}
+                      {voices.map((voice) => <option key={voice.name} value={voice.name}>{voice.name}</option>)}
+                    </select>
+                    <button type="button" className="icon-btn voice-preview"
+                      disabled={!voices.find((v) => v.name === selectedVoice2)?.preview_available || planDraft.taskConfig.script_format !== 'dialogue'}
+                      aria-label={playingVoice === selectedVoice2 ? `Stop ${selectedVoice2} preview` : `Preview ${selectedVoice2}`}
+                      onClick={() => togglePreview(selectedVoice2)}>
+                      {playingVoice === selectedVoice2 ? <IconStop /> : <IconPlay />}
+                    </button>
+                  </div>
                 </div>
+                {(loading || previewError) && <small className="wb-hint" role="status">{previewError || `Generating ${playingVoice} preview… First play may take a moment.`}</small>}
                 <div className="form-group">
                   <label htmlFor="plan-template">Video template</label>
                   <select id="plan-template" value={planDraft.taskConfig.video_template} onChange={(e) => setTaskConfig({ video_template: e.target.value })}>
@@ -578,7 +608,7 @@ export default function ContentPlanning() {
             </div>
             <div className="planning-form-footer">
               {planMutation.isError && <span className="planning-form-error">{(planMutation.error as Error).message}</span>}
-              <button className="btn-ghost" type="button" onClick={() => planDialogRef.current?.close()}>Cancel</button>
+              <button className="btn-ghost" type="button" onClick={closePlanForm}>Cancel</button>
               <button className="btn-primary" type="submit" disabled={planMutation.isPending}>{planMutation.isPending ? 'Saving…' : editingId ? 'Save changes' : 'Commit to calendar'}</button>
             </div>
           </form>

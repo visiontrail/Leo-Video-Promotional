@@ -27,6 +27,7 @@ _STORE_VERSION = 1
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}
 _RETIRED_KEYS = {
+    "ORPHEUS_TTS_SPEED_PERCENT",
     # Provider routing is owned by Admin -> Models. Prune the former System
     # overrides so hidden settings cannot keep winning after the fields move.
     "AI_ENDPOINT",
@@ -288,12 +289,6 @@ SPECS: tuple[SettingSpec, ...] = (
         description="Sent only as X-API-Key to the configured Orpheus service.",
     ),
     SettingSpec(
-        "ORPHEUS_TTS_SPEED_PERCENT", "tts", "Orpheus speed", "int", unit="%",
-        minimum=50, maximum=200,
-        description="Playback speed sent to Orpheus (100% = natural speed). The "
-                    "finished WAV is measured again before video timing is built.",
-    ),
-    SettingSpec(
         "ORPHEUS_TTS_MAX_TOKENS", "tts", "Orpheus max tokens", "int",
         minimum=28, maximum=16384,
         description="Maximum audio-token ceiling. Each short utterance gets a "
@@ -326,6 +321,36 @@ SPECS: tuple[SettingSpec, ...] = (
         description="Maximum continuous status or audio-download outage after a "
                     "job has been accepted. Retry keeps the same remote job ID; "
                     "a successful poll resets this window.",
+    ),
+    SettingSpec(
+        "POCKET_TTS_URL", "tts", "Pocket TTS service URL", "string",
+        placeholder="http://10.60.11.3:8090",
+        description="Base URL of the Docker-hosted Kyutai Pocket TTS service.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "POCKET_TTS_API_KEY", "tts", "Pocket TTS API key", "secret",
+        description="Optional X-API-Key for a protected Pocket TTS gateway. "
+                    "Leave blank for the upstream service on a trusted private network.",
+    ),
+    SettingSpec(
+        "POCKET_TTS_MODEL_REVISION", "tts", "Pocket TTS revision", "string",
+        description="Exact upstream git revision deployed in Docker. It is part of "
+                    "the verified-audio cache identity.",
+        allow_blank=False,
+    ),
+    SettingSpec(
+        "POCKET_TTS_CHUNK_WORDS", "tts", "Pocket external chunk words", "int",
+        unit="words", minimum=0, maximum=2000,
+        description="Maximum words in one application-level Pocket request. Physical "
+                    "script lines/stories remain intact; only complete sentences split "
+                    "above this limit. 0 keeps every physical line intact.",
+    ),
+    SettingSpec(
+        "POCKET_TTS_REQUEST_TIMEOUT", "tts", "Pocket request timeout", "int",
+        unit="seconds", minimum=5, maximum=3600,
+        description="HTTP ceiling for one paragraph/story request. Pocket synthesis "
+                    "is synchronous and returns a streaming WAV response.",
     ),
     # ── Audio / visual sync ──────────────────────────────────────────────
     SettingSpec(

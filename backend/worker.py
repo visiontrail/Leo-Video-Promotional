@@ -11,6 +11,7 @@ from backend.pipeline.orchestrator import (
     format_pipeline_log,
     run_pipeline,
     run_regenerate,
+    run_tts_resume,
     run_compose,
     run_footage_acquisition,
 )
@@ -19,6 +20,8 @@ from backend.publishing import run_auto_publish_pipeline
 # A queued task carrying this marker file in its output dir should re-run only
 # the TTS stage (from an edited script) rather than the full pipeline.
 REGEN_MARKER = ".regenerate"
+# Resume only the saved script, retaining the title and thumbnail.
+TTS_RESUME_MARKER = ".resume_tts"
 # This marker resumes a reviewed task from the compose stage only.
 RENDER_MARKER = ".render"
 # Retry only the footage scout. The marker stores the stable status to restore
@@ -90,6 +93,9 @@ async def _worker_loop():
                 regen_marker = config.OUTPUTS_DIR / task.id / REGEN_MARKER
                 render_marker = config.OUTPUTS_DIR / task.id / RENDER_MARKER
                 footage_marker = config.OUTPUTS_DIR / task.id / FOOTAGE_MARKER
+                tts_resume_dir = Path(task.output_dir) if task.output_dir else config.OUTPUTS_DIR / task.id
+                tts_resume_marker = tts_resume_dir / TTS_RESUME_MARKER
+                tts_resume = tts_resume_marker.exists()
                 regenerate = regen_marker.exists()
                 render = render_marker.exists()
                 footage = footage_marker.exists()
@@ -104,7 +110,8 @@ async def _worker_loop():
                     finally:
                         footage_marker.unlink()
                 mode = (
-                    " [regenerate]" if regenerate
+                    " [resume-tts]" if tts_resume
+                    else " [regenerate]" if regenerate
                     else " [render]" if render
                     else " [footage]" if footage
                     else ""
@@ -113,7 +120,13 @@ async def _worker_loop():
                 logger.info(f"Processing task {task.id} ({task.source_type}){mode}{held}")
                 _persist_and_publish(task, f"Processing task ({task.source_type}){mode}{held}")
                 try:
-                    if regenerate:
+                    if tts_resume:
+                        # Claim before consuming the marker: a crash must never
+                        # turn audio recovery into a full pipeline restart.
+                        await update_task(task.id, status=TaskStatus.TTS.value, error_message=None)
+                        tts_resume_marker.unlink(missing_ok=True)
+                        await run_tts_resume(task, log=lambda message: publish_task_log(task.id, message))
+                    elif regenerate:
                         await run_regenerate(task, log=lambda message: publish_task_log(task.id, message))
                     elif render:
                         await run_compose(task, log=lambda message: publish_task_log(task.id, message))

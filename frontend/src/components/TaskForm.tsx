@@ -2,10 +2,11 @@ import { useEffect, useState, useRef } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { DEFAULT_CLOSING_REMARKS, createTask, fetchProviders, fetchTtsModels, fetchVoices, voicePreviewUrl } from '../api'
+import { DEFAULT_CLOSING_REMARKS, createTask, fetchProviders, fetchTtsModels, fetchVoices } from '../api'
 import type { TaskConfig, TtsModelOption, VoiceOption } from '../api'
 import { countdown, formatStart, localInputToIso, toLocalInputValue } from '../schedule'
 import { IconPlay, IconStop } from './Icons'
+import { useVoicePreview } from '../hooks/useVoicePreview'
 
 type SourceType = 'youtube' | 'epub' | 'pdf'
 type VideoTemplate = 'podcast' | 'kinetic' | 'swiss' | 'minimal' | 'shanshui'
@@ -33,6 +34,7 @@ const VOICES: VoiceOption[] = [
 const TTS_MODELS: TtsModelOption[] = [
   { id: 'vibevoice-1.5b', label: '1.5B (high quality)', provider: 'Microsoft VibeVoice', single_speaker: false, is_default: false },
   { id: 'vibevoice-0.5b', label: '0.5B (fast draft)', provider: 'Microsoft VibeVoice', single_speaker: true, is_default: true },
+  { id: 'pocket-tts-en', label: 'English 100M (remote CPU)', provider: 'Kyutai Pocket TTS', single_speaker: true, is_default: false },
   { id: 'orpheus-en', label: 'English Q4 (remote CPU)', provider: 'Orpheus', single_speaker: true, is_default: false },
 ]
 
@@ -193,12 +195,6 @@ export default function TaskForm() {
     if (previewTemplate && dialog && !dialog.open) dialog.showModal()
   }, [previewTemplate])
 
-  // One audio element serves both voice fields — starting a preview replaces
-  // whatever was playing, so two clips can never overlap.
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const [playingVoice, setPlayingVoice] = useState<string | null>(null)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-
   const { data: providers = [] } = useQuery({ queryKey: ['providers'], queryFn: fetchProviders })
   const { data: ttsModels = TTS_MODELS } = useQuery({
     queryKey: ['tts-models'],
@@ -226,32 +222,7 @@ export default function TaskForm() {
     ? voice2
     : (voices[Math.min(1, voices.length - 1)]?.name ?? selectedVoice1)
 
-  const stopPreview = () => {
-    const audio = audioRef.current
-    if (audio) {
-      audio.pause()
-      audio.currentTime = 0
-    }
-    setPlayingVoice(null)
-  }
-
-  const togglePreview = (voice: string) => {
-    if (playingVoice === voice) {
-      stopPreview()
-      return
-    }
-    const audio = audioRef.current
-    if (!audio) return
-    setPreviewError(null)
-    audio.src = voicePreviewUrl(voice, selectedTtsModel)
-    audio.play().then(
-      () => setPlayingVoice(voice),
-      () => {
-        setPlayingVoice(null)
-        setPreviewError(`Could not play the ${voice} preview.`)
-      },
-    )
-  }
+  const { audioRef, playingVoice, loading, previewError, stopPreview, togglePreview } = useVoicePreview(selectedTtsModel)
 
   // Solo talk-show (monologue) is the primary style; dialogue is secondary.
   // The 0.5B realtime model is single-speaker, so it can only do monologue —
@@ -599,10 +570,12 @@ export default function TaskForm() {
                   />
                 )}
               </div>
-              <audio ref={audioRef} onEnded={() => setPlayingVoice(null)} hidden />
-              <small className="wb-hint">
+              <audio ref={audioRef} onEnded={stopPreview} hidden />
+              <small className="wb-hint" role="status">
                 {previewError
                   ? previewError
+                  : loading
+                    ? `Generating ${playingVoice} preview… First play may take a moment; press stop to cancel.`
                   : isMonologue
                     ? 'Solo talk-show uses a single voice. Hit ▶ to hear a sample.'
                     : 'Two-host dialogue uses two voices — a host and a co-host. Hit ▶ to hear a sample.'}

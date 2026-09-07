@@ -164,7 +164,10 @@ TTS_DEFAULT_VOICE_2 = os.getenv("TTS_DEFAULT_VOICE_2", "Alice")
 # managed as a masked secret by Admin -> System (or seeded through .env).
 ORPHEUS_TTS_URL = os.getenv("ORPHEUS_TTS_URL", "http://10.60.11.3:8088").rstrip("/")
 ORPHEUS_TTS_API_KEY = os.getenv("ORPHEUS_TTS_API_KEY", "")
-ORPHEUS_TTS_SPEED_PERCENT = int(os.getenv("ORPHEUS_TTS_SPEED_PERCENT", "100"))
+# Narration is the timing source of truth.  Keep synthesis at the provider's
+# natural speed and make scenes follow the measured WAV; accepting a saved/env
+# speed override would hide a script-duration mismatch by retiming the voice.
+ORPHEUS_TTS_SPEED_PERCENT = 100
 # 16,384 is the current external service maximum. It is only a ceiling: the
 # client derives a much smaller request budget for each short utterance so a
 # bad generation cannot burn through minutes of unrelated audio tokens.
@@ -175,6 +178,23 @@ ORPHEUS_TTS_CHUNK_WORDS = int(os.getenv("ORPHEUS_TTS_CHUNK_WORDS", "12"))
 ORPHEUS_TTS_N_THREADS = int(os.getenv("ORPHEUS_TTS_N_THREADS", "64"))
 ORPHEUS_TTS_POLL_SECONDS = int(os.getenv("ORPHEUS_TTS_POLL_SECONDS", "2"))
 ORPHEUS_TTS_REQUEST_TIMEOUT = int(os.getenv("ORPHEUS_TTS_REQUEST_TIMEOUT", "60"))
+
+# Remote Kyutai Pocket TTS service. The deployment is pinned to an upstream
+# revision so verified WAV chunks cannot be silently reused after the model or
+# its long-text behavior changes. Pocket TTS already performs sentence-aware
+# internal splitting; the application therefore keeps requests at physical
+# script-line/story granularity and only splits exceptionally long lines at
+# sentence boundaries. This avoids the audible 12-word seams required by the
+# more fragile Orpheus model.
+POCKET_TTS_URL = os.getenv("POCKET_TTS_URL", "http://10.60.11.3:8090").rstrip("/")
+POCKET_TTS_API_KEY = os.getenv("POCKET_TTS_API_KEY", "")
+POCKET_TTS_MODEL_REVISION = os.getenv(
+    "POCKET_TTS_MODEL_REVISION",
+    "adde0654090b1d54f6ee416ed10fd1b108069f13",
+).strip()
+POCKET_TTS_CHUNK_WORDS = int(os.getenv("POCKET_TTS_CHUNK_WORDS", "240"))
+POCKET_TTS_REQUEST_TIMEOUT = int(os.getenv("POCKET_TTS_REQUEST_TIMEOUT", "900"))
+
 # Once a job ID has been accepted, transient status/download failures must not
 # discard the still-running remote job. Allow an outage to heal for four hours;
 # the per-job TTS_TIMEOUT remains the final coarse ceiling.
@@ -236,6 +256,30 @@ ORPHEUS_EN_VOICES = {
     "zoe": {"gender": "female", "lang": "en"},
 }
 
+POCKET_TTS_EN_VOICES = {
+    "alba": {"gender": "female", "lang": "en"},
+    "anna": {"gender": "female", "lang": "en"},
+    "azelma": {"gender": "female", "lang": "en"},
+    "bill_boerst": {"gender": "male", "lang": "en"},
+    "caro_davy": {"gender": "female", "lang": "en"},
+    "charles": {"gender": "male", "lang": "en"},
+    "cosette": {"gender": "female", "lang": "en"},
+    "eponine": {"gender": "female", "lang": "en"},
+    "eve": {"gender": "female", "lang": "en"},
+    "fantine": {"gender": "female", "lang": "en"},
+    "george": {"gender": "male", "lang": "en"},
+    "jane": {"gender": "female", "lang": "en"},
+    "javert": {"gender": "male", "lang": "en"},
+    "jean": {"gender": "male", "lang": "en"},
+    "marius": {"gender": "male", "lang": "en"},
+    "mary": {"gender": "female", "lang": "en"},
+    "michael": {"gender": "male", "lang": "en"},
+    "paul": {"gender": "male", "lang": "en"},
+    "peter_yearsley": {"gender": "male", "lang": "en"},
+    "stuart_bell": {"gender": "male", "lang": "en"},
+    "vera": {"gender": "female", "lang": "en"},
+}
+
 
 def _build_tts_models(root: Path) -> dict[str, dict]:
     """Registry of local and remote TTS model invocation contracts.
@@ -288,6 +332,21 @@ def _build_tts_models(root: Path) -> dict[str, dict]:
             "single_speaker": True,
             "language": "en",
             "voices": ORPHEUS_EN_VOICES,
+            "acoustic_integrity": True,
+            "remote_preview": True,
+        },
+        "pocket-tts-en": {
+            "label": "English 100M (remote CPU)",
+            "provider": "Kyutai Pocket TTS",
+            "kind": "pocket_tts_http",
+            "single_speaker": True,
+            "language": "en",
+            "voices": POCKET_TTS_EN_VOICES,
+            "acoustic_integrity": True,
+            "remote_preview": True,
+            # Avoid synthesizing the full catalog during app startup. Pocket
+            # previews are generated and cached on first play instead.
+            "preload_previews": False,
         },
     }
 
@@ -331,7 +390,7 @@ def voice_sample_path(voice: str, tts_model: str | None = None):
     the model registry so an arbitrary string never reaches the glob.
     """
     model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
-    if model.get("kind") == "orpheus_http":
+    if model.get("remote_preview"):
         cached = VOICE_PREVIEW_CACHE_DIR / (tts_model or TTS_DEFAULT_MODEL) / f"{voice}.wav"
         return cached if cached.is_file() and cached.stat().st_size >= 44 else None
     if model.get("kind") != "local_subprocess":
@@ -346,7 +405,7 @@ def voice_preview_supported(voice: str, tts_model: str | None = None) -> bool:
     model = TTS_MODELS.get(tts_model or TTS_DEFAULT_MODEL, {})
     if voice not in voices_for_model(tts_model):
         return False
-    return model.get("kind") == "orpheus_http" or voice_sample_path(voice, tts_model) is not None
+    return bool(model.get("remote_preview")) or voice_sample_path(voice, tts_model) is not None
 
 
 HYPERFRAME_DIR = resolve_project_path(os.getenv("HYPERFRAME_DIR", "hyperframe"))

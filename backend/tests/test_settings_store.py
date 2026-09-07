@@ -35,6 +35,28 @@ class SettingsStoreTests(unittest.TestCase):
     def stored(self) -> dict:
         return json.loads(self.store.read_text(encoding="utf-8"))["values"]
 
+    def test_retired_orpheus_speed_is_pruned_and_cannot_change_narration(self):
+        self.store.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "values": {
+                        "ORPHEUS_TTS_SPEED_PERCENT": 140,
+                        "RENDER_QUALITY": "high",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        settings_store.apply_saved()
+
+        self.assertEqual(config.ORPHEUS_TTS_SPEED_PERCENT, 100)
+        self.assertNotIn("ORPHEUS_TTS_SPEED_PERCENT", self.stored())
+        self.assertEqual(self.stored()["RENDER_QUALITY"], "high")
+        with self.assertRaises(AssertionError):
+            self.field("ORPHEUS_TTS_SPEED_PERCENT")
+
     def test_defaults_apply_when_store_is_empty(self):
         self.assertFalse(self.store.exists())
         self.assertEqual(config.RENDER_FPS, settings_store.defaults()["RENDER_FPS"])
@@ -162,7 +184,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(
             self.field("TTS_DEFAULT_MODEL")["options"], sorted(config.TTS_MODELS)
         )
-        expected_voices = list(config.AVAILABLE_VOICES) + list(config.ORPHEUS_EN_VOICES)
+        expected_voices = list(config.AVAILABLE_VOICES) + list(config.ORPHEUS_EN_VOICES) + list(config.POCKET_TTS_EN_VOICES)
         self.assertEqual(self.field("TTS_DEFAULT_VOICE_1")["options"], expected_voices)
 
     def test_orpheus_api_key_is_masked(self):

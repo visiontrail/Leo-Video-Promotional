@@ -7,6 +7,7 @@ import {
   fetchScript,
   updateScript,
   regenerateTask,
+  resumeTaskTts,
   renderTask,
   scheduleTask,
   videoUrl,
@@ -87,8 +88,10 @@ export default function TaskDetail() {
     },
   })
 
+  const resumableFailedTts = task?.status === 'failed' && !!task.script_path && !!task.generated_title && !task.audio_path
+
   const regenMutation = useMutation({
-    mutationFn: () => regenerateTask(id!),
+    mutationFn: () => resumableFailedTts ? resumeTaskTts(id!) : regenerateTask(id!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['task', id] })
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
@@ -409,7 +412,7 @@ export default function TaskDetail() {
                   title={dirty ? 'Save your changes first' : isRunning ? 'Task is processing' : ''}
                   onClick={() => regenMutation.mutate()}
                 >
-                  {regenMutation.isPending ? 'Starting...' : 'Re-generate Audio'}
+                  {regenMutation.isPending ? 'Starting...' : resumableFailedTts ? 'Resume Audio' : 'Re-generate Audio'}
                 </button>
               </div>
               {regenMutation.isError && (

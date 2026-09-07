@@ -429,3 +429,45 @@ async def run_compose(task: TaskResponse, log: LogCallback | None = None):
     await update_task(task.id, video_path=video_path, status=TaskStatus.COMPLETE.value)
 
     task_log(f"Render complete: {video_path}")
+
+
+async def run_tts_resume(task: TaskResponse, log: LogCallback | None = None):
+    """Resume only TTS and its normal post-audio path from a saved script.
+
+    Unlike ``run_regenerate``, this recovery path deliberately preserves the
+    existing publication title and thumbnail. It is intended for a failed TTS
+    run whose upstream editorial artifacts are already complete.
+    """
+    task_dir = Path(task.output_dir) if task.output_dir else config.OUTPUTS_DIR / task.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    task_log = lambda message: emit_pipeline_log(task.id, task_dir, message, log)
+
+    script_path = task.script_path or str(task_dir / "script.txt")
+    if not Path(script_path).is_file():
+        raise FileNotFoundError(f"No script to resume TTS from at {script_path}")
+
+    task_log(f"TTS resume: Generating audio with {task.config.tts_model} from the saved script")
+    await update_task(task.id, status=TaskStatus.TTS.value, error_message=None)
+
+    voices = [task.config.voice_1]
+    if task.config.script_format == ScriptFormat.DIALOGUE:
+        voices.append(task.config.voice_2)
+
+    audio_dir = str(task_dir / "audio")
+    audio_path = await generate_tts(
+        script_path,
+        audio_dir,
+        voices,
+        task.config.tts_model,
+        log=task_log,
+    )
+    await update_task(task.id, audio_path=audio_path)
+
+    await _after_audio(
+        task,
+        script_path=script_path,
+        audio_path=audio_path,
+        task_log=task_log,
+        log=log,
+        prefix="TTS resume: ",
+    )

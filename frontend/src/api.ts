@@ -775,3 +775,9 @@ export function thumbnailPromptUrl(taskId: string): string {
 export function logsStreamUrl(taskId: string): string {
   return `${BASE}/api/tasks/${taskId}/logs/stream`;
 }
+
+export async function resumeTaskTts(taskId: string): Promise<Task> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/resume-tts`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

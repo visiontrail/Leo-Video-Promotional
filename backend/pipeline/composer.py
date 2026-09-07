@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -109,41 +110,99 @@ def _narration_completeness_failures(alignment: dict) -> list[str]:
     return failures
 
 
-def _orpheus_manifest_failures(
+def _narration_manifest_failures(
     script_path: str | Path,
     audio_path: str | Path,
     tts_model: str | None,
 ) -> list[str]:
-    """Recheck the fail-closed Orpheus source/audio contract before render."""
-    if tts_model != "orpheus-en":
-        return []
-    from backend.pipeline.tts import _file_sha256, _strip_speaker_labels
+    """Recheck the generated narration's source/audio contract before render."""
+    from backend.pipeline.tts import (
+        NARRATION_PACING_POLICY,
+        NARRATION_SYNTHESIS_SPEED_RATIO,
+        _expand_vibevoice_pronunciations,
+        _file_sha256,
+        _strip_speaker_labels,
+    )
 
     audio = Path(audio_path).resolve()
     manifest_path = audio.parent / "tts_manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return [f"Orpheus integrity manifest is unavailable: {exc}"]
+        return [f"narration integrity manifest is unavailable: {exc}"]
+    if not isinstance(manifest, dict):
+        return ["narration integrity manifest must be a JSON object"]
 
     failures: list[str] = []
-    integrity = manifest.get("integrity") or {}
-    if not integrity.get("passed"):
-        failures.append("Orpheus per-utterance acoustic verification did not pass")
-    if float(integrity.get("verified_source_coverage") or 0) != 1.0:
+    if manifest.get("pacing_policy") != NARRATION_PACING_POLICY:
         failures.append(
-            "Orpheus verified source coverage is not 100% "
-            f"({float(integrity.get('verified_source_coverage') or 0):.1%})"
+            "the narration manifest does not prove the natural-speech, "
+            "visuals-follow-audio pacing policy"
+        )
+    speed_ratio = manifest.get("synthesis_speed_ratio")
+    if (
+        isinstance(speed_ratio, bool)
+        or not isinstance(speed_ratio, (int, float))
+        or not math.isfinite(float(speed_ratio))
+        or float(speed_ratio) != NARRATION_SYNTHESIS_SPEED_RATIO
+    ):
+        failures.append(
+            "the narration manifest does not prove natural 1.0x synthesis speed "
+            f"(recorded {speed_ratio!r})"
+        )
+    manifest_model = str(manifest.get("model") or "")
+    effective_model = tts_model or config.TTS_DEFAULT_MODEL
+    if manifest_model and manifest_model != effective_model:
+        failures.append(
+            "the narration manifest model does not match the current task "
+            f"({manifest_model} != {effective_model})"
         )
 
+    model = config.TTS_MODELS.get(effective_model)
+    if model is None:
+        failures.append(f"the configured TTS model is unknown ({effective_model})")
+        return failures
+
     script = Path(script_path).read_text(encoding="utf-8")
-    canonical = _strip_speaker_labels(script)
-    source_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    canonical = (
+        script.strip()
+        if model.get("requires_speaker_labels")
+        else _strip_speaker_labels(script)
+    )
+    manifest_source = canonical
+    if model.get("kind") == "local_subprocess":
+        manifest_source, _ = _expand_vibevoice_pronunciations(canonical)
+    source_hash = hashlib.sha256(manifest_source.encode("utf-8")).hexdigest()
     if source_hash != manifest.get("source_text_sha256"):
-        failures.append("the current audio script changed after Orpheus verification")
+        failures.append("the current script changed after narration generation")
     if _file_sha256(audio) != manifest.get("output_audio_sha256"):
-        failures.append("the narration WAV changed after Orpheus verification")
+        failures.append("the narration WAV changed after narration generation")
+
+    if model.get("acoustic_integrity"):
+        provider = str(model.get("provider") or effective_model)
+        integrity = manifest.get("integrity") or {}
+        if not isinstance(integrity, dict):
+            failures.append(f"{provider} integrity report must be a JSON object")
+            return failures
+        if not integrity.get("passed"):
+            failures.append(f"{provider} per-part acoustic verification did not pass")
+        if float(integrity.get("verified_source_coverage") or 0) != 1.0:
+            failures.append(
+                f"{provider} verified source coverage is not 100% "
+                f"({float(integrity.get('verified_source_coverage') or 0):.1%})"
+            )
     return failures
+
+
+def _orpheus_manifest_failures(
+    script_path: str | Path,
+    audio_path: str | Path,
+    tts_model: str | None,
+) -> list[str]:
+    """Compatibility wrapper retained for focused integrity callers/tests."""
+    if tts_model != "orpheus-en":
+        return []
+    return _narration_manifest_failures(script_path, audio_path, tts_model)
 
 
 def _detect_silence_boundaries(wav_path: str, log: LogCallback | None = None) -> list[float]:
@@ -311,7 +370,73 @@ def _finalize_quality_report(
     *,
     multimodal_enabled: bool,
 ) -> dict:
-    """Mark quality truthfully without turning an advisory miss into no delivery."""
+    """Preserve quality evidence without repeating clean calibration passes."""
+    # The aggregate calibration deliberately raises the per-scene score band to
+    # the configured *average* target.  A conservative reviewer can therefore
+    # turn an otherwise complete first pass (every scene is a contract-valid
+    # ``match`` with no issues) into all-partial rows merely because each score
+    # is below that raised band.  Re-rendering the same media cannot resolve
+    # that rubric disagreement and used to create an unbounded compose loop.
+    #
+    # Keep failing closed for any real initial issue, malformed batch, missing
+    # frame, or deterministic grounding failure.  Only the combination of a
+    # clean pixel review *and* independently verified exact-scene grounding may
+    # treat the stricter aggregate pass as advisory.  Preserve the second-pass
+    # rows in the report so the decision remains auditable.
+    calibration = multimodal.get("calibration") or {}
+    initial_reviews = calibration.get("initial_scenes") or []
+    initial_batches = multimodal.get("batches") or []
+    scene_count = int(multimodal.get("scene_count") or 0)
+    clean_initial_semantics = (
+        multimodal.get("passed") is not True
+        and visual_grounding.get("passed") is True
+        and not multimodal.get("errors")
+        and calibration.get("attempted") is True
+        and not calibration.get("fallback_to_initial")
+        and scene_count > 0
+        and len(initial_reviews) == scene_count
+        and bool(initial_batches)
+        and all(
+            batch.get("image_received")
+            and batch.get("structure_valid")
+            and batch.get("contract_valid")
+            for batch in initial_batches
+        )
+        and all(
+            review.get("passed") is True
+            and review.get("rubric_consistent") is True
+            and review.get("gemini_verdict") == "match"
+            and review.get("issues") == []
+            for review in initial_reviews
+        )
+    )
+    if clean_initial_semantics:
+        calibrated_reviews = list(multimodal.get("scenes") or [])
+        calibration["advisory_scenes"] = calibrated_reviews
+        calibration["advisory_average_score"] = multimodal.get("average_score")
+        calibration["advisory_failed_scene_ids"] = list(
+            multimodal.get("failed_scene_ids") or []
+        )
+        calibration["override_reason"] = (
+            "The complete initial rendered-frame review marked every scene as a "
+            "contract-valid semantic match with no issues, and deterministic "
+            "grounding independently verified every exact scene binding. The "
+            "raised-floor aggregate calibration is retained as advisory polish "
+            "feedback instead of requesting an identical compose loop."
+        )
+        multimodal.update(
+            {
+                "status": "passed",
+                "passed": True,
+                "average_score": calibration.get("initial_average_score"),
+                "failed_scene_ids": [],
+                "release_basis": (
+                    "clean_initial_matches_plus_deterministic_grounding"
+                ),
+                "scenes": initial_reviews,
+                "calibration": calibration,
+            }
+        )
     multimodal_passed = (
         bool(multimodal.get("passed")) if multimodal_enabled else True
     )
@@ -386,7 +511,7 @@ async def compose_video(
             logger.info(message)
 
     # --- 1. Storyboard -----------------------------------------------------
-    manifest_failures = _orpheus_manifest_failures(script_path, audio_path, tts_model)
+    manifest_failures = _narration_manifest_failures(script_path, audio_path, tts_model)
     if manifest_failures:
         detail = "; ".join(manifest_failures)
         emit(f"Narration integrity failed; video render blocked: {detail}")
@@ -394,8 +519,10 @@ async def compose_video(
             "Narration audio does not retain a 100% verified script contract; "
             f"refusing to render. {detail}"
         )
-    if tts_model == "orpheus-en":
-        emit("Narration integrity: Orpheus manifest verifies 100% of source utterances")
+    effective_tts_model = tts_model or config.TTS_DEFAULT_MODEL
+    if config.TTS_MODELS.get(effective_tts_model, {}).get("acoustic_integrity"):
+        emit(f"Narration integrity: {config.tts_provider_label(effective_tts_model)} manifest verifies 100% of source parts")
+    emit("Narration pacing: natural 1.0x speech locked; scene timing follows measured audio")
     audio_duration = sb.get_audio_duration(audio_path)
     word_transcript, transcription = await av_sync.ensure_word_transcript(
         audio_path,

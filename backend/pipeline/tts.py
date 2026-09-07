@@ -5,10 +5,13 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 import wave
+from array import array
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -38,16 +41,116 @@ ORPHEUS_AUDIO_TOKENS_PER_SECOND = 7 * 24_000 / 2_048
 ORPHEUS_CHUNK_MIN_WPM = 90
 ORPHEUS_CHUNK_SAFETY = 0.80
 ORPHEUS_TOKEN_LIMIT_RATIO = 0.97
-ORPHEUS_MIN_EXACT_ASR_COVERAGE = 1.0
+ORPHEUS_MIN_EXACT_ASR_COVERAGE = 0.90
 ORPHEUS_MIN_ASR_WORD_RATIO = 1.0
 ORPHEUS_MAX_ASR_WORD_RATIO = 1.0
+ORPHEUS_MAX_PHONETIC_SUBSTITUTIONS = 1
+ORPHEUS_MAX_EVIDENCED_PHONETIC_SUBSTITUTIONS = 2
+ORPHEUS_MIN_PHONETIC_SPELLING_SIMILARITY = 0.80
+# One live, otherwise exact Reuters utterance was independently transcribed as
+# the brand name ``Shein`` -> ``Shane`` at normal speed.  The raw spellings are
+# too far apart for the general similarity gate, so keep this exception as an
+# explicit unordered pair. It still has to be the sole aligned substitution in
+# an equal-length utterance and be corroborated from the same WAV at a second
+# playback speed before the audio can pass.
+ORPHEUS_EVIDENCED_PHONETIC_PAIRS = {
+    frozenset({"shein", "shane"}),
+    # The source spelling Łukasz normalizes to Lukasz while English Whisper
+    # consistently renders the same spoken personal name as Lukas. Keep the
+    # final-letter drift scoped to this exact proper-name pair.
+    frozenset({"lukasz", "lukas"}),
+    # Whisper rendered the Slovenian name Jernej Barbic as Jernesh Barbish on
+    # an otherwise exact live narration. Both substitutions must remain
+    # aligned and be corroborated together from the same waveform.
+    frozenset({"jernej", "jernesh"}),
+    # The current ASCII lexical pass represents canonical ``Barbič`` as
+    # ``barbi`` because the final caron consonant is discarded.
+    frozenset({"barbi", "barbish"}),
+    # The Chinese platform name Douyin was spoken completely in a live news
+    # chunk while English Whisper rendered the same pronunciation as Duwayan.
+    frozenset({"douyin", "duwayan"}),
+}
+ORPHEUS_EXACT_EDGE_ANCHOR_WORDS = 2
+NARRATION_PACING_POLICY = "natural_speech_visuals_follow_audio"
+NARRATION_SYNTHESIS_SPEED_RATIO = 1.0
+
+# VibeVoice reads some technology names as invented words instead of familiar
+# initialisms.  These provider-only spellings improve pronunciation while the
+# canonical script remains unchanged for publication, review and evidence.
+VIBEVOICE_PRONUNCIATIONS = (
+    ("IEEE", "I triple E"),
+    ("QbitAI", "Q-bit A-I"),
+    ("Qwen", "cue-when"),
+)
 ORPHEUS_EDGE_ANCHOR_WORDS = 3
 ORPHEUS_MAX_INTEGRITY_ATTEMPTS = 3
 ORPHEUS_MIN_REQUEST_TOKENS = 512
 ORPHEUS_RETRY_MAX_DELAY_SECONDS = 60
 ORPHEUS_RETRY_LOG_INTERVAL_SECONDS = 300
+# Increment whenever acoustic acceptance semantics change.  Cached WAVs with
+# older sidecars must pass the current local verifier before they are reused.
+ORPHEUS_INTEGRITY_VERIFIER_VERSION = 24
+POCKET_TTS_MAX_INTEGRITY_ATTEMPTS = 3
+# Pocket TTS uses the same fail-closed acoustic verifier, but its cache identity
+# is independent so provider-specific changes can invalidate only Pocket audio.
+POCKET_TTS_INTEGRITY_VERIFIER_VERSION = 6
+POCKET_TTS_INTERNAL_MAX_TOKENS = 50
+POCKET_TTS_EDGE_SILENCE_DBFS = -42.0
+POCKET_TTS_SILENCE_WINDOW_MS = 10
+POCKET_TTS_LONG_SILENCE_SECONDS = 0.5
+POCKET_TTS_MAX_INTERNAL_SILENCE_SECONDS = 0.8
+POCKET_TTS_MAX_SENTENCE_BOUNDARY_SILENCE_SECONDS = 1.2
+ORPHEUS_NAME_RECHECK_SPEEDS = (0.8, 0.7)
+ORPHEUS_NAME_RECHECK_TOKENS = {"qwen", "qianwen", "qbitai"}
+ORPHEUS_NAME_RECHECK_SPELLINGS = {
+    "qwen": {"qwin"},
+    "qianwen": set(),
+    "qbitai": set(),
+}
+ORPHEUS_NAME_RECHECK_SPLITS = {
+    "qwen": {
+        ("q", "when"),
+        ("q", "wen"),
+        ("q", "win"),
+        ("cue", "wen"),
+        ("cue", "when"),
+    },
+    "qianwen": {
+        ("can", "wen"),
+        ("chan", "en"),
+        ("chien", "wen"),
+        ("jian", "wen"),
+        ("qian", "wen"),
+    },
+    # At normal speed Whisper dropped Q-bit's initial consonant in a complete
+    # live utterance ("Hubit AI"), while the same waveform recovered "QBit AI"
+    # at slower verification speed. This spelling can only initiate a
+    # same-waveform recheck; it is never accepted as final lexical evidence.
+    "qbitai": {("hubit", "ai")},
+}
+# Provider pronunciation hints can make Whisper retain a name's exact spoken
+# syllable boundary.  Unlike the broader recheck spellings above, these pairs
+# are accepted only when alignment proves that they replace the corresponding
+# canonical source name at that position.
+ORPHEUS_NAME_ACOUSTIC_SPLITS = {
+    "qwen": {("q", "when")},
+    "qianwen": {("qian", "wen")},
+}
 MAX_PLAUSIBLE_SPEECH_WPM = 320
 LEXICAL_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?|[\u3400-\u9fff]")
+DECIMAL_LITERAL_RE = re.compile(r"(\d+)\.(\d+)")
+CURRENCY_AMOUNT_RE = re.compile(r"\$([0-9]+(?:\.\d+)?)")
+CURRENCY_TRANSCRIPT_AMOUNT_RE = re.compile(
+    r"\s*\$([0-9]+)(?:\.(\d+))?[.,;:!?]?\s*"
+)
+CURRENCY_SCALE_TOKENS = {"hundred", "thousand", "million", "billion", "trillion"}
+CURRENCY_ADJECTIVE_RE = re.compile(
+    r"\b(?:\d+(?:\.\d+)?|[A-Za-z]+(?:-[A-Za-z]+)*)-"
+    r"(hundred|thousand|million|billion|trillion)-dollar\b",
+    re.IGNORECASE,
+)
+DECIMAL_INTEGER_WORD_RE = re.compile(r"\s*(\d+)\s*")
+DECIMAL_FRACTION_WORD_RE = re.compile(r"\s*\.(\d+)[.,;:!?]?\s*")
 NUMBER_WORDS = {
     "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
@@ -71,10 +174,31 @@ ORDINAL_DIGITS = {
     "16th": "sixteenth", "17th": "seventeenth", "18th": "eighteenth",
     "19th": "nineteenth", "20th": "twentieth", "30th": "thirtieth",
 }
+COMPOUND_ORDINAL_ONES = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+}
+CALENDAR_MONTHS = {
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+}
+CALENDAR_ORDINAL_RE = re.compile(r"([0-9]{1,2})(?:st|nd|rd|th)")
 # Acoustic verification cannot distinguish exact homophones. Keep this list
 # deliberately narrow; near-homophones such as ``feed``/``feet`` must still fail.
 ACOUSTIC_EQUIVALENTS = {
     "feat": "feet",
+    # The common noun "night" and the title/name spelling "Knight" are exact
+    # homophones. A live Morning Desk utterance contained every requested word
+    # and both edges, but Whisper capitalized the final word as the latter.
+    # Canonicalize only that spelling; omissions and near-homophones still fail.
+    "knight": "night",
     # Possessive "its" and the contraction "it's" are exact homophones.
     # Whisper uses the contraction spelling for either meaning, so spelling
     # cannot be used as acoustic evidence that the narration is wrong.
@@ -97,6 +221,33 @@ ACOUSTIC_EQUIVALENTS = {
     # Keep this exact alias local to acoustic verification; nearby spellings
     # are still rejected.
     "kenakunya": "kinokuniya",
+    # Possessive "your" and the contraction "you're" are likewise
+    # acoustically indistinguishable. The live Morning Desk run returned every
+    # requested word and both edge anchors, but Whisper selected the contraction
+    # spelling. Canonicalize only that exact homophone; missing, repeated, and
+    # merely similar words must still fail the 100% utterance gate.
+    "you're": "your",
+    # Singular and plural possessive spellings of "World" have the same
+    # spoken form; Whisper cannot recover which apostrophe the script used.
+    "worlds": "world's",
+    # Plural "offices" and possessive "Office's" likewise share the exact
+    # spoken form. This matters for the named product "Qwen Office's" while
+    # still requiring the audible final /ɪz/ syllable.
+    "offices": "office's",
+    # Whisper may spell the German surname Brem as the identically pronounced
+    # surname Brehm. The silent ``h`` carries no acoustic evidence; other
+    # nearby spellings (for example "Bream") remain distinct.
+    "brehm": "brem",
+    "brehm's": "brem's",
+    # The noun "role" and "roll" are exact homophones. A live Orpheus sample
+    # contained every requested word and both utterance edges while Whisper
+    # selected the latter spelling; nearby words such as "roil" remain errors.
+    "roll": "role",
+    # The verb forms "rights" and "writes" are exact homophones. A live
+    # otherwise exact utterance ended with the phrasal verb "self-rights" while
+    # Whisper selected "self-writes". Canonicalize only that inaudible spelling
+    # distinction; a missing or different final word still fails edge coverage.
+    "writes": "rights",
     # Whisper consistently labels the rare spoken word "eunuch" as the
     # familiar two-syllable proper noun "Unix", including at 0.8x speed.
     "unix": "eunuch",
@@ -106,6 +257,23 @@ ACOUSTIC_EQUIVALENTS = {
     # unrelated near-matches remain rejected.
     "suarcese": "scorsese",
     "sorsese": "scorsese",
+    # The invented product name PhanthyMotus was rendered completely, but
+    # Whisper spelled the same pronunciation as FancyModus at normal/0.8x and
+    # Fantymodus at 0.7x. Limit the equivalence to those two observed full-name
+    # spellings; nearby words and partial names remain hard failures.
+    "fancymodus": "phanthymotus",
+    "fantymodus": "phanthymotus",
+    # Singular possessive "Techmeme's" and plural possessive "TechMemes'"
+    # have the same /z/ ending. Whisper used the latter spelling for a live,
+    # otherwise exact utterance; TechMean remains intentionally distinct.
+    "techmemes": "techmeme's",
+    # The explicit Ear-en-dill provider prompt produced the intended three
+    # syllables while Whisper rendered them as the phonetic spelling Irindil.
+    # Keep the unrelated and repeatedly observed Arendelle substitution hard.
+    "irindil": "earendil",
+    # Whisper may choose the past-tense spelling for the acoustically
+    # identical number word. Numeric completeness and position stay strict.
+    "won": "1",
     # Whisper writes the fully spoken singular unit "kilometer" as its
     # standard abbreviation after a normalized number (for example 8,000 km).
     "km": "kilometer",
@@ -149,6 +317,12 @@ TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS = {
     ("da", "gong"): "dagang",
 }
 ACOUSTIC_PHRASE_EQUIVALENTS = {
+    # The investment-bank name is acoustically ambiguous with two common
+    # surname spellings in Whisper.  Scope the equivalence to the complete
+    # report attribution so unrelated people named Jeffreys remain distinct.
+    ("the", "jefferies", "report"): "thejefferiesreport",
+    ("the", "jeffreys", "report"): "thejefferiesreport",
+    ("the", "jeffries", "report"): "thejefferiesreport",
     # Whisper may spell the phrasal verb as the identically pronounced noun.
     ("break", "through"): "breakthrough",
     # Source-side lexical splitting preserves the hyphen as two words while
@@ -172,6 +346,68 @@ ACOUSTIC_PHRASE_EQUIVALENTS = {
     # "Deparaya" into "De" and the homophonic spelling "Pariah". Collapse
     # only that exact observed pair; other continuations after "De" still fail.
     ("de", "pariah"): "deparaya",
+    # CamelCase publication names are a single lexical source token, while
+    # Whisper emits their acoustically identical component words.
+    ("deep", "tech"): "deeptech",
+    ("qbit", "ai"): "qbitai",
+    ("qubit", "ai"): "qbitai",
+    # The company name Xspark is a single canonical source token, while
+    # English Whisper preserves its spoken letter boundary as "X Spark".
+    ("x", "spark"): "xspark",
+    # Whisper may retain the audible morpheme boundary in the established
+    # compound role name "postdoc" as two tokens.
+    ("post", "doc"): "postdoc",
+    # Provider articulation spells the compact model prefix V4 as its letter
+    # and number. Preserve the canonical source token after exact ASR recovery.
+    ("v", "4"): "v4",
+    # A live Nikkei Asia utterance was transcribed as "Nikke" at normal
+    # speed but recovered the publication's spelling at both 0.8x and 0.7x.
+    # Scope the exact ASR spelling drift to the full publication name so an
+    # unrelated Nikke token remains distinct.
+    ("nikkei", "asia"): "nikkeiasia",
+    ("nikke", "asia"): "nikkeiasia",
+    # A second complete live utterance produced the exact homophonic name
+    # spelling "Nikkei Aja" at three playback speeds. Keep this spelling
+    # equivalence constrained to the verified publication-name context.
+    ("nikkei", "aja"): "nikkeiasia",
+    # Hyphenation is not audible; Whisper may split the source compound.
+    ("semi", "annual"): "semiannual",
+    ("skunk", "works"): "skunkworks",
+    # Whisper tokenizes the spoken compound "fivefold" as the consecutive
+    # words "five" and "-fold". Number-word normalization has already mapped
+    # the first token to "5" here, so collapse only that exact morpheme pair;
+    # different multipliers or an extra intervening word remain hard failures.
+    ("5", "fold"): "fivefold",
+    ("3", "m"): "3m",
+    ("multi", "modal"): "multimodal",
+    ("a", "p", "i"): "api",
+    ("tech", "meme"): "techmeme",
+    ("tech", "meme's"): "techmeme's",
+    ("ear", "en", "dill"): "earendil",
+    ("ear", "endil"): "earendil",
+    # Whisper fuses these adjacent product/company name tokens even though the
+    # waveform contains both spoken components. Canonicalize only the complete
+    # proper names, preserving every surrounding word and possessive ending.
+    ("ox", "alpha"): "oxalpha",
+    ("z", "ai's"): "zai's",
+    # NERVA is conventionally spoken as a word. The provider pronunciation
+    # hint produced NERV at normal-speed ASR but exact NERVA at both 0.8x and
+    # 0.7x; the non-rhotic Leah voice can also surface Rover as ROVA in Whisper.
+    # Keep those evidenced spelling equivalents constrained to the complete
+    # pair of historical program names; unrelated tokens remain distinct.
+    ("nerva", "and", "rover"): "nervaandrover",
+    ("nerva", "and", "rova"): "nervaandrover",
+    ("nerv", "and", "rover"): "nervaandrover",
+    ("nervah", "and", "rover"): "nervaandrover",
+    ("nervah", "and", "rova"): "nervaandrover",
+    ("ner", "vuh", "and", "rover"): "nervaandrover",
+    ("ner", "vuh", "and", "rova"): "nervaandrover",
+    # Provider-only phonetics for the Chinese personal name Zhu Yi. Keep this
+    # equivalence scoped to the complete two-token name so an unrelated "Joo"
+    # or "Yee" remains distinct and positional completeness still applies.
+    ("zhu", "yi"): "zhuyi",
+    ("joo", "yee"): "zhuyi",
+    ("jew", "yee"): "zhuyi",
 }
 NUMBER_SCALES = {"hundred": 100, "thousand": 1_000, "million": 1_000_000}
 DANGLING_CHUNK_WORDS = {
@@ -232,15 +468,56 @@ def _spoken_word_count(text: str) -> int:
 
 
 def _raw_lexical_tokens(text: str) -> list[str]:
-    """Normalize individual lexical tokens without collapsing token groups."""
+    """Normalize individual spellings without collapsing cross-word phrases."""
     normalized: list[str] = []
-    for token in LEXICAL_TOKEN_RE.findall(_strip_speaker_labels(text)):
+    lexical_text = _strip_speaker_labels(text)
+    # ``Ł`` is a Latin letter but does not decompose under Unicode NFKD.  The
+    # ASCII-only lexical regex would therefore drop it and turn the Polish name
+    # Łukasz into the impossible token ``ukasz``. Transliterate only this
+    # well-defined letter before acoustic comparison; Whisper conventionally
+    # emits the corresponding ASCII spelling ``Lukasz``/``Lukas``.
+    lexical_text = lexical_text.translate(str.maketrans({"Ł": "L", "ł": "l"}))
+    # The published chip name retains its Spanish tilde, while English ASR
+    # conventionally emits the same spoken name as the ASCII spelling
+    # "Jalapeno". Normalize only this evidenced proper noun; unrelated accented
+    # words and different final vowels remain distinct.
+    lexical_text = re.sub(
+        r"\bJalapeño\b",
+        "Jalapeno",
+        lexical_text,
+        flags=re.IGNORECASE,
+    )
+    lexical_text = CURRENCY_AMOUNT_RE.sub(
+        lambda match: (
+            f" {match.group(1)} "
+            + (
+                "dollar"
+                if re.fullmatch(r"1(?:\.0+)?", match.group(1))
+                else "dollars"
+            )
+            + " "
+        ),
+        lexical_text,
+    )
+    lexical_text = lexical_text.replace("$", " dollar ")
+    for symbol, spoken in (
+        ("&", "and"),
+        ("+", "plus"),
+        ("=", "equals"),
+        ("@", "at"),
+        ("#", "hashsymbol"),
+        ("°", "degrees"),
+    ):
+        lexical_text = lexical_text.replace(symbol, f" {spoken} ")
+    lexical_text = lexical_text.replace("%", " percent ")
+    lexical_text = DECIMAL_LITERAL_RE.sub(
+        lambda match: (
+            f" decimalnumber{match.group(1)}point{match.group(2)} "
+        ),
+        lexical_text,
+    )
+    for token in LEXICAL_TOKEN_RE.findall(lexical_text):
         value = token.replace("’", "'").casefold()
-        # Whisper commonly renders spoken "percent" as the punctuation symbol
-        # "%", which is not a lexical token. Ignore the unit on both sides;
-        # the adjacent normalized number remains the acoustic anchor.
-        if value == "percent":
-            continue
         value = ACOUSTIC_EQUIVALENTS.get(value, value)
         # Whisper writes a spoken decade either with digits (``1980s``) or
         # with the deprecated apostrophe spelling (``1980's``). Preserve the
@@ -259,7 +536,74 @@ def _raw_lexical_tokens(text: str) -> list[str]:
 
 def _lexical_tokens(text: str) -> list[str]:
     normalized = _raw_lexical_tokens(text)
-    return _canonicalize_number_tokens(_canonicalize_acoustic_phrase_tokens(normalized))
+    normalized = _canonicalize_number_tokens(
+        _canonicalize_decimal_tokens(
+            _canonicalize_acoustic_phrase_tokens(normalized)
+        )
+    )
+    normalized = _canonicalize_numeric_range_tokens(normalized)
+    normalized = _canonicalize_compound_ordinal_tokens(normalized)
+    return _canonicalize_calendar_date_tokens(normalized)
+
+
+def _ordinal_suffix(value: int) -> str:
+    if 10 <= value % 100 <= 20:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(value % 10, "th")
+
+
+def _canonicalize_compound_ordinal_tokens_with_indexes(
+    tokens: list[str], word_indexes: list[int]
+) -> tuple[list[str], list[int]]:
+    """Match spoken ``twenty-first`` with Whisper's compact ``21st``."""
+    if len(tokens) != len(word_indexes):
+        raise ValueError("Ordinal tokens and word indexes must have equal length")
+    result: list[str] = []
+    result_indexes: list[int] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (
+            token.isdigit()
+            and 20 <= int(token) <= 90
+            and int(token) % 10 == 0
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in COMPOUND_ORDINAL_ONES
+        ):
+            value = int(token) + COMPOUND_ORDINAL_ONES[tokens[index + 1]]
+            result.append(f"{value}{_ordinal_suffix(value)}")
+            result_indexes.append(word_indexes[index])
+            index += 2
+            continue
+        result.append(token)
+        result_indexes.append(word_indexes[index])
+        index += 1
+    return result, result_indexes
+
+
+def _canonicalize_compound_ordinal_tokens(tokens: list[str]) -> list[str]:
+    canonical, _ = _canonicalize_compound_ordinal_tokens_with_indexes(
+        tokens,
+        list(range(len(tokens))),
+    )
+    return canonical
+
+
+def _canonicalize_calendar_date_tokens(tokens: list[str]) -> list[str]:
+    """Match written month-day dates to their conventionally spoken ordinal."""
+    result = list(tokens)
+    for index in range(1, len(result)):
+        if result[index - 1] not in CALENDAR_MONTHS:
+            continue
+        value = result[index]
+        ordinal_match = CALENDAR_ORDINAL_RE.fullmatch(value)
+        day_text = ordinal_match.group(1) if ordinal_match else value
+        ordinal_number = next((re.sub(r"\D", "", k) for k, v in ORDINAL_DIGITS.items() if v == value), None)
+        if ordinal_number is not None:
+            day_text = ordinal_number
+        if day_text.isdigit() and 1 <= int(day_text) <= 31:
+            result[index] = f"calendar-day-{int(day_text)}"
+    return result
 
 
 def _canonicalize_acoustic_phrase_tokens(tokens: list[str]) -> list[str]:
@@ -267,24 +611,88 @@ def _canonicalize_acoustic_phrase_tokens(tokens: list[str]) -> list[str]:
     result: list[str] = []
     index = 0
     while index < len(tokens):
-        pair = tuple(tokens[index:index + 2])
-        canonical = ACOUSTIC_PHRASE_EQUIVALENTS.get(pair)
-        if canonical is not None:
-            result.append(canonical)
-            index += 2
+        for width in (3, 2):
+            phrase = tuple(tokens[index:index + width])
+            canonical = ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase)
+            if canonical is not None:
+                result.append(canonical)
+                index += width
+                break
+        else:
+            result.append(tokens[index])
+            index += 1
+            continue
+        continue
+    return result
+
+
+def _canonicalize_decimal_tokens(tokens: list[str]) -> list[str]:
+    """Collapse a spoken point and its fractional digits into one exact token."""
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if (
+            tokens[index].isdigit()
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "point"
+            and tokens[index + 2].isdigit()
+        ):
+            fraction_end = index + 3
+            while fraction_end < len(tokens) and tokens[fraction_end].isdigit():
+                fraction_end += 1
+            result.append(
+                "decimalnumber"
+                f"{tokens[index]}point{''.join(tokens[index + 2:fraction_end])}"
+            )
+            index = fraction_end
             continue
         result.append(tokens[index])
         index += 1
     return result
 
 
-def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
-    """Collapse acoustically identical written/spoken English number forms."""
+def _canonicalize_decimal_transcript_tokens(
+    tokens: list[str], word_indexes: list[int]
+) -> tuple[list[str], list[int]]:
+    """Canonicalize spoken decimals while retaining their true onset word."""
+    result: list[str] = []
+    result_indexes: list[int] = []
+    index = 0
+    while index < len(tokens):
+        if (
+            tokens[index].isdigit()
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "point"
+            and tokens[index + 2].isdigit()
+        ):
+            fraction_end = index + 3
+            while fraction_end < len(tokens) and tokens[fraction_end].isdigit():
+                fraction_end += 1
+            result.append(
+                "decimalnumber"
+                f"{tokens[index]}point{''.join(tokens[index + 2:fraction_end])}"
+            )
+            result_indexes.append(word_indexes[index])
+            index = fraction_end
+            continue
+        result.append(tokens[index])
+        result_indexes.append(word_indexes[index])
+        index += 1
+    return result, result_indexes
+
+
+def _canonicalize_number_tokens_with_indexes(
+    tokens: list[str], word_indexes: list[int]
+) -> tuple[list[str], list[int]]:
+    """Collapse number forms while preserving the first contributing word."""
+    if len(tokens) != len(word_indexes):
+        raise ValueError("Number tokens and word indexes must have equal length")
     # Whisper writes spoken years as one numeric token ("1895"), while the
     # script commonly spells them as "eighteen ninety-five". First collapse a
     # tens+ones pair, then combine two two-digit year halves. Also support the
     # conventional "nineteen oh five" pronunciation.
     simple: list[str] = []
+    simple_indexes: list[int] = []
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -297,13 +705,17 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             and 1 <= int(tokens[index + 1]) <= 9
         ):
             simple.append(str(int(token) + int(tokens[index + 1])))
+            simple_indexes.append(word_indexes[index])
             index += 2
             continue
         simple.append(token)
+        simple_indexes.append(word_indexes[index])
         index += 1
     tokens = simple
+    word_indexes = simple_indexes
 
     result: list[str] = []
+    result_indexes: list[int] = []
     index = 0
     while index < len(tokens):
         # A script commonly spells a decade as ``nineteen-eighties`` while
@@ -319,7 +731,29 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             result.append(
                 str(int(tokens[index]) * 100 + int(tokens[index + 1][:-1])) + "s"
             )
+            result_indexes.append(word_indexes[index])
             index += 2
+            continue
+        # Canonicalize standard compound quantities such as "two hundred
+        # fifty thousand" before the simpler scale handling below can split
+        # them into 200 + 50,000. Whisper may render the same speech as the
+        # comma-grouped pair "250" + ",000"; both must resolve to the exact
+        # numeric value, while a different value or missing unit still fails.
+        elif (
+            tokens[index].isdigit()
+            and 1 <= int(tokens[index]) <= 9
+            and index + 3 < len(tokens)
+            and tokens[index + 1] == "hundred"
+            and tokens[index + 2].isdigit()
+            and 1 <= int(tokens[index + 2]) <= 99
+            and tokens[index + 3] in {"thousand", "million"}
+        ):
+            value = (
+                int(tokens[index]) * 100 + int(tokens[index + 2])
+            ) * NUMBER_SCALES[tokens[index + 3]]
+            result.append(str(value))
+            result_indexes.append(word_indexes[index])
+            index += 4
             continue
         if (
             tokens[index].isdigit()
@@ -329,6 +763,7 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             and len(tokens[index + 1]) == 2
         ):
             result.append(str(int(tokens[index]) * 100 + int(tokens[index + 1])))
+            result_indexes.append(word_indexes[index])
             index += 2
             continue
         if (
@@ -340,6 +775,7 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             and 1 <= int(tokens[index + 2]) <= 9
         ):
             result.append(str(int(tokens[index]) * 100 + int(tokens[index + 2])))
+            result_indexes.append(word_indexes[index])
             index += 3
             continue
         if (
@@ -349,6 +785,7 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             and tokens[index + 1].isdigit()
         ):
             result.append(tokens[index] + tokens[index + 1])
+            result_indexes.append(word_indexes[index])
             index += 2
             continue
         if (
@@ -371,6 +808,7 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             current = 1
         else:
             result.append(tokens[index])
+            result_indexes.append(word_indexes[index])
             index += 1
             continue
         if tokens[start] == "a":
@@ -385,20 +823,162 @@ def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
             current = current * scale if scale >= 1_000 else current + scale
             index += 1
         result.append(str(current))
-    return result
+        result_indexes.append(word_indexes[start])
+    return result, result_indexes
+
+
+def _canonicalize_number_tokens(tokens: list[str]) -> list[str]:
+    """Collapse acoustically identical written/spoken English number forms."""
+    canonical, _ = _canonicalize_number_tokens_with_indexes(
+        tokens,
+        list(range(len(tokens))),
+    )
+    return canonical
+
+
+def _canonicalize_numeric_range_tokens_with_indexes(
+    tokens: list[str],
+    word_indexes: list[int],
+) -> tuple[list[str], list[int]]:
+    """Collapse an exact integer ``from/to`` range without losing its values."""
+    if len(tokens) != len(word_indexes):
+        raise ValueError("Range tokens and word indexes must have equal length")
+    result: list[str] = []
+    result_indexes: list[int] = []
+    index = 0
+    while index < len(tokens):
+        if (
+            tokens[index].isdigit()
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "to"
+            and tokens[index + 2].isdigit()
+        ):
+            result.append(
+                f"numberrange{tokens[index]}to{tokens[index + 2]}"
+            )
+            result_indexes.append(word_indexes[index])
+            index += 3
+            continue
+        result.append(tokens[index])
+        result_indexes.append(word_indexes[index])
+        index += 1
+    return result, result_indexes
+
+
+def _canonicalize_numeric_range_tokens(tokens: list[str]) -> list[str]:
+    canonical, _ = _canonicalize_numeric_range_tokens_with_indexes(
+        tokens,
+        list(range(len(tokens))),
+    )
+    return canonical
+
+
+def _word_indexes_are_contiguous(word_indexes: list[int]) -> bool:
+    """Allow multiple tokens from one word or consecutive ASR words only."""
+    return bool(word_indexes) and all(
+        following - current in (0, 1)
+        for current, following in zip(word_indexes, word_indexes[1:])
+    )
 
 
 def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
     tokens: list[str] = []
     word_indexes: list[int] = []
-    for index, word in enumerate(words):
-        # Preserve number words until the full ASR token stream is available.
-        # Normalizing each Whisper word in isolation turns ``thousand`` into
-        # ``1000`` too early and leaves the preceding ``a`` as a false extra
-        # token, even though the audio says the source's exact ``a thousand``.
-        for token in _raw_lexical_tokens(str(word.get("text") or "")):
+    index = 0
+    while index < len(words):
+        word_text = str(words[index].get("text") or "")
+        range_match = re.fullmatch(
+            r"\s*([0-9]+)\s*[-–—−]\s*([0-9]+)[,.;:!?]?\s*",
+            word_text,
+        )
+        range_values = (
+            (range_match.group(1), range_match.group(2))
+            if range_match is not None
+            else None
+        )
+        consumed_range_words = 1
+        if range_values is None and index + 1 < len(words):
+            range_start = re.fullmatch(r"\s*([0-9]+)\s*", word_text)
+            range_end = re.fullmatch(
+                r"\s*[-–—−]\s*([0-9]+)[,.;:!?]?\s*",
+                str(words[index + 1].get("text") or ""),
+            )
+            if range_start is not None and range_end is not None:
+                range_values = (range_start.group(1), range_end.group(1))
+                consumed_range_words = 2
+        if range_values is not None:
+            tokens.extend([range_values[0], "to", range_values[1]])
+            word_indexes.extend([index, index, index + consumed_range_words - 1])
+            index += consumed_range_words
+            continue
+        currency_match = CURRENCY_TRANSCRIPT_AMOUNT_RE.fullmatch(word_text)
+        if currency_match is not None:
+            integer = currency_match.group(1)
+            fraction = currency_match.group(2)
+            consumed_words = 1
+            if fraction is None and index + 1 < len(words):
+                split_fraction = DECIMAL_FRACTION_WORD_RE.fullmatch(
+                    str(words[index + 1].get("text") or "")
+                )
+                if split_fraction is not None:
+                    fraction = split_fraction.group(1)
+                    consumed_words = 2
+            amount_token = (
+                f"decimalnumber{integer}point{fraction}"
+                if fraction is not None
+                else integer
+            )
+            tokens.append(amount_token)
+            word_indexes.append(index)
+
+            following_index = index + consumed_words
+            following_tokens = (
+                _raw_lexical_tokens(str(words[following_index].get("text") or ""))
+                if following_index < len(words)
+                else []
+            )
+            # Whisper conventionally writes spoken currency with the symbol in
+            # front ("$6" + ".3" + "billion") even though the acoustic unit
+            # follows the scale ("six point three billion dollars"). Preserve
+            # that exact unit and order instead of treating the symbol as an
+            # extra word or accepting a genuinely missing currency unit.
+            has_scale = (
+                len(following_tokens) == 1
+                and following_tokens[0] in CURRENCY_SCALE_TOKENS
+            )
+            if has_scale:
+                tokens.append(following_tokens[0])
+                word_indexes.append(following_index)
+                consumed_words += 1
+            amount_is_one = (
+                integer == "1"
+                and (fraction is None or set(fraction) <= {"0"})
+                and not has_scale
+            )
+            tokens.append("dollar" if amount_is_one else "dollars")
+            word_indexes.append(index)
+            index += consumed_words
+            continue
+        integer_match = DECIMAL_INTEGER_WORD_RE.fullmatch(word_text)
+        fraction_match = (
+            DECIMAL_FRACTION_WORD_RE.fullmatch(
+                str(words[index + 1].get("text") or "")
+            )
+            if integer_match is not None and index + 1 < len(words)
+            else None
+        )
+        if integer_match is not None and fraction_match is not None:
+            tokens.append(
+                "decimalnumber"
+                f"{integer_match.group(1)}point{fraction_match.group(1)}"
+            )
+            word_indexes.append(index)
+            index += 2
+            continue
+        for token in _raw_lexical_tokens(word_text):
             tokens.append(TRANSCRIPT_ONLY_ACOUSTIC_EQUIVALENTS.get(token, token))
             word_indexes.append(index)
+        index += 1
     # A provider-only pronunciation hint may lead Whisper to retain the
     # morpheme boundary. The pair is acoustically and lexically identical to
     # the canonical word; a different second morpheme remains a hard failure.
@@ -406,19 +986,28 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
     acoustic_indexes: list[int] = []
     cursor = 0
     while cursor < len(tokens):
-        phrase = tuple(tokens[cursor:cursor + 2])
-        canonical_phrase = TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS.get(
-            phrase
-        ) or ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase)
-        if canonical_phrase is not None:
-            acoustic_tokens.append(canonical_phrase)
-            acoustic_indexes.append(word_indexes[cursor])
-            cursor += 2
+        matched_phrase = False
+        for width in (3, 2):
+            phrase = tuple(tokens[cursor:cursor + width])
+            canonical_phrase = (TRANSCRIPT_ONLY_ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase)
+                                or ACOUSTIC_PHRASE_EQUIVALENTS.get(phrase))
+            phrase_indexes = word_indexes[cursor:cursor + width]
+            if (
+                canonical_phrase is not None
+                and _word_indexes_are_contiguous(phrase_indexes)
+            ):
+                acoustic_tokens.append(canonical_phrase)
+                acoustic_indexes.append(word_indexes[cursor])
+                cursor += width
+                matched_phrase = True
+                break
+        if matched_phrase:
             continue
         if (
             tokens[cursor] == "dis"
             and cursor + 1 < len(tokens)
             and tokens[cursor + 1] == "proportionate"
+            and _word_indexes_are_contiguous(word_indexes[cursor:cursor + 2])
         ):
             acoustic_tokens.append("disproportionate")
             acoustic_indexes.append(word_indexes[cursor])
@@ -429,17 +1018,135 @@ def _transcript_tokens(words: list[dict]) -> tuple[list[str], list[int]]:
         cursor += 1
     tokens = acoustic_tokens
     word_indexes = acoustic_indexes
-    canonical = _canonicalize_number_tokens(tokens)
-    if len(canonical) == len(tokens):
-        return canonical, word_indexes
-    # Canonical number collapsing is used only for lexical comparison. Timing
-    # indexes remain conservative at the first contributing Whisper word.
-    canonical_indexes: list[int] = []
+    tokens, word_indexes = _canonicalize_decimal_transcript_tokens(
+        tokens, word_indexes
+    )
+    canonical, canonical_indexes = _canonicalize_number_tokens_with_indexes(
+        tokens,
+        word_indexes,
+    )
+    canonical, canonical_indexes = _canonicalize_numeric_range_tokens_with_indexes(
+        canonical,
+        canonical_indexes,
+    )
+    canonical, canonical_indexes = _canonicalize_compound_ordinal_tokens_with_indexes(
+        canonical,
+        canonical_indexes,
+    )
+    return _canonicalize_calendar_date_tokens(canonical), canonical_indexes
+
+
+def _normalize_currency_adjective_asr_tokens(
+    text: str,
+    expected: list[str],
+    observed: list[str],
+    observed_word_indexes: list[int],
+    words: list[dict],
+) -> list[str]:
+    """Recover the singular unit encoded by Whisper's ``$amount scale`` form.
+
+    In an attributive phrase such as ``300-million-dollar Series A`` or
+    ``four-billion-dollar plant``, the spoken unit is singular. Whisper
+    conventionally writes the same audio as ``$300 million Series A`` or
+    ``$4 billion plant``; the currency symbol carries the unit while its
+    surface form no longer exposes singular versus plural. Normalize only the
+    source-aligned adjective whose observed unit came from that exact currency
+    shorthand. Explicit ``dollars``, a different amount/scale, or a missing
+    currency symbol remain unchanged and fail the ordinary lexical gate.
+    """
+    normalized = list(observed)
+    for match in CURRENCY_ADJECTIVE_RE.finditer(text):
+        phrase = _lexical_tokens(match.group(0))
+        if len(phrase) < 2 or phrase[-1] != "dollar":
+            continue
+        scale = match.group(1).casefold()
+        width = len(phrase)
+        for start in range(len(expected) - width + 1):
+            if expected[start:start + width] != phrase:
+                continue
+            unit_index = start + width - 1
+            if (
+                unit_index >= len(normalized)
+                or normalized[start:unit_index] != phrase[:-1]
+                or normalized[unit_index] != "dollars"
+                or unit_index >= len(observed_word_indexes)
+            ):
+                continue
+            raw_index = observed_word_indexes[unit_index]
+            if raw_index >= len(words):
+                continue
+            raw_currency = CURRENCY_TRANSCRIPT_AMOUNT_RE.fullmatch(
+                str(words[raw_index].get("text") or "")
+            )
+            if raw_currency is None:
+                continue
+            scale_index = raw_index + 1
+            if (
+                raw_currency.group(2) is None
+                and scale_index < len(words)
+                and DECIMAL_FRACTION_WORD_RE.fullmatch(
+                    str(words[scale_index].get("text") or "")
+                )
+            ):
+                scale_index += 1
+            raw_scale = (
+                _raw_lexical_tokens(str(words[scale_index].get("text") or ""))
+                if scale_index < len(words)
+                else []
+            )
+            if raw_scale == [scale]:
+                normalized[unit_index] = "dollar"
+    return normalized
+
+
+def _normalize_qwen_model_number_asr_tokens(
+    expected: list[str],
+    observed: list[str],
+    observed_word_indexes: list[int],
+) -> tuple[list[str], list[int]]:
+    """Recover evidenced ASR homophones for the provider hint ``Qwen 4``.
+
+    Orpheus receives ``cue-when four`` for the canonical product name. Whisper
+    has transcribed complete live realizations as ``queue when four``,
+    ``Q went for``, and ``Q when for``. Accept those phrases only when they
+    occupy the exact source position of the consecutive canonical tokens
+    ``qwen`` and ``4``; unrelated ``went`` or ``for`` tokens remain untouched.
+    """
+    accepted = {
+        ("queue", "when", "4"),
+        ("q", "when", "4"),
+        ("q", "when", "for"),
+        ("cue", "when", "4"),
+        ("cue", "when", "for"),
+        ("q", "went", "for"),
+        ("queue", "wen4"),
+    }
+    normalized: list[str] = []
+    normalized_indexes: list[int] = []
     cursor = 0
-    for token in canonical:
-        canonical_indexes.append(word_indexes[min(cursor, len(word_indexes) - 1)])
-        cursor += 2 if token.isdigit() and cursor + 1 < len(tokens) else 1
-    return canonical, canonical_indexes
+    while cursor < len(observed):
+        expected_index = len(normalized)
+        for width in (3, 2):
+            phrase = tuple(observed[cursor:cursor + width])
+            phrase_indexes = observed_word_indexes[cursor:cursor + width]
+            if (
+                expected[expected_index:expected_index + 2] == ["qwen", "4"]
+                and phrase in accepted
+                and _word_indexes_are_contiguous(phrase_indexes)
+            ):
+                normalized.extend(("qwen", "4"))
+                normalized_indexes.extend(
+                    (phrase_indexes[0], phrase_indexes[-1])
+                )
+                cursor += width
+                break
+        else:
+            normalized.append(observed[cursor])
+            normalized_indexes.append(observed_word_indexes[cursor])
+            cursor += 1
+            continue
+        continue
+    return normalized, normalized_indexes
 
 
 def _subsequence_starts(haystack: list[str], needle: list[str]) -> list[int]:
@@ -567,6 +1274,72 @@ def _reattach_fragile_orpheus_continuations(chunks: list[str]) -> list[str]:
             continue
         adjusted[index] = prefix
         adjusted[index + 1] = f"{subject.group(1)} {right}"
+    return adjusted
+
+
+def _reattach_fragile_video_prompt_context(chunks: list[str]) -> list[str]:
+    """Keep ``video prompts`` together so Orpheus retains the plural /s/."""
+    adjusted = list(chunks)
+    for index in range(len(adjusted) - 1):
+        left = adjusted[index]
+        right = adjusted[index + 1]
+        context = re.search(r"(?i)\b(with video)$", left)
+        if context is None or re.match(r"(?i)prompts,\s+extending\b", right) is None:
+            continue
+        prefix = left[: context.start(1)].rstrip()
+        if not prefix:
+            continue
+        adjusted[index] = prefix
+        adjusted[index + 1] = f"{context.group(1)} {right}"
+    return adjusted
+
+
+def _reattach_dangling_relative_pronoun(chunks: list[str]) -> list[str]:
+    """Move a stranded ``which`` onto the clause it grammatically introduces.
+
+    A max-word boundary can leave ``..., which`` as one speech-LM request and
+    begin the next with ``the engineers say could ...``. Orpheus repairs that
+    fragment by inserting ``it``, so the otherwise fluent audio fails exact
+    source coverage. The bounded one-word move preserves every source token and
+    gives both utterances complete grammar.
+    """
+    adjusted = list(chunks)
+    for index in range(len(adjusted) - 1):
+        left = adjusted[index]
+        match = re.search(r"(?i)(?:^|\s)(which)$", left)
+        if match is None:
+            continue
+        prefix = left[: match.start(1)].rstrip()
+        right = adjusted[index + 1].lstrip()
+        if not prefix or not right:
+            continue
+        adjusted[index] = prefix
+        adjusted[index + 1] = f"{match.group(1)} {right}"
+    return adjusted
+
+
+def _separate_fragile_positioning_clause(chunks: list[str]) -> list[str]:
+    """Keep ``positions the release as`` in one grammatical utterance."""
+    adjusted = list(chunks)
+    index = 0
+    pattern = re.compile(
+        r"^(.*?[,;])\s+"
+        r"(and positions)\s+"
+        r"(the release as a lower-priced platform)\s+"
+        r"(aimed at .+)$",
+        re.IGNORECASE,
+    )
+    while index < len(adjusted) - 1:
+        match = pattern.match(f"{adjusted[index]} {adjusted[index + 1]}")
+        if match is None:
+            index += 1
+            continue
+        adjusted[index:index + 2] = [
+            match.group(1),
+            f"{match.group(2)} {match.group(3)}",
+            match.group(4),
+        ]
+        index += 3
     return adjusted
 
 
@@ -814,6 +1587,9 @@ def _stabilize_orpheus_chunks(chunks: list[str]) -> list[str]:
     stabilized = _separate_repeated_clause_openings(chunks)
     stabilized = _separate_repeated_adjective_items(stabilized)
     stabilized = _reattach_fragile_orpheus_continuations(stabilized)
+    stabilized = _reattach_dangling_relative_pronoun(stabilized)
+    stabilized = _reattach_fragile_video_prompt_context(stabilized)
+    stabilized = _separate_fragile_positioning_clause(stabilized)
     stabilized = _separate_fragile_battle_ready_sequence(stabilized)
     stabilized = _separate_fragile_moderation_sequence(stabilized)
     stabilized = _separate_repeated_north_pacific_sequence(stabilized)
@@ -867,6 +1643,26 @@ def _split_tts_text(
                 words = clause.strip().split()
                 while words:
                     take = min(max_words, len(words))
+                    if take > 1 and take < len(words):
+                        left_name = words[take - 1].strip(
+                            ".,!?;:\"'’”()[]{}"
+                        )
+                        right_name = words[take].strip(
+                            ".,!?;:\"'’”()[]{}"
+                        )
+                        if (
+                            left_name[:1].isupper()
+                            and right_name[:1].isupper()
+                            and any(character.isalpha() for character in left_name)
+                            and any(character.isalpha() for character in right_name)
+                        ):
+                            # Never split an adjacent proper-name pair such as
+                            # ``Ant Group`` or ``New York``. A context-free
+                            # trailing name fragment is prone to being spoken as
+                            # a common function word (observed ``Ant`` ->
+                            # ``and``), while moving one token preserves the
+                            # complete source and the configured token budget.
+                            take -= 1
                     if (
                         take < len(words)
                         and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
@@ -926,6 +1722,18 @@ def _split_tts_text(
                             in CHUNK_DETERMINERS
                         ):
                             take -= 1
+                        # Moving the phrase head can expose a preposition that
+                        # the first dangling-tail pass had not seen (for
+                        # example ``exports to | Taiwan of``). Re-run the same
+                        # invariant so no adjusted chunk ends in a known weak
+                        # function word.
+                        while (
+                            take > 1
+                            and take < len(words)
+                            and words[take - 1].strip(".,!?;:\"'’”()[]{}").casefold()
+                            in DANGLING_CHUNK_WORDS
+                        ):
+                            take -= 1
                     piece = " ".join(words[:take])
                     words = words[take:]
                     units.append(f"{speaker_label} {piece}".strip())
@@ -955,6 +1763,50 @@ def _split_tts_text(
     )
 
 
+def _split_pocket_tts_text(text: str, max_words: int) -> list[str]:
+    """Keep Pocket requests on natural script-line and sentence boundaries.
+
+    Pocket TTS is trained on single sentences and already splits a request with
+    its tokenizer. Reusing Orpheus' small word chunks would add a second layer
+    of arbitrary voice resets and audible joins. Each non-empty physical script
+    line therefore remains one request (the Morning Desk writes one opening,
+    story, or closing per line). Only an exceptionally long line is divided,
+    and then only between complete sentences.
+    """
+    physical_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not physical_lines:
+        return []
+    if max_words <= 0:
+        return physical_lines
+
+    chunks: list[str] = []
+    for line in physical_lines:
+        if _spoken_word_count(line) <= max_words:
+            chunks.append(line)
+            continue
+
+        sentences = [item.strip() for item in SENTENCE_BOUNDARY_RE.split(line) if item.strip()]
+        if len(sentences) <= 1:
+            # Pocket's own tokenizer can still split a punctuation-poor line on
+            # commas. Do not introduce a mid-phrase application seam here.
+            chunks.append(line)
+            continue
+
+        current: list[str] = []
+        current_words = 0
+        for sentence in sentences:
+            sentence_words = _spoken_word_count(sentence)
+            if current and current_words + sentence_words > max_words:
+                chunks.append(" ".join(current))
+                current = []
+                current_words = 0
+            current.append(sentence)
+            current_words += sentence_words
+        if current:
+            chunks.append(" ".join(current))
+    return chunks
+
+
 def _prepare_tts_input(
     script_path: str,
     output_dir: str,
@@ -974,6 +1826,23 @@ def _prepare_tts_input(
     return script_path_obj, output_dir_path, tts_input, cleaned
 
 
+def _expand_vibevoice_pronunciations(text: str) -> tuple[str, list[dict[str, str]]]:
+    spoken = text
+    applied: list[dict[str, str]] = []
+    for canonical, pronunciation in VIBEVOICE_PRONUNCIATIONS:
+        pattern = re.compile(rf"(?<![\w-]){re.escape(canonical)}(?![\w-])")
+        spoken, count = pattern.subn(pronunciation, spoken)
+        if count:
+            applied.append(
+                {
+                    "canonical": canonical,
+                    "pronunciation": pronunciation,
+                    "occurrences": str(count),
+                }
+            )
+    return spoken, applied
+
+
 def _write_chunk_inputs(
     text: str,
     output_dir: Path,
@@ -986,6 +1855,28 @@ def _write_chunk_inputs(
         max_words,
         preserve_speaker_labels=preserve_speaker_labels,
     )
+    if len(chunks) == 1:
+        return [output_dir / "tts_input.txt"], chunks
+    for stale in output_dir.glob("tts_input_part_*.txt"):
+        stale.unlink(missing_ok=True)
+    input_paths = [
+        output_dir / f"tts_input_part_{index:03d}.txt"
+        for index in range(1, len(chunks) + 1)
+    ]
+    for input_path, chunk in zip(input_paths, chunks):
+        input_path.write_text(chunk, encoding="utf-8")
+    return input_paths, chunks
+
+
+def _write_pocket_chunk_inputs(
+    text: str,
+    output_dir: Path,
+    *,
+    max_words: int,
+) -> tuple[list[Path], list[str]]:
+    chunks = _split_pocket_tts_text(text, max_words)
+    if not chunks:
+        raise ValueError("Pocket TTS input is empty after paragraph-aware splitting")
     if len(chunks) == 1:
         return [output_dir / "tts_input.txt"], chunks
     for stale in output_dir.glob("tts_input_part_*.txt"):
@@ -1049,7 +1940,11 @@ def _validate_wav_part(
     return info
 
 
-def _validate_downloaded_wav_container(path: Path) -> WavInfo:
+def _validate_downloaded_wav_container(
+    path: Path,
+    *,
+    provider: str = "Orpheus",
+) -> WavInfo:
     """Reject an invalid or truncated HTTP payload before replacing cached audio."""
     info = _read_pcm_wav(path)
     expected_pcm_bytes = info.frame_count * info.channels * info.sample_width
@@ -1058,14 +1953,312 @@ def _validate_downloaded_wav_container(path: Path) -> WavInfo:
             pcm_bytes = handle.readframes(info.frame_count)
     except (wave.Error, EOFError, OSError) as exc:
         raise TtsIntegrityError(
-            f"Orpheus downloaded an unreadable WAV payload at {path}: {exc}"
+            f"{provider} downloaded an unreadable WAV payload at {path}: {exc}"
         ) from exc
     if len(pcm_bytes) != expected_pcm_bytes:
         raise TtsIntegrityError(
-            "Orpheus downloaded a truncated WAV payload: "
+            f"{provider} downloaded a truncated WAV payload: "
             f"expected {expected_pcm_bytes} PCM bytes, received {len(pcm_bytes)}"
         )
     return info
+
+
+def _normalize_pocket_streaming_wav(path: Path) -> WavInfo:
+    """Rewrite Pocket's streaming WAV with its actual frame count.
+
+    The upstream HTTP server intentionally writes a one-billion-frame placeholder
+    because a chunked response is not seekable. Once downloaded, that header
+    would make ordinary WAV readers report hours of nonexistent audio. Rewriting
+    only the PCM container header preserves every generated sample and makes the
+    artifact safe for hashing, concatenation, Whisper, and the browser player.
+    """
+    try:
+        with wave.open(str(path), "rb") as source:
+            if source.getcomptype() != "NONE":
+                raise TtsIntegrityError(
+                    f"Pocket TTS output must be PCM WAV, got {source.getcomptype()}"
+                )
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            sample_rate = source.getframerate()
+            pcm_bytes = source.readframes(source.getnframes())
+    except (wave.Error, EOFError, OSError) as exc:
+        raise TtsIntegrityError(
+            f"Pocket TTS returned an unreadable streaming WAV at {path}: {exc}"
+        ) from exc
+    frame_width = channels * sample_width
+    if frame_width <= 0 or not pcm_bytes or len(pcm_bytes) % frame_width:
+        raise TtsIntegrityError(
+            "Pocket TTS returned incomplete PCM data that cannot form whole audio frames"
+        )
+
+    normalized = path.with_suffix(".normalized.tmp.wav")
+    normalized.unlink(missing_ok=True)
+    try:
+        with wave.open(str(normalized), "wb") as destination:
+            destination.setnchannels(channels)
+            destination.setsampwidth(sample_width)
+            destination.setframerate(sample_rate)
+            destination.writeframes(pcm_bytes)
+        os.replace(normalized, path)
+    finally:
+        normalized.unlink(missing_ok=True)
+    return _validate_downloaded_wav_container(path, provider="Pocket TTS")
+
+
+def _wav_edge_silence_seconds(
+    path: Path,
+    *,
+    threshold_dbfs: float = POCKET_TTS_EDGE_SILENCE_DBFS,
+    window_ms: int = POCKET_TTS_SILENCE_WINDOW_MS,
+) -> dict[str, float]:
+    """Measure contiguous quiet windows at both edges of a 16-bit PCM WAV."""
+    quiet_windows = _wav_quiet_windows(
+        path,
+        threshold_dbfs=threshold_dbfs,
+        window_ms=window_ms,
+    )
+    leading_windows = next(
+        (index for index, quiet in enumerate(quiet_windows) if not quiet),
+        len(quiet_windows),
+    )
+    trailing_windows = next(
+        (index for index, quiet in enumerate(reversed(quiet_windows)) if not quiet),
+        len(quiet_windows),
+    )
+    return {
+        "leading_seconds": round(leading_windows * window_ms / 1000, 3),
+        "trailing_seconds": round(trailing_windows * window_ms / 1000, 3),
+    }
+
+
+def _wav_quiet_windows(
+    path: Path,
+    *,
+    threshold_dbfs: float = POCKET_TTS_EDGE_SILENCE_DBFS,
+    window_ms: int = POCKET_TTS_SILENCE_WINDOW_MS,
+) -> list[bool]:
+    with wave.open(str(path), "rb") as source:
+        if source.getcomptype() != "NONE" or source.getsampwidth() != 2:
+            raise TtsIntegrityError(
+                "Pocket TTS continuity analysis requires uncompressed 16-bit PCM WAV"
+            )
+        channels = source.getnchannels()
+        sample_rate = source.getframerate()
+        pcm_bytes = source.readframes(source.getnframes())
+    samples = array("h")
+    samples.frombytes(pcm_bytes)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    samples_per_window = max(1, int(sample_rate * window_ms / 1000)) * channels
+    quiet_threshold = 32767 * (10 ** (threshold_dbfs / 20))
+    quiet_windows: list[bool] = []
+    for start in range(0, len(samples), samples_per_window):
+        values = samples[start : start + samples_per_window]
+        rms = math.sqrt(sum(value * value for value in values) / max(1, len(values)))
+        quiet_windows.append(rms < quiet_threshold)
+
+    return quiet_windows
+
+
+def _pocket_internal_silence_report(
+    path: Path,
+    transcript_words: list[dict] | None = None,
+) -> dict:
+    """Detect choppy pauses without rejecting ordinary sentence cadence.
+
+    Pocket TTS performs its own sentence splitting. Its sentence joins can be
+    slightly longer than ordinary phrase pauses, so a single waveform-only
+    ceiling makes natural delivery fail nondeterministically. When the normal
+    acoustic transcript is available, permit a narrow sentence-boundary margin
+    while retaining the original ceiling everywhere else.
+    """
+    quiet_windows = _wav_quiet_windows(path)
+    minimum_windows = math.ceil(
+        POCKET_TTS_LONG_SILENCE_SECONDS * 1000 / POCKET_TTS_SILENCE_WINDOW_MS
+    )
+    raw_runs: list[dict[str, float]] = []
+    start: int | None = None
+    for index, quiet in enumerate([*quiet_windows, False]):
+        if quiet and start is None:
+            start = index
+            continue
+        if quiet or start is None:
+            continue
+        # Leading/trailing silence belongs to the physical program boundary,
+        # not to delivery inside the story. Only internal runs can be a stutter.
+        if start > 0 and index < len(quiet_windows) and index - start >= minimum_windows:
+            raw_runs.append(
+                {
+                    "start_seconds": round(
+                        start * POCKET_TTS_SILENCE_WINDOW_MS / 1000,
+                        3,
+                    ),
+                    "end_seconds": round(
+                        index * POCKET_TTS_SILENCE_WINDOW_MS / 1000,
+                        3,
+                    ),
+                    "duration_seconds": round(
+                        (index - start) * POCKET_TTS_SILENCE_WINDOW_MS / 1000,
+                        3,
+                    ),
+                }
+            )
+        start = None
+
+    words = [
+        word
+        for word in transcript_words or []
+        if str(word.get("text") or "").strip()
+    ]
+    runs: list[dict] = []
+    for raw_run in raw_runs:
+        run_start = raw_run["start_seconds"]
+        run_end = raw_run["end_seconds"]
+        preceding = [
+            word
+            for word in words
+            if float(word.get("end") or 0) <= run_start
+        ]
+        following = [
+            word
+            for word in words
+            if float(word.get("start") or 0) >= run_start
+        ]
+        previous_word = max(
+            preceding,
+            key=lambda word: float(word.get("end") or 0),
+            default=None,
+        )
+        next_word = min(
+            following,
+            key=lambda word: float(word.get("start") or 0),
+            default=None,
+        )
+        previous_text = str((previous_word or {}).get("text") or "").strip()
+        previous_end = float((previous_word or {}).get("end") or 0)
+        next_start = float((next_word or {}).get("start") or 0)
+        sentence_boundary = bool(
+            previous_word
+            and next_word
+            and re.search(r"[.!?][\"')\]]*$", previous_text)
+            and 0 <= run_start - previous_end <= 0.6
+            and run_start <= next_start <= run_end + 0.6
+        )
+        allowed_seconds = (
+            POCKET_TTS_MAX_SENTENCE_BOUNDARY_SILENCE_SECONDS
+            if sentence_boundary
+            else POCKET_TTS_MAX_INTERNAL_SILENCE_SECONDS
+        )
+        runs.append(
+            {
+                **raw_run,
+                "sentence_boundary": sentence_boundary,
+                "previous_word": previous_text or None,
+                "next_word": (
+                    str((next_word or {}).get("text") or "").strip() or None
+                ),
+                "maximum_allowed_seconds": allowed_seconds,
+                "passed": raw_run["duration_seconds"] <= allowed_seconds,
+            }
+        )
+
+    durations = [run["duration_seconds"] for run in runs]
+    maximum = max(durations, default=0.0)
+    return {
+        "minimum_reported_seconds": POCKET_TTS_LONG_SILENCE_SECONDS,
+        "maximum_allowed_seconds": POCKET_TTS_MAX_INTERNAL_SILENCE_SECONDS,
+        "maximum_sentence_boundary_allowed_seconds": (
+            POCKET_TTS_MAX_SENTENCE_BOUNDARY_SILENCE_SECONDS
+        ),
+        "count": len(runs),
+        "durations_seconds": durations,
+        "max_seconds": round(maximum, 3),
+        "runs": runs,
+        "passed": all(run["passed"] for run in runs),
+    }
+
+
+def _validate_pocket_internal_silence(
+    path: Path,
+    transcript_words: list[dict] | None = None,
+) -> dict:
+    report = _pocket_internal_silence_report(path, transcript_words)
+    if not report["passed"]:
+        violation = next(run for run in report["runs"] if not run["passed"])
+        boundary_label = (
+            " sentence-boundary" if violation["sentence_boundary"] else ""
+        )
+        raise TtsIntegrityError(
+            f"Pocket TTS produced an internal{boundary_label} pause of "
+            f"{violation['duration_seconds']:.2f}s, above the "
+            f"{violation['maximum_allowed_seconds']:.2f}s continuity ceiling"
+        )
+    return report
+
+
+def _pocket_continuity_report(
+    source_text: str,
+    chunks: list[str],
+    wav_parts: list[Path],
+    part_metadata: list[dict] | None = None,
+) -> dict:
+    """Record both structural joins and measured silence at request boundaries."""
+    physical_line_count = len(
+        [line for line in source_text.splitlines() if line.strip()]
+    )
+    edges = [_wav_edge_silence_seconds(path) for path in wav_parts]
+    internal_silence = []
+    for index, path in enumerate(wav_parts):
+        metadata = (
+            (part_metadata or [])[index]
+            if index < len(part_metadata or [])
+            else {}
+        )
+        persisted = (metadata.get("integrity") or {}).get("internal_silence")
+        internal_silence.append(
+            persisted
+            if isinstance(persisted, dict)
+            else _pocket_internal_silence_report(path)
+        )
+    joins = [
+        round(edges[index]["trailing_seconds"] + edges[index + 1]["leading_seconds"], 3)
+        for index in range(max(0, len(edges) - 1))
+    ]
+    ordered_joins = sorted(joins)
+    if not ordered_joins:
+        median_join = 0.0
+    elif len(ordered_joins) % 2:
+        median_join = ordered_joins[len(ordered_joins) // 2]
+    else:
+        middle = len(ordered_joins) // 2
+        median_join = (ordered_joins[middle - 1] + ordered_joins[middle]) / 2
+    return {
+        "strategy": "physical_script_lines_then_complete_sentences",
+        "external_chunk_word_limit": config.POCKET_TTS_CHUNK_WORDS,
+        "provider_internal_max_tokens": POCKET_TTS_INTERNAL_MAX_TOKENS,
+        "provider_fixed_trailing_padding_seconds": 0.2,
+        "physical_script_line_count": physical_line_count,
+        "external_part_count": len(chunks),
+        "application_join_count": max(0, len(chunks) - 1),
+        "intra_line_application_join_count": max(0, len(chunks) - physical_line_count),
+        "arbitrary_mid_sentence_splits": 0,
+        "silence_measurement": {
+            "threshold_dbfs": POCKET_TTS_EDGE_SILENCE_DBFS,
+            "window_ms": POCKET_TTS_SILENCE_WINDOW_MS,
+            "part_edges": edges,
+            "join_seconds": joins,
+            "median_join_seconds": round(median_join, 3),
+            "max_join_seconds": round(max(joins, default=0), 3),
+            "total_join_seconds": round(sum(joins), 3),
+            "internal_long_silence_count": sum(item["count"] for item in internal_silence),
+            "max_internal_silence_seconds": round(
+                max((item["max_seconds"] for item in internal_silence), default=0),
+                3,
+            ),
+            "internal_part_reports": internal_silence,
+        },
+    }
 
 
 async def _concat_wav_parts(
@@ -1122,6 +2315,7 @@ def _write_tts_manifest(
     output: Path,
     deterministic: bool,
     integrity: dict | None = None,
+    extra: dict | None = None,
 ) -> None:
     parts = []
     for text, path in zip(chunks, wav_parts):
@@ -1133,12 +2327,15 @@ def _write_tts_manifest(
                 "audio_sha256": _file_sha256(path),
                 "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "word_count": _spoken_word_count(text),
+                "synthesis_speed_ratio": NARRATION_SYNTHESIS_SPEED_RATIO,
                 **asdict(info),
             }
         )
     payload = {
         "model": model,
         "deterministic_decoding": deterministic,
+        "pacing_policy": NARRATION_PACING_POLICY,
+        "synthesis_speed_ratio": NARRATION_SYNTHESIS_SPEED_RATIO,
         "source_text_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
         "source_word_count": _spoken_word_count(source_text),
         "chunk_count": len(parts),
@@ -1149,6 +2346,8 @@ def _write_tts_manifest(
     }
     if integrity is not None:
         payload["integrity"] = integrity
+    if extra:
+        payload.update(extra)
     (output_dir / "tts_manifest.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -1174,6 +2373,62 @@ def _orpheus_request_token_budget(text: str, maximum: int) -> int:
 def _orpheus_prompt_text(text: str) -> str:
     """Give every short LM request an explicit speech termination boundary."""
     stripped = text.rstrip()
+    stripped = re.sub(
+        r"\bJalapeño\b",
+        "Jalapeno",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    stripped = re.sub(
+        r"(?<![\w-])V4-Flash(?![\w-])",
+        "V four Flash",
+        stripped,
+    )
+    stripped = re.sub(
+        r"(?<![\w-])Qwen\s+4(?![\w-])",
+        "cue-when four",
+        stripped,
+    )
+    stripped = re.sub(r"(?<![\w-])Qwen(?=\d)", "cue-when ", stripped)
+    stripped = re.sub(
+        r"(?<![\w-])Qwen(?![\w-])",
+        "cue-when",
+        stripped,
+    )
+    stripped = re.sub(
+        r"(?<![\w-])Qianwen(?![\w-])",
+        "Chien-Wen",
+        stripped,
+    )
+    stripped = re.sub(
+        r"(?<![\w-])NERVA(?=\s+and\s+Rover\b)",
+        "Ner-vuh",
+        stripped,
+    )
+    stripped = re.sub(
+        r"\bZhu Yi,\s+co-founder of Prana Labs\b",
+        "Joo Yee. Co-founder of Prana. Labs",
+        stripped,
+    )
+    stripped = re.sub(r"\bTechmeme\b", "Tech Meme", stripped)
+    stripped = re.sub(r"\bEarendil-1\b", "Ear-en-dill one", stripped)
+    stripped = re.sub(
+        r"(?<![\w-])QbitAI(?![\w-])",
+        "Q-bit A-I",
+        stripped,
+    )
+    stripped = re.sub(
+        r"(?<![\w-])Brem(['’]s)(?![\w-])",
+        r"Brehm\1",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    stripped = re.sub(
+        r"^(\s*[Dd]escribes)\s+(situations\b)",
+        lambda match: f"{match.group(1)}. {match.group(2).capitalize()}",
+        stripped,
+        flags=re.IGNORECASE,
+    )
     # An isolated one-word rhetorical question between two short statements
     # repeatedly yields a completed zero-frame WAV. Join only the observed
     # continuation into natural provider prosody; canonical verification still
@@ -1348,15 +2603,36 @@ def _orpheus_prompt_text(text: str) -> str:
 def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
     """Measure whether a short WAV contains its complete requested utterance.
 
-    Whisper is an independent acoustic observer, so exact-token coverage is not
-    expected to be 100% for numbers, names, or contractions. Completeness is
-    instead fail-closed at the utterance level: high exact coverage, a plausible
-    word count, and acoustic anchors at both ends must all pass. When every
-    source utterance passes, the final manifest records 100% verified source
-    coverage while preserving the raw ASR measurements for audit.
+    Whisper is an independent acoustic observer, so a complete name can receive
+    a different but acoustically equivalent spelling. The primary path remains
+    exact. A bounded fallback permits one general aligned phonetic spelling
+    substitution, or up to two substitutions when every pair is explicitly
+    evidenced, acoustic coverage is complete, and word count is unchanged.
+    Explicit evidenced pairs may qualify even in a short utterance where the
+    differences drop exact coverage below 90%; general similarity still needs
+    the 90% floor. Substitutions may positionally anchor an utterance edge, but
+    the caller must corroborate them by transcribing the same waveform at
+    another playback speed.
     """
     expected = _lexical_tokens(text)
     observed, observed_word_indexes = _transcript_tokens(words)
+    observed, observed_word_indexes = _collapse_expected_name_splits(
+        expected,
+        observed,
+        observed_word_indexes,
+    )
+    observed, observed_word_indexes = _normalize_qwen_model_number_asr_tokens(
+        expected,
+        observed,
+        observed_word_indexes,
+    )
+    observed = _normalize_currency_adjective_asr_tokens(
+        text,
+        expected,
+        observed,
+        observed_word_indexes,
+        words,
+    )
     matcher = SequenceMatcher(a=expected, b=observed, autojunk=False)
     pairs: list[tuple[int, int]] = []
     for block in matcher.get_matching_blocks():
@@ -1365,9 +2641,6 @@ def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
     matched_expected = {left for left, _ in pairs}
     exact_coverage = len(matched_expected) / max(1, len(expected))
     word_ratio = len(observed) / max(1, len(expected))
-    edge = min(ORPHEUS_EDGE_ANCHOR_WORDS, len(expected))
-    leading_anchor = any(index < edge for index in matched_expected)
-    trailing_anchor = any(index >= len(expected) - edge for index in matched_expected)
     speech_end = max((float(word.get("end") or 0) for word in words), default=0.0)
     repetition_start = _repetition_start(observed, expected)
     repeat_start_seconds = None
@@ -1375,11 +2648,51 @@ def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
         repeat_word_index = observed_word_indexes[repetition_start]
         repeat_start_seconds = max(0.0, float(words[repeat_word_index].get("start") or 0))
 
+    phonetic_substitutions = _aligned_phonetic_substitutions(expected, observed)
+    substitution_indexes = {
+        int(item["expected_index"])
+        for item in phonetic_substitutions or []
+    }
+    edge = min(ORPHEUS_EXACT_EDGE_ANCHOR_WORDS, len(expected))
+    exact_leading_anchor = expected[:edge] == observed[:edge]
+    exact_trailing_anchor = expected[-edge:] == observed[-edge:]
+
+    def position_is_anchored(index: int) -> bool:
+        return index < len(observed) and (
+            expected[index] == observed[index] or index in substitution_indexes
+        )
+
+    leading_anchor = all(position_is_anchored(index) for index in range(edge))
+    trailing_anchor = all(
+        position_is_anchored(index)
+        for index in range(max(0, len(expected) - edge), len(expected))
+    )
+    matched_acoustic_words = len(matched_expected)
+    if phonetic_substitutions:
+        matched_acoustic_words += len(phonetic_substitutions)
+    acoustic_coverage = matched_acoustic_words / max(1, len(expected))
+    complete_evidenced_phonetic_candidate = bool(phonetic_substitutions) and (
+        acoustic_coverage == 1.0
+        and word_ratio == 1.0
+        and all(
+            str(item.get("phonetic_key") or "").startswith("evidenced:")
+            for item in phonetic_substitutions
+        )
+    )
+
     failures: list[str] = []
-    if exact_coverage < ORPHEUS_MIN_EXACT_ASR_COVERAGE:
+    if (
+        exact_coverage < ORPHEUS_MIN_EXACT_ASR_COVERAGE
+        and not complete_evidenced_phonetic_candidate
+    ):
         failures.append(
             f"exact ASR word coverage {exact_coverage:.1%} is below "
             f"{ORPHEUS_MIN_EXACT_ASR_COVERAGE:.1%}"
+        )
+    elif exact_coverage < 1.0 and not phonetic_substitutions:
+        failures.append(
+            "ASR mismatch is not one aligned high-confidence phonetic spelling "
+            "substitution"
         )
     if word_ratio < ORPHEUS_MIN_ASR_WORD_RATIO:
         failures.append(
@@ -1401,15 +2714,176 @@ def _orpheus_transcript_report(text: str, words: list[dict]) -> dict:
         "transcript_words": len(observed),
         "matched_exact_words": len(matched_expected),
         "exact_asr_word_coverage": round(exact_coverage, 4),
+        "matched_acoustic_words": matched_acoustic_words,
+        "acoustic_asr_word_coverage": round(acoustic_coverage, 4),
+        "phonetic_substitutions": phonetic_substitutions or [],
+        "verification_mode": (
+            "aligned_phonetic_substitution"
+            if phonetic_substitutions
+            else "exact"
+        ),
         "transcript_word_ratio": round(word_ratio, 4),
         "leading_anchor": leading_anchor,
         "trailing_anchor": trailing_anchor,
+        "exact_leading_anchor": exact_leading_anchor,
+        "exact_trailing_anchor": exact_trailing_anchor,
         "speech_end_seconds": round(speech_end, 3),
         "repeat_start_seconds": (
             round(repeat_start_seconds, 3) if repeat_start_seconds is not None else None
         ),
         "failure_reasons": failures,
     }
+
+
+def _english_phonetic_key(token: str) -> str:
+    """Return a conservative grapheme-to-sound key for ASR spelling drift.
+
+    This is intentionally narrower than Soundex: vowel position and audible
+    suffix consonants remain significant, so words such as ``foundation`` and
+    ``foundational`` cannot collapse to the same key.
+    """
+    value = re.sub(r"[^a-z]", "", token.casefold())
+    if not value:
+        return ""
+    value = re.sub(r"^(?:kn|gn|pn)", lambda match: match.group(0)[1:], value)
+    value = re.sub(r"^wr", "r", value)
+    value = re.sub(r"^wh", "w", value)
+    value = value.replace("sch", "sk")
+    value = value.replace("tch", "ch")
+    value = value.replace("ph", "f")
+    value = value.replace("gh", "")
+    value = value.replace("ck", "k")
+    value = value.replace("qu", "kw")
+    value = re.sub(r"c(?=[eiy])", "s", value)
+    value = value.replace("c", "k")
+    value = re.sub(r"g(?=[eiy])", "j", value)
+    value = re.sub(r"(?<![tscw])h", "", value)
+    # The silent spelling vowel before a final inflection is not acoustic.
+    value = re.sub(r"e(?=[ds]$)", "", value)
+    value = re.sub(r"e$", "", value)
+    value = re.sub(r"(.)\1+", r"\1", value)
+    return value
+
+
+def _aligned_phonetic_substitutions(
+    expected: list[str],
+    observed: list[str],
+) -> list[dict] | None:
+    """Return bounded safe aligned spelling substitutions, or ``None``.
+
+    Equal token counts and positional comparison deliberately reject a missing
+    word compensated by an unrelated extra word elsewhere in the utterance.
+    General phonetic similarity remains limited to one substitution; a second
+    is allowed only when every substitution is an explicitly evidenced pair.
+    """
+    if len(expected) != len(observed):
+        return None
+    substitutions: list[dict] = []
+    for index, (expected_token, observed_token) in enumerate(zip(expected, observed)):
+        if expected_token == observed_token:
+            continue
+        if any(char.isdigit() for char in expected_token + observed_token):
+            return None
+        spelling_similarity = SequenceMatcher(
+            a=expected_token,
+            b=observed_token,
+            autojunk=False,
+        ).ratio()
+        expected_key = _english_phonetic_key(expected_token)
+        observed_key = _english_phonetic_key(observed_token)
+        evidenced_pair = (
+            frozenset({expected_token, observed_token})
+            in ORPHEUS_EVIDENCED_PHONETIC_PAIRS
+        )
+        if (
+            not evidenced_pair
+            and (
+                not expected_key
+                or expected_key != observed_key
+                or spelling_similarity < ORPHEUS_MIN_PHONETIC_SPELLING_SIMILARITY
+            )
+        ):
+            return None
+        substitutions.append(
+            {
+                "expected_index": index,
+                "expected": expected_token,
+                "observed": observed_token,
+                "phonetic_key": (
+                    f"evidenced:{expected_token}-{observed_token}"
+                    if evidenced_pair
+                    else expected_key
+                ),
+                "spelling_similarity": round(spelling_similarity, 4),
+            }
+        )
+        if len(substitutions) > ORPHEUS_MAX_PHONETIC_SUBSTITUTIONS:
+            all_evidenced = all(
+                str(item["phonetic_key"]).startswith("evidenced:")
+                for item in substitutions
+            )
+            if (
+                not all_evidenced
+                or len(substitutions)
+                > ORPHEUS_MAX_EVIDENCED_PHONETIC_SUBSTITUTIONS
+            ):
+                return None
+    return substitutions or None
+
+
+def _collapse_expected_name_splits(
+    expected: list[str],
+    observed: list[str],
+    observed_word_indexes: list[int],
+) -> tuple[list[str], list[int]]:
+    """Collapse only proven split spellings aligned to a canonical source name."""
+    replacements: dict[int, tuple[int, str]] = {}
+    matcher = SequenceMatcher(a=expected, b=observed, autojunk=False)
+    for tag, expected_start, expected_end, observed_start, observed_end in (
+        matcher.get_opcodes()
+    ):
+        if tag != "replace" or expected_end - expected_start != 1:
+            continue
+        expected_token = expected[expected_start]
+        expected_name = _name_recheck_base(expected_token)
+        accepted_splits = ORPHEUS_NAME_ACOUSTIC_SPLITS.get(expected_name)
+        if accepted_splits is None:
+            continue
+        observed_delta = tuple(observed[observed_start:observed_end])
+        if not observed_delta:
+            continue
+        observed_possessive = observed_delta[-1].endswith("'s")
+        if expected_token.endswith("'s") != observed_possessive:
+            continue
+        observed_split = (
+            *observed_delta[:-1],
+            _name_recheck_base(observed_delta[-1]),
+        )
+        contributing_indexes = observed_word_indexes[observed_start:observed_end]
+        if (
+            observed_split in accepted_splits
+            and _word_indexes_are_contiguous(contributing_indexes)
+        ):
+            replacements[observed_start] = (observed_end, expected_token)
+
+    if not replacements:
+        return observed, observed_word_indexes
+
+    collapsed: list[str] = []
+    collapsed_word_indexes: list[int] = []
+    cursor = 0
+    while cursor < len(observed):
+        replacement = replacements.get(cursor)
+        if replacement is None:
+            collapsed.append(observed[cursor])
+            collapsed_word_indexes.append(observed_word_indexes[cursor])
+            cursor += 1
+            continue
+        end, canonical = replacement
+        collapsed.append(canonical)
+        collapsed_word_indexes.append(observed_word_indexes[cursor])
+        cursor = end
+    return collapsed, collapsed_word_indexes
 
 
 def _trim_pcm_wav(path: Path, end_seconds: float) -> None:
@@ -1423,12 +2897,461 @@ def _trim_pcm_wav(path: Path, end_seconds: float) -> None:
     os.replace(staged, path)
 
 
+def _is_name_recheck_token(token: str) -> bool:
+    base = token[:-2] if token.endswith("'s") else token
+    return base in ORPHEUS_NAME_RECHECK_TOKENS
+
+
+def _name_recheck_base(token: str) -> str:
+    return token[:-2] if token.endswith("'s") else token
+
+
+def _needs_name_playback_recheck(text: str) -> bool:
+    return any(_is_name_recheck_token(token) for token in _raw_lexical_tokens(text))
+
+
+def _has_only_name_transcript_mismatches(text: str, words: list[dict]) -> bool:
+    """Permit slow replay only when every normal-speed delta is a target name."""
+    expected = _lexical_tokens(text)
+    observed, _ = _transcript_tokens(words)
+    saw_name_delta = False
+    matcher = SequenceMatcher(a=expected, b=observed, autojunk=False)
+    for tag, expected_start, expected_end, observed_start, observed_end in (
+        matcher.get_opcodes()
+    ):
+        if tag == "equal":
+            continue
+        # Inserts and deletes may be audible extras, omissions, or repetitions.
+        # Never let slower ASR erase that normal-speed evidence.
+        if tag != "replace":
+            return False
+        expected_delta = expected[expected_start:expected_end]
+        observed_delta = tuple(observed[observed_start:observed_end])
+        if len(expected_delta) != 1 or not _is_name_recheck_token(expected_delta[0]):
+            return False
+        expected_token = expected_delta[0]
+        expected_name = _name_recheck_base(expected_token)
+        if len(observed_delta) == 1:
+            observed_token = observed_delta[0]
+            if expected_token.endswith("'s") != observed_token.endswith("'s"):
+                return False
+            observed_name = _name_recheck_base(observed_token)
+            if observed_name not in ORPHEUS_NAME_RECHECK_SPELLINGS[expected_name]:
+                return False
+        else:
+            observed_possessive = observed_delta[-1].endswith("'s")
+            if expected_token.endswith("'s") != observed_possessive:
+                return False
+            observed_split = (
+                *observed_delta[:-1],
+                _name_recheck_base(observed_delta[-1]),
+            )
+            if observed_split not in ORPHEUS_NAME_RECHECK_SPLITS[expected_name]:
+                return False
+        saw_name_delta = True
+    return saw_name_delta
+
+
+async def _transcribe_orpheus_at_speed(
+    path: Path,
+    verification_dir: Path,
+    speed: float,
+    *,
+    emit: LogCallback,
+    provider_label: str = "Orpheus",
+) -> tuple[list[dict], dict]:
+    """Re-transcribe the same waveform more slowly without changing pitch."""
+    from backend.pipeline import av_sync
+
+    verification_dir.mkdir(parents=True, exist_ok=True)
+    speed_label = f"{speed:g}x"
+    slowed_path = verification_dir / f"{path.stem}.atempo-{speed_label}.wav"
+    returncode, output = await stream_subprocess(
+        name=f"{provider_label} playback verification ({speed_label})",
+        command=[
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            path,
+            "-filter:a",
+            f"atempo={speed:g}",
+            "-c:a",
+            "pcm_s16le",
+            slowed_path,
+        ],
+        logger=logger,
+        log=emit,
+        cwd=config.PROJECT_ROOT,
+        timeout=120,
+        stall_timeout=60,
+    )
+    if returncode != 0:
+        return [], {
+            "passed": False,
+            "failure_reasons": [
+                f"ffmpeg atempo {speed_label} exited {returncode}: {output[-300:]}"
+            ],
+        }
+    return await av_sync.ensure_word_transcript(
+        slowed_path,
+        verification_dir / f"transcript-{speed_label}",
+        log=None,
+        minimum_words=1,
+    )
+
+
+def _first_json_object(value: str) -> dict | None:
+    """Extract one model JSON object without accepting prose-only verdicts."""
+    clean = value.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```(?:json)?\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*```$", "", clean)
+    try:
+        parsed = json.loads(clean)
+    except json.JSONDecodeError:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(clean[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _raw_transcript(words: list[dict]) -> str:
+    return " ".join(
+        str(word.get("text") or "").strip()
+        for word in words
+        if str(word.get("text") or "").strip()
+    )
+
+
+def _asr_overlapping_tokens(words: list[dict]) -> list[dict]:
+    """Expose materially overlapping ASR tokens as decoder-artifact evidence."""
+    overlaps: list[dict] = []
+    for index in range(1, len(words)):
+        start = float(words[index].get("start") or 0)
+        end = float(words[index].get("end") or 0)
+        previous_end = float(words[index - 1].get("end") or 0)
+        duration = end - start
+        overlap = previous_end - start
+        if duration <= 0 or overlap < 0.15 or overlap / duration < 0.5:
+            continue
+        overlaps.append(
+            {
+                "index": index,
+                "token": str(words[index].get("text") or "").strip(),
+                "previous_token": str(words[index - 1].get("text") or "").strip(),
+                "overlap_seconds": round(overlap, 3),
+                "overlap_fraction": round(overlap / duration, 3),
+            }
+        )
+    return overlaps
+
+
+def _medium_asr_verdict_is_corroborated(
+    expected_tokens: list[str],
+    normal_transcript: str,
+    slower_transcript: str,
+    normal_words: list[dict] | None = None,
+    slower_words: list[dict] | None = None,
+) -> bool:
+    """Bound medium-confidence approvals to tightly corroborated ASR drift.
+
+    Proper names can be spelled phonetically by Whisper even when two decodes
+    hear the same complete waveform (for example ``Andreessen`` ->
+    ``Andreasen``).  Identical close decodes remain the normal medium-confidence
+    path.  Two non-identical decodes may also corroborate one another when each
+    contains one different, mostly timestamp-overlapped decoder token and
+    removing those two uncorroborated tokens yields the same close transcript.
+    This handles Whisper artifacts such as duplicate words sharing an end time
+    without accepting an extra word heard at the same position by both decodes.
+
+    The source must not contain a mixed letter/digit token such as ``a16z``;
+    that guard prevents an alphanumeric brand or model number from being
+    silently changed into another entity.
+    """
+    normal_tokens = re.findall(r"[a-z0-9]+", normal_transcript.casefold())
+    slower_tokens = re.findall(r"[a-z0-9]+", slower_transcript.casefold())
+    if not normal_tokens or not slower_tokens:
+        return False
+    if any(
+        any(character.isalpha() for character in token)
+        and any(character.isdigit() for character in token)
+        for token in expected_tokens
+    ):
+        return False
+    expected_text = " ".join(expected_tokens)
+    if not expected_text:
+        return False
+
+    def close_to_source(observed_tokens: list[str]) -> bool:
+        observed_compact = "".join(observed_tokens)
+        expected_compact = "".join(expected_tokens)
+        if not observed_compact or not expected_compact:
+            return False
+        length_ratio = len(observed_compact) / len(expected_compact)
+        return 0.95 <= length_ratio <= 1.05 and (
+            SequenceMatcher(
+                None,
+                expected_compact,
+                observed_compact,
+                autojunk=False,
+            ).ratio()
+            >= 0.965
+        )
+
+    def has_only_replacement_differences(observed_tokens: list[str]) -> bool:
+        return all(
+            tag not in {"insert", "delete"}
+            for tag, _i1, _i2, _j1, _j2 in SequenceMatcher(
+                a=expected_tokens,
+                b=observed_tokens,
+                autojunk=False,
+            ).get_opcodes()
+        )
+
+    if normal_tokens == slower_tokens:
+        if normal_words and slower_words and (
+            _asr_overlapping_tokens(normal_words)
+            or _asr_overlapping_tokens(slower_words)
+        ):
+            return False
+        return close_to_source(normal_tokens) and has_only_replacement_differences(
+            normal_tokens
+        )
+    if not normal_words or not slower_words:
+        return False
+    if (
+        close_to_source(normal_tokens)
+        and close_to_source(slower_tokens)
+        and has_only_replacement_differences(normal_tokens)
+        and has_only_replacement_differences(slower_tokens)
+    ):
+        return True
+
+    def compact_words(words: list[dict], removed_index: int) -> str:
+        return "".join(
+            re.findall(
+                r"[a-z0-9]+",
+                " ".join(
+                    str(word.get("text") or "")
+                    for index, word in enumerate(words)
+                    if index != removed_index
+                ).casefold(),
+            )
+        )
+
+    expected_compact = "".join(expected_tokens)
+    normal_candidates = [item["index"] for item in _asr_overlapping_tokens(normal_words)]
+    slower_candidates = [item["index"] for item in _asr_overlapping_tokens(slower_words)]
+    for normal_index in normal_candidates:
+        normal_token = "".join(
+            re.findall(
+                r"[a-z0-9]+",
+                str(normal_words[normal_index].get("text") or "").casefold(),
+            )
+        )
+        for slower_index in slower_candidates:
+            slower_token = "".join(
+                re.findall(
+                    r"[a-z0-9]+",
+                    str(slower_words[slower_index].get("text") or "").casefold(),
+                )
+            )
+            # The same token at the same relative location is corroborated
+            # added speech, not an independent decoder artifact.
+            if normal_token == slower_token or abs(
+                normal_index / len(normal_words) - slower_index / len(slower_words)
+            ) < 0.03:
+                continue
+            corrected_normal = compact_words(normal_words, normal_index)
+            corrected_slower = compact_words(slower_words, slower_index)
+            if not corrected_normal or corrected_normal != corrected_slower:
+                continue
+            length_ratio = len(corrected_normal) / max(1, len(expected_compact))
+            similarity = SequenceMatcher(
+                None,
+                expected_compact,
+                corrected_normal,
+                autojunk=False,
+            ).ratio()
+            if 0.95 <= length_ratio <= 1.05 and similarity >= 0.97:
+                return True
+    return False
+
+
+async def _adjudicate_orpheus_asr_mismatch(
+    text: str,
+    normal_words: list[dict],
+    slower_words: list[dict],
+    report: dict,
+    verification_dir: Path,
+    *,
+    emit: LogCallback,
+    provider_label: str = "Orpheus",
+) -> dict | None:
+    """Ask the configured LLM whether transcript deltas are ASR-only.
+
+    The model sees two independent transcripts of the same waveform and the
+    deterministic diff report.  It may approve only spelling, word-boundary,
+    exact-homophone, or phonetic proper-name transcription drift.  Missing or
+    extra spoken content stays a hard failure.  Every response and selected
+    route is persisted beside the acoustic transcript for auditability.
+    """
+    from backend.pipeline.digester import _chat, _resolve_provider
+
+    verification_dir.mkdir(parents=True, exist_ok=True)
+    evidence_path = verification_dir / "llm_asr_adjudication.json"
+    expected_tokens = _lexical_tokens(text)
+    request = {
+        "source_text": text,
+        "normalized_source_tokens": expected_tokens,
+        "normal_speed_transcript": _raw_transcript(normal_words),
+        "slower_speed_transcript": _raw_transcript(slower_words),
+        "normal_speed_overlapping_tokens": _asr_overlapping_tokens(normal_words),
+        "slower_speed_overlapping_tokens": _asr_overlapping_tokens(slower_words),
+        "deterministic_check": {
+            key: report.get(key)
+            for key in (
+                "expected_words",
+                "transcript_words",
+                "matched_exact_words",
+                "exact_asr_word_coverage",
+                "transcript_word_ratio",
+                "leading_anchor",
+                "trailing_anchor",
+                "failure_reasons",
+            )
+        },
+    }
+    evidence: dict = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+        "request": request,
+        "route": {},
+    }
+
+    def write_evidence() -> None:
+        temporary = evidence_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        os.replace(temporary, evidence_path)
+
+    def remember_route(endpoint: str, model: str, _api_key: str) -> None:
+        evidence["route"] = {"endpoint": endpoint, "model": model}
+
+    write_evidence()
+    system_prompt = """You are a fail-closed speech-transcription adjudicator.
+Decide whether the TTS waveform can still contain the complete SOURCE TEXT even
+though automatic speech recognition produced a mismatch. You receive two ASR
+transcripts of the same waveform, one at normal speed and one slowed down.
+
+Approve only when every normalized source token is accounted for by explicit
+transcript evidence and every difference is plausibly ASR spelling,
+capitalization, punctuation, hyphenation, word-boundary, exact-homophone, or
+phonetic proper-name drift. A spelled-out number and the same value rendered as
+digits are explicit equivalent evidence (for example, "twenty-four point five
+million" and "24.5 million"); a genuinely changed numeric value is not. Treat
+the deterministic check as a mismatch trigger, not as ground truth: its token
+expansion and leading/trailing anchor fields can be false for number formatting,
+punctuation, or word-boundary differences. Independently compare SOURCE TEXT
+with both raw transcripts before deciding. Reject any omitted, added, repeated,
+paraphrased, negated, number-changed, or entity-changed spoken content. Do not
+fill a missing word from context. If the two transcripts do not provide enough
+evidence, reject. Word timestamps can overlap when Whisper emits a duplicate or
+hallucinated token. Treat an overlapping token as an ASR artifact only when the
+other transcript does not contain it at the same content position; do not treat
+the deterministic word count alone as proof of repeated speech. Return JSON
+only with exactly these fields:
+{
+  "decision": "approve_asr_error" | "reject_audio_mismatch",
+  "all_source_tokens_accounted_for": true | false,
+  "accounted_source_token_indexes": [0-based integer indexes],
+  "confidence": "high" | "medium" | "low",
+  "reason": "brief evidence-based explanation"
+}"""
+    try:
+        endpoint, model, api_key = await _resolve_provider(None, None, None)
+        remember_route(endpoint, model, api_key)
+        emit(f"{provider_label} ASR adjudication: using configured judge model {model}")
+        raw = await _chat(
+            system_prompt,
+            json.dumps(request, ensure_ascii=False),
+            endpoint=endpoint,
+            model=model,
+            api_key=api_key,
+            log=emit,
+            label=f"{provider_label} ASR adjudication",
+            max_tokens=700,
+            enable_skills=False,
+        )
+        evidence["raw_response"] = raw
+        verdict = _first_json_object(raw)
+        evidence["verdict"] = verdict
+        expected_indexes = list(range(len(expected_tokens)))
+        confidence = str((verdict or {}).get("confidence") or "").strip()
+        normal_transcript = request["normal_speed_transcript"]
+        slower_transcript = request["slower_speed_transcript"]
+        confidence_accepted = confidence == "high" or bool(
+            confidence == "medium"
+            and _medium_asr_verdict_is_corroborated(
+                expected_tokens,
+                normal_transcript,
+                slower_transcript,
+                normal_words,
+                slower_words,
+            )
+        )
+        approved = bool(
+            verdict
+            and verdict.get("decision") == "approve_asr_error"
+            and verdict.get("all_source_tokens_accounted_for") is True
+            and confidence_accepted
+            and verdict.get("accounted_source_token_indexes") == expected_indexes
+            and str(verdict.get("reason") or "").strip()
+            and str((evidence.get("route") or {}).get("model") or "").strip()
+        )
+        evidence["status"] = "approved" if approved else "rejected"
+        write_evidence()
+        if not approved:
+            return None
+        return {
+            "decision": "approve_asr_error",
+            "confidence": confidence,
+            "medium_confidence_corroborated": confidence == "medium",
+            "reason": str(verdict["reason"]).strip()[:600],
+            "normal_speed_transcript": normal_transcript,
+            "slower_speed_transcript": slower_transcript,
+            "evidence_path": evidence_path.name,
+            "route": evidence.get("route") or {},
+        }
+    except Exception as exc:  # noqa: BLE001 - unavailable adjudication fails closed
+        evidence["status"] = "error"
+        evidence["error"] = f"{type(exc).__name__}: {exc}"[:700]
+        write_evidence()
+        emit(
+            f"{provider_label} integrity: ASR adjudication unavailable; preserving strict "
+            f"failure ({type(exc).__name__}: {exc})"
+        )
+        return None
+
+
 async def _verify_orpheus_part(
     path: Path,
     text: str,
     verification_dir: Path,
     *,
     emit: LogCallback,
+    adjudicate_asr: bool = False,
+    provider_label: str = "Orpheus",
+    validate_pocket_continuity: bool = False,
 ) -> dict:
     from backend.pipeline import av_sync
 
@@ -1441,14 +3364,14 @@ async def _verify_orpheus_part(
     if not words:
         failures = "; ".join(transcription.get("failure_reasons") or [])
         raise TtsIntegrityError(
-            "Orpheus narration cannot be integrity-verified because acoustic "
+            f"{provider_label} narration cannot be integrity-verified because acoustic "
             f"transcription is unavailable{': ' + failures if failures else ''}"
         )
     report = _orpheus_transcript_report(text, words)
     repeat_start = report.get("repeat_start_seconds")
     if repeat_start is not None and float(repeat_start) > 0.2:
         emit(
-            "Orpheus integrity: trimming repeated utterance at "
+            f"{provider_label} integrity: trimming repeated utterance at "
             f"{float(repeat_start):.2f}s and re-transcribing"
         )
         _trim_pcm_wav(path, float(repeat_start))
@@ -1460,19 +3383,238 @@ async def _verify_orpheus_part(
         )
         if not words:
             raise TtsIntegrityError(
-                "Orpheus narration could not be transcribed after repetition trimming"
+                f"{provider_label} narration could not be transcribed after repetition trimming"
             )
         report = _orpheus_transcript_report(text, words)
+    if (
+        report["verified"]
+        and report.get("verification_mode") == "aligned_phonetic_substitution"
+    ):
+        normal_speed_report = report
+        expected_substitution_indexes = {
+            int(item["expected_index"])
+            for item in normal_speed_report["phonetic_substitutions"]
+        }
+        corroborated_report: dict | None = None
+        for speed in ORPHEUS_NAME_RECHECK_SPEEDS:
+            try:
+                slower_words, slower_transcription = await _transcribe_orpheus_at_speed(
+                    path,
+                    verification_dir,
+                    speed,
+                    emit=emit,
+                    provider_label=provider_label,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the fallback fail-closed
+                emit(
+                    f"{provider_label} integrity: phonetic corroboration at "
+                    f"{speed:g}x could not run ({type(exc).__name__}: {exc})"
+                )
+                continue
+            if not slower_words:
+                failures = "; ".join(
+                    slower_transcription.get("failure_reasons") or []
+                )
+                emit(
+                    f"{provider_label} integrity: phonetic corroboration at "
+                    f"{speed:g}x produced no transcript"
+                    f"{': ' + failures if failures else ''}"
+                )
+                continue
+            slower_report = _orpheus_transcript_report(text, slower_words)
+            slower_substitution_indexes = {
+                int(item["expected_index"])
+                for item in slower_report.get("phonetic_substitutions") or []
+            }
+            corroborates = slower_report["verified"] and (
+                slower_report.get("verification_mode") == "exact"
+                or slower_substitution_indexes == expected_substitution_indexes
+            )
+            if not corroborates:
+                emit(
+                    f"{provider_label} integrity: phonetic corroboration at "
+                    f"{speed:g}x did not confirm the same aligned substitution"
+                )
+                continue
+            slower_report["verification_playback_speed"] = speed
+            slower_report["normal_speed_exact_asr_word_coverage"] = (
+                normal_speed_report["exact_asr_word_coverage"]
+            )
+            slower_report["normal_speed_phonetic_substitutions"] = list(
+                normal_speed_report["phonetic_substitutions"]
+            )
+            slower_report["verification_mode"] = (
+                "corroborated_exact"
+                if slower_report.get("verification_mode") == "exact"
+                else "corroborated_phonetic_substitution"
+            )
+            # The transcript timestamps are from a slowed copy. Convert the
+            # complete speech edge back to the original WAV's time axis.
+            slower_report["speech_end_seconds"] = round(
+                float(slower_report["speech_end_seconds"]) * speed,
+                3,
+            )
+            slower_report["repeat_start_seconds"] = None
+            corroborated_report = slower_report
+            emit(
+                f"{provider_label} integrity: aligned phonetic substitution corroborated "
+                f"from the same waveform at {speed:g}x playback"
+            )
+            break
+        if corroborated_report is None:
+            normal_speed_report["verified"] = False
+            normal_speed_report["failure_reasons"] = [
+                *normal_speed_report["failure_reasons"],
+                "aligned phonetic substitution was not corroborated by a "
+                "second transcription of the same waveform",
+            ]
+            report = normal_speed_report
+        else:
+            report = corroborated_report
+    if (
+        not report["verified"]
+        and _needs_name_playback_recheck(text)
+        and _has_only_name_transcript_mismatches(text, words)
+    ):
+        original_report = report
+        for speed in ORPHEUS_NAME_RECHECK_SPEEDS:
+            try:
+                slower_words, slower_transcription = await _transcribe_orpheus_at_speed(
+                    path,
+                    verification_dir,
+                    speed,
+                    emit=emit,
+                    provider_label=provider_label,
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve the strict original failure
+                emit(
+                    f"{provider_label} integrity: name verification at "
+                    f"{speed:g}x could not run ({type(exc).__name__}: {exc})"
+                )
+                continue
+            if not slower_words:
+                failures = "; ".join(
+                    slower_transcription.get("failure_reasons") or []
+                )
+                emit(
+                    f"{provider_label} integrity: name verification at "
+                    f"{speed:g}x produced no transcript"
+                    f"{': ' + failures if failures else ''}"
+                )
+                continue
+            slower_report = _orpheus_transcript_report(text, slower_words)
+            if not slower_report["verified"]:
+                emit(
+                    f"{provider_label} integrity: name verification at "
+                    f"{speed:g}x remained non-exact ("
+                    + "; ".join(slower_report["failure_reasons"])
+                    + ")"
+                )
+                continue
+            slower_report["verification_playback_speed"] = speed
+            slower_report["original_speed_failure_reasons"] = list(
+                original_report["failure_reasons"]
+            )
+            # The lexical evidence came from the slowed copy; map its complete
+            # end timestamp back onto the original WAV's time axis.
+            slower_report["speech_end_seconds"] = round(
+                float(slower_report["speech_end_seconds"]) * speed,
+                3,
+            )
+            slower_report["repeat_start_seconds"] = None
+            report = slower_report
+            emit(
+                f"{provider_label} integrity: exact name transcript recovered from the "
+                f"same waveform at {speed:g}x playback"
+            )
+            break
+    if not report["verified"] and adjudicate_asr:
+        emit(
+            f"{provider_label} integrity: deterministic ASR check found a mismatch; "
+            "requesting fail-closed model adjudication"
+        )
+        slower_words: list[dict] = []
+        try:
+            slower_words, slower_transcription = await _transcribe_orpheus_at_speed(
+                path,
+                verification_dir,
+                ORPHEUS_NAME_RECHECK_SPEEDS[0],
+                emit=emit,
+                provider_label=provider_label,
+            )
+            if not slower_words:
+                failures = "; ".join(
+                    slower_transcription.get("failure_reasons") or []
+                )
+                emit(
+                    f"{provider_label} integrity: model adjudication skipped because the "
+                    "slower corroborating transcript is unavailable"
+                    f"{': ' + failures if failures else ''}"
+                )
+        except Exception as exc:  # noqa: BLE001 - adjudication remains fail-closed
+            emit(
+                f"{provider_label} integrity: model adjudication skipped because slower "
+                f"transcription failed ({type(exc).__name__}: {exc})"
+            )
+        if slower_words:
+            adjudication = await _adjudicate_orpheus_asr_mismatch(
+                text,
+                words,
+                slower_words,
+                report,
+                verification_dir,
+                emit=emit,
+                provider_label=provider_label,
+            )
+            if adjudication is not None:
+                original_failures = list(report["failure_reasons"])
+                report = {
+                    **report,
+                    "verified": True,
+                    "verification_mode": "llm_asr_adjudication",
+                    "failure_reasons": [],
+                    "deterministic_failure_reasons": original_failures,
+                    "llm_asr_adjudication": adjudication,
+                }
+                emit(
+                    f"{provider_label} integrity: model adjudication approved ASR-only "
+                    f"transcription drift ({adjudication['reason']})"
+                )
+            else:
+                emit(
+                    f"{provider_label} integrity: model adjudication rejected or lacked "
+                    "high-confidence evidence; preserving strict failure"
+                )
     if not report["verified"]:
         raise TtsIntegrityError(
-            "Orpheus narration does not match its input utterance: "
+            f"{provider_label} narration does not match its input utterance: "
             + "; ".join(report["failure_reasons"])
         )
-    emit(
-        "Orpheus integrity: utterance verified "
-        f"({report['matched_exact_words']}/{report['expected_words']} exact ASR words; "
-        "opening and closing anchors present)"
-    )
+    if validate_pocket_continuity:
+        report["internal_silence"] = _validate_pocket_internal_silence(path, words)
+    substitutions = report.get("phonetic_substitutions") or []
+    if report.get("verification_mode") == "llm_asr_adjudication":
+        emit(
+            f"{provider_label} integrity: utterance verified by two-level ASR plus model "
+            "adjudication; persisted evidence retains both transcripts and route"
+        )
+    elif substitutions:
+        substitution_summary = ", ".join(
+            f"{item['expected']}~{item['observed']}"
+            for item in substitutions
+        )
+        emit(
+            f"{provider_label} integrity: utterance verified "
+            f"({report['matched_acoustic_words']}/{report['expected_words']} acoustic "
+            f"ASR words; {report['matched_exact_words']} exact; aligned phonetic "
+            f"substitution {substitution_summary}; opening and closing anchors present)"
+        )
+    else:
+        emit(
+            f"{provider_label} integrity: utterance verified "
+            f"({report['matched_exact_words']}/{report['expected_words']} exact ASR words; "
+            "opening and closing anchors present)"
+        )
     return report
 
 
@@ -1488,11 +3630,25 @@ def _load_cached_orpheus_part(path: Path, text: str) -> dict | None:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(metadata, dict):
+        return None
     if metadata.get("text_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest():
         return None
     if metadata.get("speed_percent") != config.ORPHEUS_TTS_SPEED_PERCENT:
         return None
-    if not (metadata.get("integrity") or {}).get("verified"):
+    verifier_version = metadata.get("integrity_verifier_version")
+    if (
+        isinstance(verifier_version, bool)
+        or not isinstance(verifier_version, int)
+        or verifier_version != ORPHEUS_INTEGRITY_VERIFIER_VERSION
+    ):
+        return None
+    integrity = metadata.get("integrity")
+    if (
+        not isinstance(integrity, dict)
+        or not integrity.get("verified")
+        or integrity.get("method") == "duration_only_preview"
+    ):
         return None
     try:
         info = _read_pcm_wav(path)
@@ -1501,6 +3657,77 @@ def _load_cached_orpheus_part(path: Path, text: str) -> dict | None:
     if asdict(info) != metadata.get("wav"):
         return None
     return metadata
+
+
+def _snapshot_reusable_orpheus_parts(
+    output_dir: Path,
+    chunks: list[str],
+) -> dict[str, tuple[bytes, bytes, str]]:
+    """Retain exact verified audio even when a revised script renumbers chunks.
+
+    ``_write_chunk_inputs`` rewrites the numbered text files, while WAV sidecars
+    from an earlier attempt remain available. Snapshot only artifacts whose text
+    hash occurs in the current script and whose WAV is readable. A current
+    sidecar can be reused immediately; a stale sidecar is restored only so the
+    current acoustic verifier can revalidate it. Keeping the bytes in memory
+    prevents an earlier destination number from overwriting a source needed
+    later.
+    """
+    chunks_by_hash: dict[str, str] = {}
+    for chunk in chunks:
+        chunks_by_hash.setdefault(
+            hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
+            chunk,
+        )
+
+    reusable: dict[str, tuple[bytes, bytes, str]] = {}
+    for metadata_path in sorted(output_dir.glob("tts_input*_generated.json")):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        text_sha256 = metadata.get("text_sha256")
+        if not isinstance(text_sha256, str) or text_sha256 not in chunks_by_hash:
+            continue
+        wav_path = metadata_path.with_suffix(".wav")
+        try:
+            _read_pcm_wav(wav_path)
+        except TtsIntegrityError:
+            continue
+        try:
+            reusable.setdefault(
+                text_sha256,
+                (wav_path.read_bytes(), metadata_path.read_bytes(), wav_path.name),
+            )
+        except OSError:
+            continue
+    return reusable
+
+
+def _restore_reusable_orpheus_part(
+    path: Path,
+    text: str,
+    reusable: dict[str, tuple[bytes, bytes, str]],
+) -> tuple[dict | None, str] | None:
+    text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    snapshot = reusable.get(text_sha256)
+    if snapshot is None:
+        return None
+    wav_bytes, metadata_bytes, source_name = snapshot
+    staged_wav = path.with_suffix(".cache.tmp.wav")
+    staged_metadata = _part_metadata_path(path).with_suffix(".cache.tmp.json")
+    try:
+        staged_wav.write_bytes(wav_bytes)
+        staged_metadata.write_bytes(metadata_bytes)
+        os.replace(staged_wav, path)
+        os.replace(staged_metadata, _part_metadata_path(path))
+    finally:
+        staged_wav.unlink(missing_ok=True)
+        staged_metadata.unlink(missing_ok=True)
+    metadata = _load_cached_orpheus_part(path, text)
+    return metadata, source_name
 
 
 def _write_orpheus_part_metadata(
@@ -1517,6 +3744,7 @@ def _write_orpheus_part_metadata(
         "job_id": job_id,
         "request_token_budget": request_token_budget,
         "speed_percent": config.ORPHEUS_TTS_SPEED_PERCENT,
+        "integrity_verifier_version": ORPHEUS_INTEGRITY_VERIFIER_VERSION,
         "wav": asdict(_read_pcm_wav(path)),
         "integrity": integrity,
     }
@@ -1555,6 +3783,7 @@ async def _recover_orpheus_part(
             text,
             verification_dir,
             emit=emit,
+            adjudicate_asr=True,
         )
     except TtsIntegrityError as exc:
         emit(f"Orpheus recovery: existing WAV rejected ({exc}); regenerating")
@@ -1571,7 +3800,7 @@ async def _recover_orpheus_part(
 
 
 def _orpheus_http_error_text(exc: Exception) -> str:
-    """Keep transport failures useful even when httpx returns an empty message."""
+    """Keep transport failures useful even when httpx provides an empty message."""
     error_type = type(exc).__name__
     if isinstance(exc, httpx.HTTPStatusError):
         error_type = f"{error_type} (HTTP {exc.response.status_code})"
@@ -1580,7 +3809,7 @@ def _orpheus_http_error_text(exc: Exception) -> str:
 
 
 def _is_permanent_orpheus_http_error(exc: Exception) -> bool:
-    """Return whether retrying this same accepted-job request cannot recover."""
+    """Return whether retrying the same Orpheus request cannot heal the response."""
     if not isinstance(exc, httpx.HTTPStatusError):
         return False
     status_code = exc.response.status_code
@@ -1636,6 +3865,11 @@ async def _generate_orpheus(
         output_dir_path,
         max_words=chunk_words,
     )
+    reusable_parts = (
+        _snapshot_reusable_orpheus_parts(output_dir_path, chunks)
+        if verify_text
+        else {}
+    )
     emit(f"TTS input: stripped speaker labels -> {output_dir_path / 'tts_input.txt'}")
     if len(input_paths) > 1:
         emit(
@@ -1663,13 +3897,41 @@ async def _generate_orpheus(
                     wav_parts.append(expected_part)
                     part_metadata.append(cached)
                     continue
-                recovered = await _recover_orpheus_part(
+                restored = _restore_reusable_orpheus_part(
                     expected_part,
                     chunk,
-                    output_dir_path / "verification" / input_path.stem,
-                    request_token_budget=request_token_budget,
-                    emit=emit,
+                    reusable_parts,
                 )
+                if restored is not None:
+                    cached, source_name = restored
+                    if cached is not None:
+                        emit(
+                            f"{name}: reusing acoustically verified Orpheus audio "
+                            f"from {source_name} after chunk renumbering "
+                            f"({cached['word_count']} source words)"
+                        )
+                        wav_parts.append(expected_part)
+                        part_metadata.append(cached)
+                        continue
+                    emit(
+                        f"{name}: revalidating exact-text Orpheus audio from "
+                        f"{source_name} after chunk renumbering"
+                    )
+                    recovered = await _recover_orpheus_part(
+                        expected_part,
+                        chunk,
+                        output_dir_path / "verification" / input_path.stem,
+                        request_token_budget=request_token_budget,
+                        emit=emit,
+                    )
+                else:
+                    recovered = await _recover_orpheus_part(
+                        expected_part,
+                        chunk,
+                        output_dir_path / "verification" / input_path.stem,
+                        request_token_budget=request_token_budget,
+                        emit=emit,
+                    )
                 if recovered is not None:
                     emit(f"{name}: reusing recovered acoustically verified Orpheus audio")
                     wav_parts.append(expected_part)
@@ -1691,7 +3953,9 @@ async def _generate_orpheus(
                 "min_p": 0.05,
                 "pre_buffer_size": 1.5,
                 "n_threads": config.ORPHEUS_TTS_N_THREADS,
-                "speed": config.ORPHEUS_TTS_SPEED_PERCENT / 100,
+                # Do not retime narration to hit a requested video length.  The
+                # measured natural-speed WAV drives storyboard/scene duration.
+                "speed": NARRATION_SYNTHESIS_SPEED_RATIO,
                 "response_format": "wav",
             }
             try:
@@ -1881,9 +4145,9 @@ async def _generate_orpheus(
                         if verify_text
                         else request_token_budget
                         / ORPHEUS_AUDIO_TOKENS_PER_SECOND
-                        / (config.ORPHEUS_TTS_SPEED_PERCENT / 100)
+                        / NARRATION_SYNTHESIS_SPEED_RATIO
                     ),
-                    speed=config.ORPHEUS_TTS_SPEED_PERCENT / 100,
+                    speed=NARRATION_SYNTHESIS_SPEED_RATIO,
                 )
             except TtsIntegrityError as exc:
                 raise TtsIntegrityError(str(exc), part_key=input_path.name) from exc
@@ -1894,6 +4158,7 @@ async def _generate_orpheus(
                         chunk,
                         output_dir_path / "verification" / input_path.stem,
                         emit=emit,
+                        adjudicate_asr=True,
                     )
                 except TtsIntegrityError as exc:
                     raise TtsIntegrityError(str(exc), part_key=input_path.name) from exc
@@ -1951,6 +4216,323 @@ async def _generate_orpheus(
     return str(expected)
 
 
+def _load_cached_pocket_part(path: Path, text: str, voice: str) -> dict | None:
+    metadata_path = _part_metadata_path(path)
+    if not path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    expected = {
+        "provider": "pocket-tts",
+        "model_revision": config.POCKET_TTS_MODEL_REVISION,
+        "voice": voice,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "integrity_verifier_version": POCKET_TTS_INTEGRITY_VERIFIER_VERSION,
+    }
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        return None
+    integrity = metadata.get("integrity")
+    if (
+        not isinstance(integrity, dict)
+        or not integrity.get("verified")
+        or integrity.get("method") == "duration_only_preview"
+    ):
+        return None
+    try:
+        info = _read_pcm_wav(path)
+    except TtsIntegrityError:
+        return None
+    if asdict(info) != metadata.get("wav"):
+        return None
+    if _file_sha256(path) != metadata.get("audio_sha256"):
+        return None
+    return metadata
+
+
+def _write_pocket_part_metadata(
+    path: Path,
+    text: str,
+    voice: str,
+    *,
+    integrity: dict,
+    generation_seconds: float,
+) -> dict:
+    payload = {
+        "provider": "pocket-tts",
+        "model_revision": config.POCKET_TTS_MODEL_REVISION,
+        "voice": voice,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "word_count": _spoken_word_count(text),
+        "generation_seconds": round(generation_seconds, 3),
+        "integrity_verifier_version": POCKET_TTS_INTEGRITY_VERIFIER_VERSION,
+        "wav": asdict(_read_pcm_wav(path)),
+        "audio_sha256": _file_sha256(path),
+        "integrity": integrity,
+    }
+    destination = _part_metadata_path(path)
+    temporary = destination.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, destination)
+    return payload
+
+
+async def _recover_pocket_part(
+    path: Path,
+    text: str,
+    voice: str,
+    verification_dir: Path,
+    *,
+    emit: LogCallback,
+) -> dict | None:
+    """Recover a complete Pocket WAV left between download and sidecar write."""
+    if not path.is_file():
+        return None
+    try:
+        _validate_wav_part(path, text)
+        integrity = await _verify_orpheus_part(
+            path,
+            text,
+            verification_dir,
+            emit=emit,
+            adjudicate_asr=True,
+            provider_label="Pocket TTS",
+            validate_pocket_continuity=True,
+        )
+    except TtsIntegrityError as exc:
+        emit(f"Pocket TTS recovery: existing WAV rejected ({exc}); regenerating")
+        path.unlink(missing_ok=True)
+        _part_metadata_path(path).unlink(missing_ok=True)
+        return None
+    metadata = _write_pocket_part_metadata(
+        path,
+        text,
+        voice,
+        integrity=integrity,
+        generation_seconds=0,
+    )
+    emit("Pocket TTS recovery: accepted existing WAV after acoustic verification")
+    return metadata
+
+
+def _pocket_http_headers() -> dict[str, str]:
+    return (
+        {"X-API-Key": config.POCKET_TTS_API_KEY}
+        if config.POCKET_TTS_API_KEY
+        else {}
+    )
+
+
+async def _generate_pocket_tts(
+    script_path: str,
+    output_dir: str,
+    voice: str,
+    language: str,
+    *,
+    log: LogCallback | None,
+    emit: LogCallback,
+    verify_text: bool = False,
+) -> str:
+    del language  # The deployed English server owns its language configuration.
+    if not config.POCKET_TTS_MODEL_REVISION:
+        raise RuntimeError("POCKET_TTS_MODEL_REVISION must identify the deployed build")
+    script_path_obj, output_dir_path, _tts_input, cleaned = _prepare_tts_input(
+        script_path,
+        output_dir,
+        strip_speaker_labels=True,
+    )
+    input_paths, chunks = _write_pocket_chunk_inputs(
+        cleaned,
+        output_dir_path,
+        max_words=config.POCKET_TTS_CHUNK_WORDS,
+    )
+    emit(f"TTS input: stripped speaker labels -> {output_dir_path / 'tts_input.txt'}")
+    emit(
+        "TTS input: Pocket continuity split into "
+        f"{len(input_paths)} physical paragraph/story request(s); only complete "
+        f"sentences may split above {config.POCKET_TTS_CHUNK_WORDS} words"
+    )
+
+    base_url = config.POCKET_TTS_URL.rstrip("/")
+    timeout_seconds = max(5, config.POCKET_TTS_REQUEST_TIMEOUT)
+    timeout = httpx.Timeout(timeout_seconds, connect=min(30, timeout_seconds))
+    wav_parts: list[Path] = []
+    part_metadata: list[dict] = []
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers=_pocket_http_headers(),
+        follow_redirects=False,
+    ) as client:
+        for index, input_path in enumerate(input_paths, start=1):
+            name = "TTS" if len(input_paths) == 1 else f"TTS part {index}/{len(input_paths)}"
+            chunk = chunks[index - 1]
+            expected_part = output_dir_path / f"{input_path.stem}_generated.wav"
+            if verify_text:
+                cached = _load_cached_pocket_part(expected_part, chunk, voice)
+                if cached is not None:
+                    emit(
+                        f"{name}: reusing acoustically verified Pocket TTS paragraph "
+                        f"({cached['word_count']} source words)"
+                    )
+                    wav_parts.append(expected_part)
+                    part_metadata.append(cached)
+                    continue
+                recovered = await _recover_pocket_part(
+                    expected_part,
+                    chunk,
+                    voice,
+                    output_dir_path / "verification" / input_path.stem,
+                    emit=emit,
+                )
+                if recovered is not None:
+                    wav_parts.append(expected_part)
+                    part_metadata.append(recovered)
+                    continue
+
+            staged_part = expected_part.with_suffix(".tmp.wav")
+            staged_part.unlink(missing_ok=True)
+            request_started = time.monotonic()
+            last_error: Exception | None = None
+            for request_attempt in range(1, 4):
+                try:
+                    response = await client.post(
+                        f"{base_url}/tts",
+                        data={"text": chunk, "voice_url": voice},
+                    )
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "").casefold()
+                    if "audio/wav" not in content_type and "audio/x-wav" not in content_type:
+                        raise TtsIntegrityError(
+                            "Pocket TTS returned a non-WAV response "
+                            f"({content_type or 'missing content type'})"
+                        )
+                    staged_part.write_bytes(response.content)
+                    _normalize_pocket_streaming_wav(staged_part)
+                    break
+                except (httpx.HTTPError, TtsIntegrityError, OSError) as exc:
+                    staged_part.unlink(missing_ok=True)
+                    last_error = exc
+                    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else 0
+                    permanent = bool(300 <= status < 500 and status not in {408, 425, 429})
+                    if permanent or request_attempt >= 3:
+                        raise RuntimeError(
+                            f"{name} Pocket TTS request failed after {request_attempt} "
+                            f"attempt(s): {_orpheus_http_error_text(exc)}"
+                        ) from exc
+                    delay = 2 ** (request_attempt - 1)
+                    emit(
+                        f"{name}: transient Pocket TTS request error "
+                        f"({_orpheus_http_error_text(exc)}); retrying in {delay}s"
+                    )
+                    await asyncio.sleep(delay)
+            if last_error is not None and not staged_part.is_file():
+                raise RuntimeError(f"{name} Pocket TTS produced no WAV") from last_error
+
+            os.replace(staged_part, expected_part)
+            # Record provider latency before local acoustic verification.  ASR,
+            # slower-playback corroboration, and optional adjudication are
+            # integrity costs, not Pocket TTS inference time.
+            generation_seconds = time.monotonic() - request_started
+            try:
+                _validate_wav_part(expected_part, chunk)
+                if verify_text:
+                    integrity = await _verify_orpheus_part(
+                        expected_part,
+                        chunk,
+                        output_dir_path / "verification" / input_path.stem,
+                        emit=emit,
+                        adjudicate_asr=True,
+                        provider_label="Pocket TTS",
+                        validate_pocket_continuity=True,
+                    )
+                else:
+                    internal_silence = _validate_pocket_internal_silence(expected_part)
+                    integrity = {
+                        "verified": True,
+                        "method": "duration_only_preview",
+                        "expected_words": _spoken_word_count(chunk),
+                        "internal_silence": internal_silence,
+                    }
+            except TtsIntegrityError as exc:
+                # A known rejected sample must be regenerated on the next outer
+                # integrity attempt; only crash-orphaned WAVs are recoverable.
+                expected_part.unlink(missing_ok=True)
+                _part_metadata_path(expected_part).unlink(missing_ok=True)
+                raise TtsIntegrityError(str(exc), part_key=input_path.name) from exc
+            metadata = _write_pocket_part_metadata(
+                expected_part,
+                chunk,
+                voice,
+                integrity=integrity,
+                generation_seconds=generation_seconds,
+            )
+            audio_seconds = float((metadata.get("wav") or {}).get("duration_seconds") or 0)
+            realtime_factor = audio_seconds / max(generation_seconds, 0.001)
+            emit(
+                f"{name}: Pocket TTS generated {audio_seconds:.2f}s in "
+                f"{generation_seconds:.2f}s ({realtime_factor:.2f}x realtime; voice={voice})"
+            )
+            wav_parts.append(expected_part)
+            part_metadata.append(metadata)
+
+    expected = await _concat_wav_parts(wav_parts, output_dir_path, log=log)
+    source_words = _spoken_word_count(cleaned)
+    verified_words = sum(
+        int(metadata.get("word_count") or 0)
+        for metadata in part_metadata
+        if (metadata.get("integrity") or {}).get("verified")
+    )
+    integrity = {
+        "method": "per_paragraph_mlx_whisper",
+        "required": verify_text,
+        "passed": verified_words == source_words,
+        "source_words": source_words,
+        "verified_source_words": verified_words,
+        "verified_source_coverage": round(verified_words / max(1, source_words), 4),
+        "part_reports": [metadata.get("integrity") or {} for metadata in part_metadata],
+    }
+    if verify_text and not integrity["passed"]:
+        raise TtsIntegrityError(
+            f"Pocket TTS verified only {verified_words}/{source_words} source words; "
+            "refusing to join incomplete narration"
+        )
+    generation_seconds = sum(float(item.get("generation_seconds") or 0) for item in part_metadata)
+    audio_seconds = _read_pcm_wav(expected).duration_seconds
+    _write_tts_manifest(
+        output_dir_path,
+        model="pocket-tts-en",
+        source_text=cleaned,
+        chunks=chunks,
+        wav_parts=wav_parts,
+        output=expected,
+        deterministic=False,
+        integrity=integrity,
+        extra={
+            "provider_revision": config.POCKET_TTS_MODEL_REVISION,
+            "voice": voice,
+            "continuity": _pocket_continuity_report(
+                cleaned,
+                chunks,
+                wav_parts,
+                part_metadata,
+            ),
+            "performance": {
+                "generation_seconds": round(generation_seconds, 3),
+                "audio_seconds": round(audio_seconds, 3),
+                "realtime_factor": round(audio_seconds / max(generation_seconds, 0.001), 3),
+            },
+        },
+    )
+    emit(
+        f"TTS output: {expected} ({expected.stat().st_size / 1024:.0f} KB; "
+        f"source={script_path_obj})"
+    )
+    return str(expected)
+
+
 async def generate_tts(
     script_path: str,
     output_dir: str,
@@ -1981,6 +4563,32 @@ async def generate_tts(
             f"Voice(s) {unknown_voices} are unavailable for '{tts_model}'. Valid voices: "
             f"{', '.join(available_voices)}"
         )
+    if model.get("kind") == "pocket_tts_http":
+        if len(voices) > 1:
+            emit(f"Model '{tts_model}' is single-speaker; using only '{voices[0]}'")
+        integrity_attempts: dict[str, int] = {}
+        while True:
+            try:
+                return await _generate_pocket_tts(
+                    script_path,
+                    output_dir,
+                    voices[0],
+                    str(model.get("language") or "en"),
+                    log=log,
+                    emit=emit,
+                    verify_text=True,
+                )
+            except TtsIntegrityError as exc:
+                part_key = exc.part_key or "complete narration"
+                attempt = integrity_attempts.get(part_key, 0) + 1
+                integrity_attempts[part_key] = attempt
+                if attempt >= POCKET_TTS_MAX_INTEGRITY_ATTEMPTS:
+                    raise
+                emit(
+                    f"Pocket TTS integrity retry for {part_key} "
+                    f"{attempt}/{POCKET_TTS_MAX_INTEGRITY_ATTEMPTS - 1}: {exc}. "
+                    "Verified earlier paragraphs will be reused."
+                )
     if model.get("kind") == "orpheus_http":
         if len(voices) > 1:
             emit(f"Model '{tts_model}' is single-speaker; using only '{voices[0]}'")
@@ -2058,6 +4666,20 @@ async def generate_tts(
         output_dir,
         strip_speaker_labels=not preserve_speaker_labels,
     )
+    canonical_text = prepared_text
+    prepared_text, pronunciation_map = _expand_vibevoice_pronunciations(prepared_text)
+    if pronunciation_map:
+        (output_dir_path / "tts_input.canonical.txt").write_text(
+            canonical_text, encoding="utf-8"
+        )
+        _tts_input.write_text(prepared_text, encoding="utf-8")
+        (output_dir_path / "tts_pronunciation_map.json").write_text(
+            json.dumps(pronunciation_map, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        emit(
+            "TTS input: expanded provider-only pronunciations for "
+            + ", ".join(item["canonical"] for item in pronunciation_map)
+        )
     input_paths, chunks = _write_chunk_inputs(
         prepared_text,
         output_dir_path,

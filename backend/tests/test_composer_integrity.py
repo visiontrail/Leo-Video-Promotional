@@ -47,6 +47,9 @@ def test_orpheus_manifest_requires_unchanged_script_and_audio(tmp_path):
     (audio_dir / "tts_manifest.json").write_text(
         json.dumps(
             {
+                "model": "orpheus-en",
+                "pacing_policy": tts.NARRATION_PACING_POLICY,
+                "synthesis_speed_ratio": 1.0,
                 "source_text_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
                 "output_audio_sha256": tts._file_sha256(audio),
                 "integrity": {"passed": True, "verified_source_coverage": 1.0},
